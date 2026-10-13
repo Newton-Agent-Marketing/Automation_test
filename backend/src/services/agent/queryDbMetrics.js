@@ -1,0 +1,1471 @@
+import MetaInsight from "../../models/metaInsight.js";
+import MetaCampaign from "../../models/metaCampaign.js";
+import MetaAccount from "../../models/metaAccount.js";
+import GoogleInsight from "../../models/googleInsightModel.js";
+import GoogleCampaign from "../../models/googleCampaignModel.js";
+import GoogleAccount from "../../models/googleAccountModel.js";
+import ConnectedChannel from "../../models/connectedChannelModel.js";
+import AiContext from "../../models/aiContextModel.js";
+import { MetaMcpClient } from "../mcp/metaMcpClient.js";
+import { GoogleMcpClient } from "../mcp/googleMcpClient.js";
+import { GoogleSyncPipeline } from "../google/googleSyncPipe.js";
+import { googleDriveService } from "../google/googleDriveService.js";
+
+// 1. LLM Tool Schema (OpenAI / Anthropic standard format)
+export const AGENT_TOOLS_DEFINITIONS = [
+  {
+    type: "function",
+    function: {
+      name: "get_user_ai_context",
+      description: "Fetch the user's structured marketing AI Context workflow hierarchy from MongoDB (including Business Units, Ad Channels, Marketing Briefs, Products, Data Warehouses, and their node connections).",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_user_connected_accounts",
+      description: "Lists all connected advertising and marketing accounts across all channels (Meta Ads, Google Ads, Spotify, LinkedIn, TikTok, etc.) for this user with their Account IDs, names, status, and currency.",
+      parameters: {
+        type: "object",
+        properties: {
+          channelId: { type: "string", description: "Optional filter by channel e.g. 'meta', 'google', etc." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "query_database_metrics",
+      description: "Use this to get historical performance, past 7/30 days trends, totals, and saved insights from the Database for a specific Ad Account ID or Channel.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Meta or Google Ad Account ID" },
+          channel: { type: "string", description: "Optional channel name: 'Meta Ads' or 'Google Ads'" },
+          startDate: { type: "string", description: "Format YYYY-MM-DD" },
+          endDate: { type: "string", description: "Format YYYY-MM-DD" },
+          metric: { type: "string", description: "spend, clicks, roas, purchases, conversions, etc." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fetch_live_meta_ads_mcp",
+      description: "Use this when the user asks for CURRENT, LIVE, REAL-TIME data, today's spend, or instant campaign status directly from Meta Ads.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Meta Account ID" },
+          toolType: {
+            type: "string",
+            enum: ["get_live_today_insights", "get_live_campaigns_status"],
+            description: "Which live MCP tool to call",
+          },
+        },
+        required: ["accountId", "toolType"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_meta_campaign",
+      description: "Creates a new advertising campaign on Meta Ads (Facebook & Instagram) with budget, objective, and status.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Name of the campaign" },
+          objective: {
+            type: "string",
+            enum: [
+              "OUTCOME_SALES",
+              "OUTCOME_LEADS",
+              "OUTCOME_TRAFFIC",
+              "OUTCOME_ENGAGEMENT",
+              "OUTCOME_AWARENESS",
+              "OUTCOME_APP_PROMOTION",
+            ],
+            description: "Marketing objective of the campaign",
+          },
+          dailyBudget: { type: "number", description: "Daily budget in currency units (e.g. 500, 1000)" },
+          lifetimeBudget: { type: "number", description: "Lifetime budget (if not using daily budget)" },
+          status: { type: "string", enum: ["ACTIVE", "PAUSED"], description: "Initial status of campaign" },
+          accountId: { type: "string", description: "Meta ad account ID (optional, defaults to active account)" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_meta_campaign",
+      description: "Updates an existing Meta Ads campaign status (PAUSED/ACTIVE), name, or budget.",
+      parameters: {
+        type: "object",
+        properties: {
+          campaignId: { type: "string", description: "Meta Campaign ID" },
+          status: { type: "string", enum: ["ACTIVE", "PAUSED", "ARCHIVED"] },
+          dailyBudget: { type: "number" },
+          name: { type: "string" },
+        },
+        required: ["campaignId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_meta_ad_set",
+      description: "Creates an Ad Set under a specified Meta Ads campaign with budget, targeting, and optimization goal.",
+      parameters: {
+        type: "object",
+        properties: {
+          campaignId: { type: "string", description: "Meta Campaign ID to attach this Ad Set to" },
+          name: { type: "string", description: "Name of the Ad Set" },
+          dailyBudget: { type: "number", description: "Daily budget for this ad set in currency units" },
+          optimizationGoal: {
+            type: "string",
+            enum: ["OFFSITE_CONVERSIONS", "LINK_CLICKS", "REACH", "LANDING_PAGE_VIEWS", "LEAD_GENERATION", "IMPRESSIONS", "VALUE"],
+            default: "OFFSITE_CONVERSIONS",
+          },
+          billingEvent: { type: "string", enum: ["IMPRESSIONS", "LINK_CLICKS"], default: "IMPRESSIONS" },
+          bidAmount: { type: "number", description: "Optional bid amount" },
+          status: { type: "string", enum: ["ACTIVE", "PAUSED"], default: "PAUSED" },
+          targeting: {
+            type: "object",
+            properties: {
+              locations: { type: "array", items: { type: "string" } },
+              countries: { type: "array", items: { type: "string" } },
+              cities: { type: "array", items: { type: "string" } },
+              ageMin: { type: "number" },
+              ageMax: { type: "number" },
+              genders: { type: "array", items: { type: "number" } },
+              interests: { type: "array", items: { type: "string" } },
+            },
+          },
+          accountId: { type: "string", description: "Meta Ad Account ID" },
+        },
+        required: ["campaignId", "name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_meta_ad_set",
+      description: "Updates an existing Meta Ad Set (status, budget, targeting).",
+      parameters: {
+        type: "object",
+        properties: {
+          adSetId: { type: "string", description: "Meta Ad Set ID" },
+          name: { type: "string" },
+          status: { type: "string", enum: ["ACTIVE", "PAUSED", "ARCHIVED"] },
+          dailyBudget: { type: "number" },
+          targeting: { type: "object" },
+          accountId: { type: "string" },
+        },
+        required: ["adSetId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_meta_targeting",
+      description: "Sets audience targeting (locations, age, gender, interests) on a Meta Ad Set.",
+      parameters: {
+        type: "object",
+        properties: {
+          adSetId: { type: "string", description: "Meta Ad Set ID" },
+          locations: { type: "array", items: { type: "string" }, description: "Target country or region names (e.g. ['India'])" },
+          countries: { type: "array", items: { type: "string" } },
+          cities: { type: "array", items: { type: "string" } },
+          ageMin: { type: "number", default: 18 },
+          ageMax: { type: "number", default: 65 },
+          genders: { type: "array", items: { type: "number" } },
+          interests: { type: "array", items: { type: "string" }, description: "Target interest names (e.g. ['Sneakers', 'Online shopping'])" },
+          accountId: { type: "string" },
+        },
+        required: ["adSetId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_meta_ad",
+      description: "Creates an Ad creative and Ad under a Meta Ad Set with headlines, primary text, link, and call to action.",
+      parameters: {
+        type: "object",
+        properties: {
+          adSetId: { type: "string", description: "Meta Ad Set ID to place this ad in" },
+          name: { type: "string", description: "Ad name" },
+          headline: { type: "string", description: "Catchy ad headline (e.g. 'Flat 40% Off Summer Sneakers')" },
+          primaryText: { type: "string", description: "Main promotional copy/body text" },
+          description: { type: "string", description: "Secondary link description" },
+          linkUrl: { type: "string", description: "Destination website URL" },
+          callToAction: {
+            type: "string",
+            enum: ["SHOP_NOW", "LEARN_MORE", "SIGN_UP", "BOOK_TRAVEL", "CONTACT_US", "ORDER_NOW", "GET_OFFER"],
+            default: "SHOP_NOW",
+          },
+          imageUrl: { type: "string", description: "Optional image URL" },
+          status: { type: "string", enum: ["ACTIVE", "PAUSED"], default: "PAUSED" },
+          accountId: { type: "string" },
+        },
+        required: ["adSetId", "name", "headline", "primaryText"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "verify_meta_campaign",
+      description: "Verifies the complete setup of a Meta Ads campaign (campaign, ad set, targeting, and ads).",
+      parameters: {
+        type: "object",
+        properties: {
+          campaignId: { type: "string", description: "Meta Campaign ID" },
+          adSetId: { type: "string", description: "Meta Ad Set ID" },
+          adId: { type: "string", description: "Meta Ad ID" },
+          accountId: { type: "string" },
+        },
+        required: ["campaignId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fetch_live_google_ads_mcp",
+      description: "Fetches live, real-time Google Ads data: impressions, clicks, spend, conversions, CPC, CTR, ROAS, or live campaigns directly from the Google Ads API.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Google ad account ID or child customer ID" },
+          toolType: {
+            type: "string",
+            enum: ["get_live_today_insights", "get_live_campaigns_status", "get_google_insights", "get_google_campaigns"],
+            description: "Which Google live tool to execute",
+          },
+          datePreset: {
+            type: "string",
+            enum: ["today", "yesterday", "last_7d", "last_14d", "last_30d", "this_month"],
+            description: "Date range filter preset",
+          },
+          startDate: { type: "string", description: "YYYY-MM-DD" },
+          endDate: { type: "string", description: "YYYY-MM-DD" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "switch_google_account",
+      description: "Switches or selects the active Google Ads customer account (by customer ID or account name) for all campaign creation and metric queries.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Target Google Ads Customer ID (e.g. '3026285598')" },
+          accountName: { type: "string", description: "Target Google Ads Account Name (e.g. 'Newton Ads Test Account')" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_google_campaign_budget",
+      description: "Creates a dedicated campaign budget resource on Google Ads API with daily budget converted to micros.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Target Google customer account ID (e.g. '8915468027')" },
+          dailyBudget: { type: "number", description: "Daily budget in standard currency units (e.g. 2500 for ₹2,500/day)" },
+          name: { type: "string", description: "Optional descriptive budget name" },
+          deliveryMethod: { type: "string", enum: ["STANDARD", "ACCELERATED"], default: "STANDARD" },
+        },
+        required: ["dailyBudget"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_google_campaign",
+      description: "Directly creates a real advertising campaign on Google Ads (Search / Performance Max / Display) with target CPA, bidding strategy, and linked budget resource.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Descriptive name for the Google campaign (e.g. 'Summer Shirt Growth')" },
+          channelType: {
+            type: "string",
+            enum: ["SEARCH", "PERFORMANCE_MAX", "DISPLAY", "VIDEO"],
+            default: "SEARCH",
+            description: "Google advertising channel type",
+          },
+          dailyBudget: { type: "number", description: "Daily budget in currency units (e.g. 2500)" },
+          budgetResourceName: { type: "string", description: "Budget resource name returned from create_google_campaign_budget (e.g. 'customers/8915468027/campaignBudgets/123')" },
+          biddingStrategy: {
+            type: "string",
+            enum: ["MAXIMIZE_CONVERSIONS", "TARGET_CPA", "MAXIMIZE_CLICKS", "MANUAL_CPC", "TARGET_ROAS"],
+            default: "MAXIMIZE_CONVERSIONS",
+            description: "Campaign bidding strategy",
+          },
+          targetCpa: { type: "number", description: "Target CPA in currency units (e.g. 500 for ₹500 CPA)" },
+          status: { type: "string", enum: ["ENABLED", "PAUSED"], default: "PAUSED", description: "Initial campaign status" },
+          accountId: { type: "string", description: "Target Google customer account ID (e.g. '8915468027') or Account Name" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_google_ad_group",
+      description: "Creates an ad group under a specified Google Ads campaign.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Target Google customer account ID" },
+          campaignResourceName: { type: "string", description: "Campaign resource name returned from create_google_campaign (e.g. 'customers/8915468027/campaigns/123')" },
+          campaignId: { type: "string", description: "Campaign ID if campaignResourceName is not provided" },
+          name: { type: "string", description: "Ad group name (e.g. 'Summer Shirts')" },
+          status: { type: "string", enum: ["ENABLED", "PAUSED"], default: "ENABLED" },
+          type: { type: "string", enum: ["SEARCH_STANDARD", "DISPLAY_STANDARD"], default: "SEARCH_STANDARD" },
+          cpcBidMicros: { type: "number", description: "Optional default CPC bid in micros" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_google_keywords",
+      description: "Adds keywords with match types (BROAD, PHRASE, EXACT) and optional CPC bids to an ad group.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Target Google customer account ID" },
+          adGroupResourceName: { type: "string", description: "Ad Group resource name (e.g. 'customers/8915468027/adGroups/123')" },
+          adGroupId: { type: "string", description: "Ad Group ID if resource name is not provided" },
+          keywords: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                text: { type: "string", description: "Keyword text (e.g. 'summer shirts for men')" },
+                matchType: { type: "string", enum: ["BROAD", "PHRASE", "EXACT"], default: "BROAD" },
+                bid: { type: "number", description: "Optional max CPC bid in currency units (e.g. 50 for ₹50)" },
+              },
+              required: ["text"],
+            },
+            description: "List of keywords to create",
+          },
+        },
+        required: ["keywords"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_google_negative_keywords",
+      description: "Adds negative keywords at Campaign or Ad Group level to prevent unwanted searches.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Target Google customer account ID" },
+          campaignResourceName: { type: "string", description: "Campaign resource name for campaign-level negative keywords" },
+          campaignId: { type: "string", description: "Campaign ID" },
+          adGroupResourceName: { type: "string", description: "Ad Group resource name for ad group-level negative keywords" },
+          adGroupId: { type: "string", description: "Ad Group ID" },
+          keywords: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                text: { type: "string", description: "Negative keyword text (e.g. 'free', 'wholesale', 'jobs')" },
+                matchType: { type: "string", enum: ["BROAD", "PHRASE", "EXACT"], default: "BROAD" },
+              },
+              required: ["text"],
+            },
+            description: "List of negative keywords",
+          },
+        },
+        required: ["keywords"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_google_responsive_search_ad",
+      description: "Creates a Google Responsive Search Ad (RSA) with multiple headlines (min 3), descriptions (min 2), and final URLs.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Target Google customer account ID" },
+          adGroupResourceName: { type: "string", description: "Ad Group resource name (e.g. 'customers/8915468027/adGroups/123')" },
+          adGroupId: { type: "string", description: "Ad Group ID" },
+          headlines: {
+            type: "array",
+            items: { type: "string" },
+            description: "List of headlines (at least 3 recommended, up to 15, max 30 chars each)",
+          },
+          descriptions: {
+            type: "array",
+            items: { type: "string" },
+            description: "List of descriptions (at least 2 recommended, up to 4, max 90 chars each)",
+          },
+          finalUrl: { type: "string", description: "Destination landing page URL (e.g. 'https://zaikai.com/summer-shirts')" },
+          finalUrls: { type: "array", items: { type: "string" }, description: "Optional list of destination URLs" },
+          status: { type: "string", enum: ["ENABLED", "PAUSED"], default: "ENABLED" },
+        },
+        required: ["headlines", "descriptions"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_google_campaign_locations",
+      description: "Sets geographical location targeting (e.g. India, United States) for a Google Ads campaign.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Target Google customer account ID" },
+          campaignResourceName: { type: "string", description: "Campaign resource name" },
+          campaignId: { type: "string", description: "Campaign ID" },
+          locations: {
+            type: "array",
+            items: { type: "string" },
+            description: "List of country or location names (e.g. ['India', 'United States']) or geo target constant IDs",
+          },
+          negative: { type: "boolean", default: false, description: "Whether to exclude these locations" },
+        },
+        required: ["locations"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_google_campaign_languages",
+      description: "Sets language targeting criteria (e.g. English, Hindi) for a Google Ads campaign.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Target Google customer account ID" },
+          campaignResourceName: { type: "string", description: "Campaign resource name" },
+          campaignId: { type: "string", description: "Campaign ID" },
+          languages: {
+            type: "array",
+            items: { type: "string" },
+            description: "List of languages (e.g. ['English', 'Hindi']) or language constant IDs",
+          },
+        },
+        required: ["languages"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "verify_google_campaign",
+      description: "Verifies the complete setup of a Google Ads campaign: checks existence of budget, ad groups, keywords, negative keywords, responsive search ads, locations, languages, and status.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Target Google customer account ID" },
+          campaignResourceName: { type: "string", description: "Campaign resource name" },
+          campaignId: { type: "string", description: "Campaign ID" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "rollback_google_campaign",
+      description: "Removes/cleans up an incomplete campaign if keyword, ad, or targeting creation fails.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Target Google customer account ID" },
+          campaignResourceName: { type: "string", description: "Campaign resource name to clean up" },
+          campaignId: { type: "string", description: "Campaign ID" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_google_campaign",
+      description: "Updates an existing Google Ads campaign status (ENABLED/PAUSED), name, or budget on Google Ads.",
+      parameters: {
+        type: "object",
+        properties: {
+          campaignId: { type: "string", description: "The ID of the Google campaign to update" },
+          status: { type: "string", enum: ["ENABLED", "PAUSED"] },
+          dailyBudget: { type: "number" },
+          name: { type: "string" },
+        },
+        required: ["campaignId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_google_keywords",
+      description: "Lists existing keywords for a Google Ads campaign or ad group, including match types, CPC bids, quality scores, impressions, and clicks, with MongoDB caching.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Target Google customer account ID" },
+          campaignId: { type: "string", description: "Campaign ID to filter keywords" },
+          adGroupId: { type: "string", description: "Optional Ad Group ID to filter keywords" },
+          status: { type: "string", enum: ["ENABLED", "PAUSED", "ALL"], description: "Status filter" },
+          limit: { type: "number", description: "Max number of keywords to return (default 100)" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_google_ads",
+      description: "Lists existing Responsive Search Ads, creative headlines, descriptions, final URLs, ad strength, and performance metrics with MongoDB persistence.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Target Google customer account ID" },
+          campaignId: { type: "string", description: "Campaign ID to filter ads" },
+          adGroupId: { type: "string", description: "Optional Ad Group ID to filter ads" },
+          limit: { type: "number", description: "Max number of ads to return (default 50)" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_google_campaign_structure",
+      description: "Retrieves complete hierarchical campaign tree including daily budget, bidding strategy, ad groups, targeting criteria, keywords count, and ads previews.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Target Google customer account ID" },
+          campaignId: { type: "string", description: "Campaign ID" },
+        },
+        required: ["campaignId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "query_token_usage_metrics",
+      description: "Fetch comprehensive token burn and usage history from the Database. Use this whenever the user asks how many tokens were burned, token usage breakdown, actions performed, cost, or AI consumption statistics.",
+      parameters: {
+        type: "object",
+        properties: {
+          conversationId: { type: "string", description: "Optional conversation session ID to filter by" },
+          timeframe: {
+            type: "string",
+            enum: ["all", "current_session", "today", "past_7_days"],
+            description: "Timeframe for token aggregation (defaults to all)",
+          },
+        },
+      },
+    },
+  },
+];
+
+// Helper to fetch token burn statistics from database
+export async function getTokenUsageMetrics({ userId, conversationId, timeframe = "all" }) {
+  const queryFilter = {
+    role: "assistant",
+  };
+
+  if (userId) {
+    queryFilter.userId = userId;
+  }
+
+  if (timeframe === "current_session" && conversationId) {
+    queryFilter.conversationId = conversationId;
+  } else if (timeframe === "today") {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    queryFilter.createdAt = { $gte: today };
+  } else if (timeframe === "past_7_days") {
+    const past7 = new Date();
+    past7.setDate(past7.getDate() - 7);
+    queryFilter.createdAt = { $gte: past7 };
+  }
+
+  const messages = await (await import("../../models/chatMessage.js")).default
+    .find(queryFilter)
+    .sort({ createdAt: -1 })
+    .limit(100)
+    .lean();
+
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalTokensBurned = 0;
+  let totalCostUsd = 0;
+  let totalCostInr = 0;
+  let actionCounts = {};
+  const recentExchanges = [];
+
+  for (const msg of messages) {
+    const tu = msg.tokenUsage || {};
+    const input = tu.inputTokens || 0;
+    const output = tu.outputTokens || 0;
+    const total = tu.totalTokens || (input + output);
+    const costU = tu.costUsd || 0;
+    const costI = tu.costInr || 0;
+
+    totalInputTokens += input;
+    totalOutputTokens += output;
+    totalTokensBurned += total;
+    totalCostUsd += costU;
+    totalCostInr += costI;
+
+    if (Array.isArray(tu.actionsPerformed)) {
+      for (const act of tu.actionsPerformed) {
+        const actName = act.action || "general_inquiry";
+        actionCounts[actName] = (actionCounts[actName] || 0) + 1;
+      }
+    }
+
+    if (recentExchanges.length < 10) {
+      recentExchanges.push({
+        id: msg._id,
+        conversationId: msg.conversationId,
+        date: msg.createdAt,
+        totalTokens: total,
+        inputTokens: input,
+        outputTokens: output,
+        costInr: Number(costI.toFixed(4)),
+        actions: tu.actionsPerformed?.map(a => a.action) || [],
+        model: tu.model || "claude-sonnet-4-5",
+      });
+    }
+  }
+
+  return {
+    source: "MONGODB_TOKEN_METRICS",
+    totalMessagesAnalyzed: messages.length,
+    summary: {
+      totalTokensBurned,
+      totalInputTokens,
+      totalOutputTokens,
+      totalCostUsd: Number(totalCostUsd.toFixed(6)),
+      totalCostInr: Number(totalCostInr.toFixed(4)),
+      averageTokensPerResponse: messages.length > 0 ? Math.round(totalTokensBurned / messages.length) : 0,
+    },
+    actionBreakdown: actionCounts,
+    recentExchanges,
+  };
+}
+
+// Helper to fetch user's AI context workflow from database with complete lineage and step-by-step flows
+export async function getUserAiContext({ userId }) {
+  if (!userId) {
+    return {
+      source: "DATABASE",
+      hasContext: false,
+      message: "User ID is required to fetch AI context.",
+    };
+  }
+
+  const context = await AiContext.findOne({ userId }).lean();
+  if (!context || !context.nodes || context.nodes.length === 0) {
+    return {
+      source: "DATABASE",
+      hasContext: false,
+      message: "No custom AI context workflow configured yet for this user.",
+    };
+  }
+
+  const nodes = context.nodes || [];
+  const edges = context.edges || [];
+  const nodeMap = new Map();
+  nodes.forEach((n) => nodeMap.set(n.id, n));
+
+  // Build forward graph (parent -> children) and reverse map (child -> parent)
+  const childMap = new Map();
+  const parentMap = new Map();
+
+  edges.forEach((edge) => {
+    if (!childMap.has(edge.source)) childMap.set(edge.source, []);
+    childMap.get(edge.source).push(edge.target);
+    parentMap.set(edge.target, edge.source);
+  });
+
+  // Find root node(s)
+  let rootNodes = nodes.filter((n) => n.isRoot || n.type === "user_input" || !parentMap.has(n.id));
+  if (rootNodes.length === 0 && nodes.length > 0) {
+    rootNodes = [nodes[0]];
+  }
+
+  // Global nodes by type for unified tree fallback
+  const allChannels = nodes.filter((n) => n.type === "ad_channel");
+  const allBriefs = nodes.filter((n) => n.type === "marketing_brief");
+  const allProducts = nodes.filter((n) => n.type === "product");
+  const allBusinesses = nodes.filter((n) => n.type === "business_unit");
+  const allWarehouses = nodes.filter((n) => n.type === "data_warehouse");
+
+  // Traverse each flow branch from root to leaf
+  const flows = [];
+  const visitedPaths = new Set();
+
+  function traverseBranch(currentNode, currentPath, stepNum) {
+    const parentNodeId = parentMap.get(currentNode.id);
+    const parentNode = parentNodeId ? nodeMap.get(parentNodeId) : null;
+
+    const stepInfo = {
+      step: stepNum,
+      nodeId: currentNode.id,
+      type: currentNode.type,
+      label: currentNode.label || currentNode.data?.name || currentNode.type,
+      subtitle: currentNode.subtitle || "",
+      contextTag: currentNode.contextTag || currentNode.data?.contextTag || context.name,
+      previousNode: parentNode
+        ? {
+            id: parentNode.id,
+            label: parentNode.label || parentNode.data?.name || parentNode.type,
+            type: parentNode.type,
+          }
+        : null,
+      details: {
+        name: currentNode.data?.name || currentNode.label,
+        description: currentNode.data?.description || "",
+        channelName: currentNode.data?.channelName || currentNode.data?.channel || "",
+        channel: currentNode.data?.channel || currentNode.data?.channelName || "",
+        adAccountId: currentNode.data?.adAccountId || "",
+        accountName: currentNode.data?.accountName || "",
+        funnelEvent: currentNode.data?.funnelEvent || "",
+        funnelDescription: currentNode.data?.funnelDescription || "",
+        metrics: currentNode.data?.metrics || "",
+        kpis: currentNode.data?.kpis || "",
+        productName: currentNode.data?.productName || "",
+        productUrl: currentNode.data?.productUrl || "",
+        productPrice: currentNode.data?.productPrice || 0,
+        productPlatforms: currentNode.data?.productPlatforms || ["Web"],
+        products: currentNode.data?.products || [],
+        catalogCount: currentNode.data?.catalogCount || currentNode.data?.products?.length || 0,
+        warehouseSource: currentNode.data?.warehouseSource || "both",
+        sheetUrl: currentNode.data?.sheetUrl || "",
+        excelProvider: currentNode.data?.excelProvider || "Google Sheets",
+        workbookName: currentNode.data?.workbookName || "",
+        worksheetName: currentNode.data?.worksheetName || "",
+        excelSyncStatus: currentNode.data?.excelSyncStatus || "NOT_CONNECTED",
+        googleDriveConnected: Boolean(currentNode.data?.googleDriveConnected),
+        googleDriveEmail: currentNode.data?.googleDriveEmail || "",
+        googleDriveFolderId: currentNode.data?.googleDriveFolderId || "",
+        dataLevel: currentNode.data?.dataLevel || currentNode.data?.dataLabels || "",
+        dataLabels: currentNode.data?.dataLabels || currentNode.data?.dataLevel || "",
+        databasePlatform: currentNode.data?.databasePlatform || "Excel Sheet & Google Drive",
+        config: currentNode.data?.config || {},
+      },
+    };
+
+    const newPath = [...currentPath, stepInfo];
+    const childrenIds = childMap.get(currentNode.id) || [];
+
+    if (childrenIds.length === 0) {
+      // Leaf reached: finalize this flow
+      const pathKey = newPath.map((p) => p.nodeId).join("->");
+      if (!visitedPaths.has(pathKey)) {
+        visitedPaths.add(pathKey);
+
+        const flowSummary = newPath
+          .map((p) => `${p.label} [${p.type}]`)
+          .join(" ➔ ");
+
+        const channelNode = newPath.find((p) => p.type === "ad_channel") || allChannels[0];
+        const briefNode = newPath.find((p) => p.type === "marketing_brief") || allBriefs[0];
+        const productNode = newPath.find((p) => p.type === "product") || allProducts[0];
+        const businessNode = newPath.find((p) => p.type === "business_unit") || allBusinesses[0];
+        const warehouseNode = newPath.find((p) => p.type === "data_warehouse") || allWarehouses[0];
+
+        const channelDetails = channelNode?.details || channelNode?.data || {};
+        const briefDetails = briefNode?.details || briefNode?.data || {};
+        const productDetails = productNode?.details || productNode?.data || {};
+        const businessDetails = businessNode?.details || businessNode?.data || {};
+        const warehouseDetails = warehouseNode?.details || warehouseNode?.data || {};
+
+        const campaignParams = {
+          name:
+            briefDetails?.name && briefDetails?.name !== "Marketing Brief"
+              ? briefDetails.name
+              : productDetails?.productName
+              ? `${productDetails.productName} Growth Campaign`
+              : `${businessDetails?.name || "Marketing"} Campaign`,
+          channel: channelDetails?.channelName || channelDetails?.channel || "Meta Ads",
+          accountId: channelDetails?.adAccountId || "",
+          accountName: channelDetails?.accountName || "",
+          funnelEvent: channelDetails?.funnelEvent || "Purchase",
+          funnelDescription: channelDetails?.funnelDescription || "",
+          metrics: briefDetails?.metrics || "",
+          kpis: briefDetails?.kpis || "",
+          briefDescription: briefDetails?.description || "",
+          productName: productDetails?.productName || (productDetails?.products?.[0]?.name) || "",
+          productUrl: productDetails?.productUrl || (productDetails?.products?.[0]?.url) || "",
+          productPrice: productDetails?.productPrice !== undefined ? productDetails.productPrice : (productDetails?.products?.[0]?.price || ""),
+          productPlatforms: productDetails?.productPlatforms || ["Web"],
+          products: productDetails?.products || [],
+          catalogCount: productDetails?.catalogCount || productDetails?.products?.length || 0,
+          dataLevel: warehouseDetails?.dataLevel || warehouseDetails?.dataLabels || "",
+          dataLabels: warehouseDetails?.dataLabels || warehouseDetails?.dataLevel || "",
+          databasePlatform: warehouseDetails?.databasePlatform || "Excel Sheet & Google Drive",
+          warehouseSource: warehouseDetails?.warehouseSource || "both",
+          sheetUrl: warehouseDetails?.sheetUrl || "",
+          excelProvider: warehouseDetails?.excelProvider || "Google Sheets",
+          workbookName: warehouseDetails?.workbookName || "",
+          worksheetName: warehouseDetails?.worksheetName || "",
+          excelSyncStatus: warehouseDetails?.excelSyncStatus || "NOT_CONNECTED",
+          googleDriveConnected: Boolean(warehouseDetails?.googleDriveConnected),
+          googleDriveEmail: warehouseDetails?.googleDriveEmail || "",
+          googleDriveFolderId: warehouseDetails?.googleDriveFolderId || "",
+          sheetRows: warehouseDetails?.sheetRows || [],
+          sheetColumns: warehouseDetails?.sheetColumns || [],
+          creativeDriveUrl: (() => {
+            const rows = warehouseDetails?.sheetRows || [];
+            for (const row of rows) {
+              if (typeof row === "object" && row !== null) {
+                for (const [k, v] of Object.entries(row)) {
+                  if (typeof v === "string" && (v.includes("drive.google.com") || v.includes("docs.google.com"))) {
+                    return v.trim();
+                  }
+                }
+              }
+            }
+            return "";
+          })(),
+          status: "ACTIVE",
+        };
+
+        flows.push({
+          flowIndex: flows.length + 1,
+          flowTag: currentNode.contextTag || currentNode.data?.contextTag || context.name,
+          flowSummary,
+          totalSteps: newPath.length,
+          pathNodeIds: newPath.map((p) => p.nodeId),
+          campaignLaunchParameters: campaignParams,
+          steps: newPath,
+        });
+      }
+      return;
+    }
+
+    for (const childId of childrenIds) {
+      const childNode = nodeMap.get(childId);
+      if (childNode) {
+        traverseBranch(childNode, newPath, stepNum + 1);
+      }
+    }
+  }
+
+  rootNodes.forEach((root) => {
+    traverseBranch(root, [], 1);
+  });
+
+  const finalFlows = flows.length > 0 ? flows : (context.flows && context.flows.length > 0 ? context.flows : []);
+
+  return {
+    source: "DATABASE",
+    hasContext: nodes.length > 0,
+    workflowName: context.name,
+    totalNodes: nodes.length,
+    totalFlows: finalFlows.length,
+    flows: finalFlows,
+    businessUnits: nodes.filter((n) => n.type === "business_unit").map((n) => ({
+      id: n.id,
+      name: n.label || n.data?.name,
+      description: n.data?.description || "",
+    })),
+    adChannels: nodes.filter((n) => n.type === "ad_channel").map((n) => ({
+      id: n.id,
+      channel: n.data?.channelName || n.data?.channel || n.label,
+      channelName: n.data?.channelName || n.data?.channel || n.label,
+      accountId: n.data?.adAccountId || "",
+      accountName: n.data?.accountName || "",
+      funnelEvent: n.data?.funnelEvent || "Purchase",
+      funnelDescription: n.data?.funnelDescription || "",
+    })),
+    products: nodes.filter((n) => n.type === "product").map((n) => ({
+      id: n.id,
+      name: n.data?.productName || n.label,
+      productName: n.data?.productName || n.label,
+      url: n.data?.productUrl || "",
+      productUrl: n.data?.productUrl || "",
+      price: n.data?.productPrice !== undefined ? n.data.productPrice : 0,
+      productPrice: n.data?.productPrice !== undefined ? n.data.productPrice : 0,
+      platforms: n.data?.productPlatforms || ["Web"],
+      catalogCount: n.data?.catalogCount || n.data?.products?.length || 0,
+      catalog: n.data?.products || [],
+      products: n.data?.products || [],
+    })),
+    marketingBriefs: nodes.filter((n) => n.type === "marketing_brief").map((n) => ({
+      id: n.id,
+      name: n.label || n.data?.name,
+      metrics: n.data?.metrics || "",
+      kpis: n.data?.kpis || "",
+      description: n.data?.description || "",
+    })),
+    dataWarehouses: nodes.filter((n) => n.type === "data_warehouse").map((n) => ({
+      id: n.id,
+      name: n.label || n.data?.name || "Excel & Google Drive Warehouse",
+      platform: n.data?.databasePlatform || "Excel Sheet & Google Drive",
+      warehouseSource: n.data?.warehouseSource || "both",
+      sheetUrl: n.data?.sheetUrl || "",
+      excelProvider: n.data?.excelProvider || "Google Sheets",
+      workbookId: n.data?.workbookId || "",
+      workbookName: n.data?.workbookName || "",
+      worksheetId: n.data?.worksheetId || "",
+      worksheetName: n.data?.worksheetName || "",
+      excelSyncStatus: n.data?.excelSyncStatus || "NOT_CONNECTED",
+      totalRows: n.data?.totalRows || (n.data?.sheetRows || []).length || 0,
+      sheetRows: n.data?.sheetRows || [],
+      sheetColumns: n.data?.sheetColumns || [],
+      googleDriveConnected: Boolean(n.data?.googleDriveConnected),
+      googleDriveEmail: n.data?.googleDriveEmail || "",
+      googleDriveFolderId: n.data?.googleDriveFolderId || "",
+      googleDriveFolderName: n.data?.googleDriveFolderName || "",
+      dataLevel: n.data?.dataLevel || n.data?.dataLabels || "",
+      dataLabels: n.data?.dataLabels || n.data?.dataLevel || "",
+    })),
+    rawNodes: nodes.map((n) => ({
+      id: n.id,
+      type: n.type,
+      label: n.label,
+      contextTag: n.contextTag,
+      previousNodeId: n.previousNodeId,
+      previousNodeLabel: n.previousNodeLabel,
+      stepIndex: n.stepIndex,
+      data: n.data,
+    })),
+    rawEdges: edges,
+  };
+}
+
+// 2. Tool Execution Router
+export async function executeAgentTool(toolName, args) {
+  if (toolName === "get_user_ai_context") {
+    return await getUserAiContext({ userId: args.userId });
+  }
+
+  if (toolName === "get_connected_sheet_rows") {
+    const userId = args.userId;
+    const context = await AiContext.findOne({ userId }).lean();
+
+    // Find all warehouse nodes that have a sheetUrl OR non-empty sheetRows stored
+    const warehouseNodes = (context?.nodes || []).filter(
+      (n) => n.type === "data_warehouse" && (n.data?.sheetUrl || (Array.isArray(n.data?.sheetRows) && n.data.sheetRows.length > 0))
+    );
+
+    // Always sort by latest lastSyncedAt / updatedAt to ensure the LATEST attached file/sheet is selected
+    warehouseNodes.sort((a, b) => {
+      const timeA = new Date(a.data?.lastSyncedAt || a.updatedAt || 0).getTime();
+      const timeB = new Date(b.data?.lastSyncedAt || b.updatedAt || 0).getTime();
+      return timeB - timeA;
+    });
+
+    const warehouseNode = args.sheetUrl
+      ? (warehouseNodes.find((n) => n.data?.sheetUrl === args.sheetUrl) || { data: { sheetUrl: args.sheetUrl } })
+      : (warehouseNodes.length > 0 ? warehouseNodes[0] : null);
+
+    if (!warehouseNode || (!warehouseNode.data?.sheetUrl && (!Array.isArray(warehouseNode.data?.sheetRows) || warehouseNode.data.sheetRows.length === 0))) {
+      return {
+        success: false,
+        message: "No connected Google Sheet or Excel file found in AI Context. Please upload an Excel file or connect a Google Sheet in the AI Context Warehouse node.",
+        rows: [],
+        totalRows: 0,
+      };
+    }
+
+    let rows = warehouseNode.data?.sheetRows || [];
+    let columns = warehouseNode.data?.sheetColumns || (rows.length > 0 ? Object.keys(rows[0] || {}) : []);
+    const sheetUrl = warehouseNode.data?.sheetUrl;
+
+    // Live Auto-Sync for Google Sheets URLs
+    if (sheetUrl && (sheetUrl.startsWith("http://") || sheetUrl.startsWith("https://"))) {
+      try {
+        const { default: sheetsService } = await import("../../google/sheetsService.js");
+        const readResult = await sheetsService.readSpreadsheet({ spreadsheetIdOrUrl: sheetUrl });
+        if (readResult && readResult.rows && readResult.rows.length > 0) {
+          rows = readResult.rows;
+          columns = readResult.headers || Object.keys(rows[0] || {});
+
+          // Asynchronously update MongoDB so future calls load updated data
+          AiContext.updateOne(
+            { userId, "nodes.id": warehouseNode.id },
+            {
+              $set: {
+                "nodes.$.data.sheetRows": rows,
+                "nodes.$.data.sheetColumns": columns,
+                "nodes.$.data.totalRows": rows.length,
+                "nodes.$.data.lastSyncedAt": new Date(),
+              },
+            }
+          ).catch(() => {});
+        }
+      } catch (err) {
+        console.warn("[get_connected_sheet_rows Live Auto-Sync Warning]:", err.message);
+      }
+    }
+
+    const sheetName =
+      warehouseNode.data?.workbookName ||
+      warehouseNode.data?.fileName ||
+      warehouseNode.data?.sheetName ||
+      warehouseNode.data?.name ||
+      warehouseNode.data?.title ||
+      (sheetUrl ? sheetUrl.split("/").pop().split("?")[0] : "Connected Sheet");
+
+    return {
+      success: true,
+      sheetUrl,
+      sheetName,
+      provider: warehouseNode.data?.excelProvider || (sheetUrl ? "Google Sheets" : "Excel File Upload"),
+      totalRows: rows.length,
+      columns,
+      rows,
+      lastSyncedAt: warehouseNode.data?.lastSyncedAt || null,
+    };
+  }
+
+  if (toolName === "validate_google_drive_asset") {
+    const driveUrl = args.driveUrl || args.fileId || args.url;
+    return await googleDriveService.validateDriveLink(driveUrl);
+  }
+
+  if (toolName === "download_google_drive_asset") {
+    const driveUrl = args.driveUrl || args.fileId || args.url;
+    const destName = args.destinationFilename;
+    return await googleDriveService.downloadCreative(driveUrl, destName);
+  }
+
+  if (toolName === "get_user_connected_accounts") {
+    const userId = args.userId;
+    const channelId = args.channelId;
+
+    let metaAccounts = [];
+    let googleAccounts = [];
+    let otherAccounts = [];
+
+    if (!channelId || channelId === "meta" || channelId === "meta_ads" || channelId.toLowerCase().includes("meta")) {
+      metaAccounts = await MetaAccount.find({ ...(userId ? { userId } : {}), isActive: true }).lean();
+    }
+    if (!channelId || channelId === "google" || channelId === "google_ads" || channelId.toLowerCase().includes("google")) {
+      googleAccounts = await GoogleAccount.find({ ...(userId ? { userId } : {}), isActive: true }).lean();
+    }
+    if (!channelId || (channelId !== "meta" && channelId !== "google")) {
+      const q = { isConnected: true };
+      if (userId) q.userId = userId;
+      if (channelId) q.channelId = channelId;
+      otherAccounts = await ConnectedChannel.find(q).lean();
+    }
+
+    const accounts = [
+      ...metaAccounts.map((a) => ({
+        channel: "Meta Ads",
+        channelId: "meta",
+        accountId: a.accountId,
+        accountName: a.accountName,
+        currency: a.currency,
+        timezone: a.timezoneName,
+        syncStatus: a.syncStatus,
+      })),
+      ...googleAccounts.flatMap((a) => {
+        const childList = Array.isArray(a.accounts) && a.accounts.length > 0 ? a.accounts : [];
+
+        if (childList.length > 0) {
+          return childList.map((child) => ({
+            channel: "Google Ads",
+            channelId: "google",
+            accountId: child.customerId,
+            accountName: child.name || `${a.accountName} - ${child.customerId}`,
+            isManager: Boolean(child.isManager),
+            managerAccountId: child.parentCustomerId || a.managerCustomerId || (a.isManager ? a.accountId : null),
+            parentCustomerId: child.parentCustomerId || a.managerCustomerId || (a.isManager ? a.accountId : null),
+            currency: child.currencyCode || a.currency || "INR",
+            timezone: child.timeZone || a.timezoneName || "Asia/Kolkata",
+            status: child.status || "ENABLED",
+          }));
+        }
+
+        return [
+          {
+            channel: "Google Ads",
+            channelId: "google",
+            accountId: a.accountId,
+            accountName: `${a.accountName}${a.isManager ? " (Manager MCC)" : ""}`,
+            isManager: Boolean(a.isManager),
+            managerAccountId: a.managerCustomerId || null,
+            parentCustomerId: null,
+            currency: a.currency || "INR",
+            timezone: a.timezoneName || "Asia/Kolkata",
+            status: "ENABLED",
+            syncStatus: a.syncStatus || "IDLE",
+          },
+        ];
+      }),
+      ...otherAccounts.map((a) => ({
+        channel: a.channelName,
+        channelId: a.channelId,
+        accountId: a.accountId,
+        accountName: a.accountName,
+        currency: a.currency || "INR",
+      })),
+    ];
+
+    return {
+      source: "DATABASE",
+      totalConnectedAccounts: accounts.length,
+      accounts,
+    };
+  }
+
+  if (toolName === "query_database_metrics") {
+    let isGoogle = args.channel && (args.channel.toLowerCase().includes("google") || args.channel === "google");
+
+    let gAcc = null;
+    if (args.userId) {
+      gAcc = await GoogleAccount.findOne({ userId: args.userId, isActive: true }).lean();
+    }
+    if (!gAcc) {
+      gAcc = await GoogleAccount.findOne({ isActive: true }).lean();
+    }
+
+    // If accountId is provided, check if it matches a Google account or child customer
+    if (args.accountId && gAcc) {
+      const cleanAcc = String(args.accountId).replace(/[^0-9]/g, "");
+      const reqLower = String(args.accountId).toLowerCase();
+      if (
+        (cleanAcc && String(gAcc.accountId).replace(/[^0-9]/g, "") === cleanAcc) ||
+        (cleanAcc && String(gAcc.selectedCustomerId).replace(/[^0-9]/g, "") === cleanAcc) ||
+        gAcc.accounts?.some((a) => String(a.customerId).replace(/[^0-9]/g, "") === cleanAcc || (a.name && a.name.toLowerCase().includes(reqLower)))
+      ) {
+        isGoogle = true;
+      }
+    }
+
+    let filter = {};
+    if (args.userId) filter.userId = args.userId;
+
+    if (isGoogle) {
+      let targetAccountId = args.accountId;
+      let targetAccountName = "Google Ads Account";
+
+      // Match child account by name or id if present in gAcc.accounts
+      if (gAcc) {
+        const reqStr = String(args.accountId || "").toLowerCase().trim();
+        const cleanReq = reqStr.replace(/[^0-9]/g, "");
+
+        let matched = gAcc.accounts?.find((acc) => {
+          const cId = String(acc.customerId).replace(/[^0-9]/g, "");
+          const nameL = (acc.name || "").toLowerCase();
+          return (cleanReq && cId === cleanReq) || (reqStr && nameL.includes(reqStr));
+        });
+
+        if (matched) {
+          targetAccountId = matched.customerId;
+          targetAccountName = matched.name;
+        } else if (!targetAccountId) {
+          targetAccountId = gAcc.selectedCustomerId || (gAcc.accounts?.find((a) => !a.isManager)?.customerId) || gAcc.accountId;
+          targetAccountName = gAcc.accountName;
+        }
+      }
+
+      let cleanTargetId = targetAccountId ? String(targetAccountId).replace(/[^0-9]/g, "") : null;
+      if (cleanTargetId) {
+        filter.$or = [{ accountId: targetAccountId }, { accountId: cleanTargetId }];
+      }
+
+      if (args.startDate && args.endDate) {
+        filter.date = { $gte: args.startDate, $lte: args.endDate };
+      }
+
+      let insights = await GoogleInsight.find(filter).sort({ date: -1 }).limit(30).lean();
+      let campaigns = await GoogleCampaign.find(cleanTargetId ? { accountId: { $in: [targetAccountId, cleanTargetId] } } : (args.userId ? { userId: args.userId } : {})).lean();
+
+      // If no records in DB yet, attempt live sync via GoogleSyncPipeline
+      if (insights.length === 0 && cleanTargetId) {
+        await GoogleSyncPipeline.syncAccount(cleanTargetId).catch(() => {});
+        insights = await GoogleInsight.find(filter).sort({ date: -1 }).limit(30).lean();
+        campaigns = await GoogleCampaign.find(cleanTargetId ? { accountId: { $in: [targetAccountId, cleanTargetId] } } : (args.userId ? { userId: args.userId } : {})).lean();
+      }
+
+      const totals = insights.reduce(
+        (acc, item) => {
+          acc.totalSpend += Number(item.spend || 0);
+          acc.totalImpressions += Number(item.impressions || 0);
+          acc.totalClicks += Number(item.clicks || 0);
+          acc.totalConversions += Number(item.conversions || 0);
+          acc.totalConversionValue += Number(item.conversionValue || 0);
+          return acc;
+        },
+        { totalSpend: 0, totalImpressions: 0, totalClicks: 0, totalConversions: 0, totalConversionValue: 0 }
+      );
+
+      const hasActualData = insights.length > 0 && totals.totalImpressions > 0;
+
+      return {
+        source: "DATABASE",
+        channel: "Google Ads",
+        customerId: targetAccountId,
+        accountName: targetAccountName,
+        managerId: gAcc?.managerCustomerId || (gAcc?.isManager ? gAcc.accountId : null),
+        timeframe: { startDate: args.startDate || "past_period", endDate: args.endDate || "today" },
+        hasActualData,
+        summary: {
+          totalSpend: Number(totals.totalSpend.toFixed(2)),
+          totalImpressions: totals.totalImpressions,
+          totalClicks: totals.totalClicks,
+          totalConversions: totals.totalConversions,
+          totalConversionValue: Number(totals.totalConversionValue.toFixed(2)),
+          overallRoas: totals.totalSpend > 0 ? Number((totals.totalConversionValue / totals.totalSpend).toFixed(2)) : 0,
+          avgCtr: totals.totalImpressions > 0 ? Number(((totals.totalClicks / totals.totalImpressions) * 100).toFixed(2)) : 0,
+          avgCpc: totals.totalClicks > 0 ? Number((totals.totalSpend / totals.totalClicks).toFixed(2)) : 0,
+        },
+        totalRecords: insights.length,
+        insights,
+        campaigns,
+        message: hasActualData
+          ? `Found active metrics for ${targetAccountName} (${targetAccountId})`
+          : `No ads or performance data recorded for ${targetAccountName} (${targetAccountId}). Total spend: ₹0.`,
+      };
+    } else {
+      let cleanMetaId = null;
+      if (args.accountId) {
+        const cleanId = args.accountId.trim();
+        const noHyphen = cleanId.replace(/^act_/, "");
+        cleanMetaId = cleanId;
+        filter.$or = [{ accountId: cleanId }, { accountId: noHyphen }, { accountId: `act_${noHyphen}` }];
+      }
+
+      if (args.startDate && args.endDate) {
+        filter.date = { $gte: args.startDate, $lte: args.endDate };
+      }
+
+      let insights = await MetaInsight.find(filter).sort({ date: -1 }).limit(30).lean();
+      let campaigns = await MetaCampaign.find(cleanMetaId ? { accountId: filter.$or ? { $in: [cleanMetaId, cleanMetaId.replace(/^act_/, ""), `act_${cleanMetaId.replace(/^act_/, "")}`] } : cleanMetaId } : (args.userId ? { userId: args.userId } : {})).lean();
+
+      const totals = insights.reduce(
+        (acc, item) => {
+          acc.totalSpend += Number(item.spend || 0);
+          acc.totalImpressions += Number(item.impressions || 0);
+          acc.totalClicks += Number(item.clicks || 0);
+          acc.totalPurchases += Number(item.purchases || item.conversions || 0);
+          acc.totalRevenue += Number(item.purchaseValue || item.conversionValue || 0);
+          return acc;
+        },
+        { totalSpend: 0, totalImpressions: 0, totalClicks: 0, totalPurchases: 0, totalRevenue: 0 }
+      );
+
+      return {
+        source: "DATABASE",
+        channel: "Meta Ads",
+        timeframe: { startDate: args.startDate || "past_period", endDate: args.endDate || "today" },
+        summary: {
+          totalSpend: Number(totals.totalSpend.toFixed(2)),
+          totalImpressions: totals.totalImpressions,
+          totalClicks: totals.totalClicks,
+          totalPurchases: totals.totalPurchases,
+          totalRevenue: Number(totals.totalRevenue.toFixed(2)),
+          overallRoas: totals.totalSpend > 0 ? Number((totals.totalRevenue / totals.totalSpend).toFixed(2)) : 0,
+          avgCtr: totals.totalImpressions > 0 ? Number(((totals.totalClicks / totals.totalImpressions) * 100).toFixed(2)) : 0,
+        },
+        totalRecords: insights.length,
+        insights,
+        campaigns,
+      };
+    }
+  }
+
+  if (toolName === "query_token_usage_metrics") {
+    return await getTokenUsageMetrics({
+      userId: args.userId,
+      conversationId: args.conversationId,
+      timeframe: args.timeframe || "all",
+    });
+  }
+
+  if (toolName === "fetch_live_meta_ads_mcp") {
+    return await MetaMcpClient.executeLiveTool(args.toolType, args);
+  }
+
+  if (toolName === "fetch_live_google_ads_mcp") {
+    return await GoogleMcpClient.executeTool(args.toolType || "get_google_insights", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  if (toolName === "create_meta_campaign") {
+    return await MetaMcpClient.executeLiveTool("create_meta_campaign", args);
+  }
+
+  if (toolName === "update_meta_campaign") {
+    return await MetaMcpClient.executeLiveTool("update_meta_campaign", args);
+  }
+
+  if (toolName === "create_meta_ad_set") {
+    return await MetaMcpClient.executeLiveTool("create_meta_ad_set", args);
+  }
+
+  if (toolName === "update_meta_ad_set") {
+    return await MetaMcpClient.executeLiveTool("update_meta_ad_set", args);
+  }
+
+  if (toolName === "set_meta_targeting") {
+    return await MetaMcpClient.executeLiveTool("set_meta_targeting", args);
+  }
+
+  if (toolName === "create_meta_ad") {
+    return await MetaMcpClient.executeLiveTool("create_meta_ad", args);
+  }
+
+  if (toolName === "create_meta_video_ad") {
+    return await MetaMcpClient.executeLiveTool("create_meta_video_ad", args);
+  }
+
+  if (toolName === "verify_meta_campaign") {
+    return await MetaMcpClient.executeLiveTool("verify_meta_campaign", args);
+  }
+
+  if (toolName === "create_google_child_account") {
+    return await GoogleMcpClient.executeTool("create_google_child_account", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  if (toolName === "switch_google_account") {
+    return await GoogleMcpClient.executeTool("switch_google_account", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  if (toolName === "create_google_campaign_budget") {
+    return await GoogleMcpClient.executeTool("create_google_campaign_budget", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  if (toolName === "create_google_campaign") {
+    return await GoogleMcpClient.executeTool("create_google_campaign", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  if (toolName === "create_google_ad_group") {
+    return await GoogleMcpClient.executeTool("create_google_ad_group", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  if (toolName === "create_google_keywords") {
+    return await GoogleMcpClient.executeTool("create_google_keywords", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  if (toolName === "create_google_negative_keywords") {
+    return await GoogleMcpClient.executeTool("create_google_negative_keywords", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  if (toolName === "create_google_responsive_search_ad") {
+    return await GoogleMcpClient.executeTool("create_google_responsive_search_ad", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  if (toolName === "set_google_campaign_locations") {
+    return await GoogleMcpClient.executeTool("set_google_campaign_locations", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  if (toolName === "set_google_campaign_languages") {
+    return await GoogleMcpClient.executeTool("set_google_campaign_languages", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  if (toolName === "verify_google_campaign") {
+    return await GoogleMcpClient.executeTool("verify_google_campaign", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  if (toolName === "rollback_google_campaign") {
+    return await GoogleMcpClient.executeTool("rollback_google_campaign", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  if (toolName === "update_meta_campaign") {
+    return await MetaMcpClient.executeLiveTool("update_meta_campaign", args);
+  }
+
+  if (toolName === "update_google_campaign") {
+    return await GoogleMcpClient.executeTool("update_google_campaign", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  if (toolName === "list_google_keywords") {
+    return await GoogleMcpClient.executeTool("list_google_keywords", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  if (toolName === "list_google_ads") {
+    return await GoogleMcpClient.executeTool("list_google_ads", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  if (toolName === "get_google_campaign_structure") {
+    return await GoogleMcpClient.executeTool("get_google_campaign_structure", args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
+  throw new Error(`Tool ${toolName} not supported`);
+}

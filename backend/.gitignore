@@ -1,0 +1,7 @@
+# Environment variables
+.env
+.env.local
+
+node_modules/
+.tokens
+!node_modules/axios
