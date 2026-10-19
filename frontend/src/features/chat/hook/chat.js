@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import {
   addLocalUserMessage,
@@ -13,6 +14,7 @@ import {
   setSocketConnected,
   setToolStatus,
   updateJobProgress,
+  setPreparationData,
 } from "../chat.slice";
 import { chatApi } from "../service/chat.api";
 import { sendChatOverSocket } from "../service/chat.socket";
@@ -20,7 +22,20 @@ import { sendChatOverSocket } from "../service/chat.socket";
 export const useChat = () => {
   const dispatch = useDispatch();
   const chat = useSelector((state) => state.chat);
-  const { metaAccountId, googleAccountId, accountId } = useSelector((state) => {
+  const activeConvIdRef = useRef(chat.activeId);
+  activeConvIdRef.current = chat.activeId;
+  const { metaAccountId, googleAccountId, accountId, aiContextMetaAccountId } = useSelector((state) => {
+    // 1. Read directly from AI Context Channel Node (Strict Source of Truth)
+    const aiNodes = state.aiContext?.nodes || [];
+    const channelNodes = aiNodes.filter((n) => n.type === "ad_channel");
+    const metaChannelNode =
+      channelNodes.find((n) => {
+        const cName = (n.data?.channelName || n.data?.channel || n.label || "").toLowerCase();
+        return cName.includes("meta") || cName.includes("facebook");
+      }) || (channelNodes.length === 1 ? channelNodes[0] : null);
+
+    const contextSelectedMetaAcc = metaChannelNode?.data?.adAccountId?.trim() || null;
+
     const dashboardChannel = state.dashboard?.filters?.channel;
     const dashboardAcc = state.dashboard?.filters?.accountId;
     const userPrefAcc = state.auth?.user?.dashboardSettings?.accountId;
@@ -29,7 +44,9 @@ export const useChat = () => {
       state.channel.status?.channels?.googleAds?.selectedCustomerId ||
       state.channel.status?.channels?.googleAds?.activeAccount?.accountId;
 
+    // Strict Account Lock: If an account is selected in AI Context Channel Node, it is strictly locked!
     const resolvedMetaAcc =
+      contextSelectedMetaAcc ||
       metaActiveAcc ||
       (dashboardChannel === "meta" ? dashboardAcc : null) ||
       (userPrefAcc && String(userPrefAcc).startsWith("act_") ? userPrefAcc : null);
@@ -40,9 +57,11 @@ export const useChat = () => {
       (userPrefAcc && !String(userPrefAcc).startsWith("act_") ? userPrefAcc : null);
 
     return {
+      aiContextMetaAccountId: contextSelectedMetaAcc,
       metaAccountId: resolvedMetaAcc || null,
       googleAccountId: resolvedGoogleAcc || null,
       accountId:
+        contextSelectedMetaAcc ||
         (dashboardChannel === "meta" ? resolvedMetaAcc : resolvedGoogleAcc) ||
         resolvedMetaAcc ||
         resolvedGoogleAcc ||
@@ -57,15 +76,21 @@ export const useChat = () => {
     if (event.type === "text_delta") dispatch(appendStreamText(event.content || ""));
     if (event.type === "tool_status") dispatch(setToolStatus(event.status || event.toolName));
     if (event.type === "progress_update") dispatch(updateJobProgress(event));
+    if (event.type === "preparation_update") dispatch(setPreparationData(event.session));
     if (event.type === "error") dispatch(setChatError(event.message));
     if (event.type === "done") {
       dispatch(finishStream());
       dispatch(fetchConversations());
+      const convId = activeConvIdRef.current || chat.activeId;
+      if (convId) {
+        dispatch(fetchHistory(convId));
+      }
     }
   };
 
   const sendMessage = async (userMessage, options = {}) => {
     const conversationId = chat.activeId || crypto.randomUUID();
+    activeConvIdRef.current = conversationId;
     if (!chat.activeId) dispatch(setActiveConversation(conversationId));
     dispatch(
       addLocalUserMessage({
@@ -82,6 +107,7 @@ export const useChat = () => {
       accountId,
       metaAccountId,
       googleAccountId,
+      aiContextMetaAccountId,
       ...(options?.startRow !== undefined ? { startRow: options.startRow } : {}),
       ...(options?.endRow !== undefined ? { endRow: options.endRow } : {}),
       ...(options?.rowRange ? { rowRange: options.rowRange } : {}),
@@ -106,6 +132,8 @@ export const useChat = () => {
   return {
     ...chat,
     accountId,
+    metaAccountId,
+    aiContextMetaAccountId,
     handleEvent,
     setConnected: (value) => dispatch(setSocketConnected(value)),
     loadConversations: () => dispatch(fetchConversations()),
@@ -117,6 +145,7 @@ export const useChat = () => {
       dispatch(clearMessages());
       dispatch(setActiveConversation(null));
     },
+    updatePreparationData: (data) => dispatch(setPreparationData(data)),
     sendMessage,
   };
 };

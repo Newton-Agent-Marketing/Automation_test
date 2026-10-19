@@ -32,10 +32,22 @@ export class FieldMapper {
     ],
     pixelId: ["pixel_id", "pixelid", "fb_pixel_id", "fbpixelid", "meta_pixel_id", "metapixelid", "dataset_id", "datasetid", "pixel"],
     appId: ["app_id", "appid", "application_id", "applicationid", "fb_app_id", "fbappid", "meta_app_id", "metaappid"],
+    objectStoreUrl: ["object_store_url", "objectstoreurl", "app_store_url", "appstoreurl", "store_url", "storeurl", "play_store_url", "playstoreurl", "google_play_url", "apple_store_url", "app_url", "store_link"],
+    campaignType: ["campaign_type", "campaigntype", "camptype", "promotion_type", "promotiontype", "type"],
+    isSkadnetworkAttribution: ["is_skadnetwork_attribution", "skadnetwork", "skan_attribution", "skan", "is_skadnetwork"],
     pageId: ["page_id", "pageid", "facebook_page_id", "facebookpageid", "fb_page_id", "fbpageid", "facebook_page", "page_account_id"],
-    instagramId: ["instagram_actor_id", "instagramactorid", "instagram_account_id", "instagramaccountid", "ig_id", "igid", "instagram_id", "instagramid"],
+    instagramId: [
+      "instagram_user_id", "instagramuserid", "instagram_actor_id", "instagramactorid",
+      "instagram_account_id", "instagramaccountid", "ig_id", "igid", "instagram_id",
+      "instagramid", "instagram_profile", "ig_user_id"
+    ],
     cta: ["call_to_action", "calltoaction", "cta", "button", "action_button", "actionbutton", "button_text", "buttontext", "action"],
     status: ["status", "active", "enabled", "is_active", "isactive", "toggle", "state"],
+    optimizationGoal: [
+      "performance_goal", "performancegoal", "performance_goals", "performancegoals",
+      "performance goal", "performance goals", "optimization_goal", "optimizationgoal",
+      "opt_goal", "optgoal", "optimize_for", "optimizefor", "goal"
+    ],
     urlTags: [
       "url_parameters", "urlparameters", "url_parameter", "urlparameter",
       "url_tags", "urltags", "url_tag", "urltag",

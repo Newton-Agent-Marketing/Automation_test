@@ -11,5 +11,7 @@ router.get("/conversations", ChatAgentController.listConversations);
 router.get("/history/:conversationId", ChatAgentController.getChatHistory);
 router.patch("/conversation/:conversationId", ChatAgentController.renameConversation);
 router.delete("/conversation/:conversationId", ChatAgentController.deleteConversation);
+router.get("/preparation/:conversationId", ChatAgentController.getPreparationSession);
+router.post("/preparation/action", ChatAgentController.handlePreparationAction);
 
 export default router;

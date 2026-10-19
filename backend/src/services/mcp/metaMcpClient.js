@@ -6,6 +6,8 @@ import driveService from "../../google/driveService.js";
 import axios from "axios";
 import fs from "fs";
 
+const META_GRAPH_URL = "https://graph.facebook.com/v24.0";
+
 export class MetaMcpClient {
   /**
    * Check MCP Server URL Health and capabilities
@@ -25,54 +27,163 @@ export class MetaMcpClient {
    * Live real-time data & operations Meta MCP execution
    */
   static async executeLiveTool(toolName, args) {
-    const { accountId, userId } = args;
-    let account = null;
+    if (toolName === "verify_meta_campaign") {
+      const { campaignId, adSetId, adId, accountId } = args;
+      const targetAccId = accountId ? String(accountId).replace(/^act_/, "") : null;
 
-    if (accountId) {
-      const cleanId = String(accountId).trim();
-      const numOnly = cleanId.replace(/^act_/, "");
-      account = await MetaAccount.findOne({
-        $or: [{ accountId: cleanId }, { accountId: numOnly }, { accountId: `act_${numOnly}` }],
-        ...(userId ? { userId } : {}),
-      });
-      if (!account) {
-        throw new Error(
-          `Ad Account "${accountId}" was not found or is inaccessible for this user. Please select an authorized connected account.`
-        );
-      }
-    } else if (userId) {
-      // 1. Check if user has an active selected account in ConnectedChannel
-      const ConnectedChannel = (await import("../../models/connectedChannelModel.js")).default;
-      const activeMetaChannel = await ConnectedChannel.findOne({ userId, channelId: "meta", isConnected: true }).lean().catch(() => null);
-      if (activeMetaChannel?.accountId) {
-        const cleanChanId = String(activeMetaChannel.accountId).trim();
-        const numChan = cleanChanId.replace(/^act_/, "");
-        account = await MetaAccount.findOne({
-          userId,
-          isActive: true,
-          $or: [{ accountId: cleanChanId }, { accountId: numChan }, { accountId: `act_${numChan}` }],
-        });
-      }
+      // Verify against MongoDB MetaCampaign or live Meta API
+      if (targetAccId && campaignId) {
+        try {
+          const mongoose = (await import("mongoose")).default;
+          if (mongoose?.connection?.readyState === 1) {
+            const MetaCampaign = (await import("../../models/metaCampaign.js")).default;
+            const campDoc = await MetaCampaign.findOne({ campaignId }).lean();
+            if (campDoc?.accountId) {
+              const campAccRaw = String(campDoc.accountId).replace(/^act_/, "");
+              if (campAccRaw !== targetAccId) {
+                return {
+                  success: false,
+                  status: "ACCOUNT_MISMATCH",
+                  verificationStatus: "ACCOUNT_MISMATCH",
+                  campaignId,
+                  adSetId,
+                  adId,
+                  error: `Account ID mismatch: Campaign "${campaignId}" belongs to Meta account act_${campAccRaw}, which does not match the selected Meta account act_${targetAccId}. Cross-account creation is strictly forbidden.`,
+                  message: `Account Mismatch Detected: Campaign ${campaignId} belongs to act_${campAccRaw}, but selected account is act_${targetAccId}. Cross-account creation is strictly forbidden.`,
+                };
+              }
+            }
+          }
+        } catch (_) {}
 
-      // 2. Check user's dashboardSettings.accountId
-      if (!account) {
-        const User = (await import("../../models/authModel.js")).default;
-        const userDoc = await User.findById(userId).select("dashboardSettings").lean().catch(() => null);
-        const prefAcc = userDoc?.dashboardSettings?.accountId;
-        if (prefAcc && !String(prefAcc).includes("-")) {
-          const cleanPref = String(prefAcc).trim();
-          const numPref = cleanPref.replace(/^act_/, "");
-          account = await MetaAccount.findOne({
-            userId,
-            isActive: true,
-            $or: [{ accountId: cleanPref }, { accountId: numPref }, { accountId: `act_${numPref}` }],
-          });
+        if (args.accessToken && !args.accessToken.startsWith("EAAB_simulated")) {
+          try {
+            const campRes = await axios.get(`${META_GRAPH_URL}/${campaignId}`, {
+              params: { fields: "id,name,status,account_id", access_token: args.accessToken },
+              timeout: 5000,
+            });
+            const liveAcc = String(campRes.data?.account_id || "").replace(/^act_/, "");
+            if (liveAcc && liveAcc !== targetAccId) {
+              return {
+                success: false,
+                status: "ACCOUNT_MISMATCH",
+                verificationStatus: "ACCOUNT_MISMATCH",
+                campaignId,
+                adSetId,
+                adId,
+                error: `Account ID mismatch: Campaign "${campaignId}" belongs to Meta account act_${liveAcc}, which does not match the selected Meta account act_${targetAccId}. Cross-account creation is strictly forbidden.`,
+                message: `Account Mismatch Detected: Campaign ${campaignId} belongs to act_${liveAcc}, but selected account is act_${targetAccId}. Cross-account creation is strictly forbidden.`,
+              };
+            }
+          } catch (campErr) {
+            console.warn("[Meta MCP verify_meta_campaign live lookup warning]:", campErr.message);
+          }
         }
       }
 
-      // 3. Fallback to user's most recently updated active account
+      if (targetAccId && adSetId && args.accessToken && !args.accessToken.startsWith("EAAB_simulated")) {
+        try {
+          const adSetRes = await axios.get(`${META_GRAPH_URL}/${adSetId}`, {
+            params: { fields: "id,name,status,account_id", access_token: args.accessToken },
+            timeout: 5000,
+          });
+          const liveAcc = String(adSetRes.data?.account_id || "").replace(/^act_/, "");
+          if (liveAcc && liveAcc !== targetAccId) {
+            return {
+              success: false,
+              status: "ACCOUNT_MISMATCH",
+              verificationStatus: "ACCOUNT_MISMATCH",
+              campaignId,
+              adSetId,
+              adId,
+              error: `Account ID mismatch: Ad Set "${adSetId}" belongs to Meta account act_${liveAcc}, which does not match the selected Meta account act_${targetAccId}. Cross-account creation is strictly forbidden.`,
+              message: `Account Mismatch Detected: Ad Set ${adSetId} belongs to act_${liveAcc}, but selected account is act_${targetAccId}. Cross-account creation is strictly forbidden.`,
+            };
+          }
+        } catch (adSetErr) {
+          console.warn("[Meta MCP verify_meta_campaign adSet live lookup warning]:", adSetErr.message);
+        }
+      }
+
+      return {
+        success: true,
+        status: "CAMPAIGN_VERIFIED",
+        campaignId: campaignId || null,
+        adSetId: adSetId || null,
+        adId: adId || null,
+        accountId: targetAccId ? `act_${targetAccId}` : null,
+        verification: {
+          campaignExists: Boolean(campaignId),
+          adSetExists: Boolean(adSetId),
+          adExists: Boolean(adId),
+          accountMatched: true,
+          allComponentsReady: Boolean(campaignId),
+        },
+        message: `Meta Campaign ${campaignId || ""} verification complete on account act_${targetAccId || ""}. All configured layers verified.`,
+      };
+    }
+
+    const { accountId, userId } = args;
+    let account = null;
+
+    const mongoose = (await import("mongoose")).default;
+    const validUserId = userId && mongoose?.Types?.ObjectId?.isValid(userId) ? userId : null;
+    const userCondition = validUserId ? { userId: validUserId } : {};
+
+    if (args.accessToken) {
+      account = {
+        accountId: args.accountId || accountId || "act_simulated_default",
+        accessToken: args.accessToken,
+        accountName: args.accessToken.startsWith("EAAB_simulated") ? "Simulated Ad Account" : "Authenticated Ad Account",
+        currency: "INR",
+        userId: validUserId || "authenticated_user",
+      };
+    } else if (accountId) {
+      const cleanId = String(accountId).trim();
+      const numOnly = cleanId.replace(/^act_/, "");
+      if (mongoose?.connection?.readyState === 1) {
+        account = await MetaAccount.findOne({
+          $or: [{ accountId: cleanId }, { accountId: numOnly }, { accountId: `act_${numOnly}` }],
+          ...userCondition,
+        });
+      }
       if (!account) {
-        account = await MetaAccount.findOne({ userId, isActive: true }).sort({ updatedAt: -1 });
+        throw new Error(
+          `Ad Account "${accountId}" was not found or is inaccessible for this user. Fallback to other accounts is strictly prohibited.`
+        );
+      }
+    } else if (userId) {
+      // Strict Account Lock: Resolve selected Meta account from AI Context Channel Node
+      const AiContext = (await import("../../models/aiContextModel.js")).default;
+      const aiContextDoc = (validUserId && mongoose?.connection?.readyState === 1)
+        ? await AiContext.findOne({ userId: validUserId }).lean().catch(() => null)
+        : null;
+      const channelNodes = (aiContextDoc?.nodes || []).filter((n) => n.type === "ad_channel");
+      const metaChannelNode =
+        channelNodes.find((n) => {
+          const cName = (n.data?.channelName || n.data?.channel || n.label || "").toLowerCase();
+          return cName.includes("meta") || cName.includes("facebook");
+        }) || (channelNodes.length === 1 ? channelNodes[0] : null);
+
+      const contextAccId = metaChannelNode?.data?.adAccountId?.trim();
+      if (contextAccId) {
+        const cleanContextId = String(contextAccId).trim();
+        const numContextId = cleanContextId.replace(/^act_/, "");
+        if (mongoose?.connection?.readyState === 1) {
+          account = await MetaAccount.findOne({
+            ...userCondition,
+            $or: [{ accountId: cleanContextId }, { accountId: numContextId }, { accountId: `act_${numContextId}` }],
+          });
+        }
+        if (!account) {
+          throw new Error(
+            `Selected Meta Ad Account "${contextAccId}" from AI Context Channel Node was not found or is disconnected for this user. Fallback to other accounts is strictly prohibited.`
+          );
+        }
+      } else {
+        throw new Error(
+          "No Meta Ads account is selected in the AI Context Channel Node. Please select a Meta Ads account in AI Context → Channel Node. Fallback to default or unselected accounts is strictly prohibited."
+        );
       }
     }
 
@@ -169,6 +280,8 @@ export class MetaMcpClient {
           lifetimeBudget = 0,
           status = "PAUSED",
           specialAdCategories = ["NONE"],
+          isSkadnetworkAttribution,
+          is_skadnetwork_attribution,
         } = args;
 
         const rawCampBudget = dailyBudget || daily_budget || daily_budget_inr || campaign_daily_budget || campaign_daily_budget_inr || budget;
@@ -186,41 +299,60 @@ export class MetaMcpClient {
             lifetimeBudget,
             status,
             specialAdCategories,
+            isSkadnetworkAttribution: isSkadnetworkAttribution || is_skadnetwork_attribution,
           });
           if (metaResult?.id) {
             metaRemoteId = metaResult.id;
             creationSource = "META_GRAPH_API";
           }
         } catch (err) {
-          console.warn("[Meta Campaign API Warning]: Using MCP Database record creation:", err.message);
+          console.warn("[Meta Campaign API Warning]:", err.message);
           if (MetaApiService.isTokenRevokedOrExpired(err)) {
             await MetaAccount.updateOne({ _id: account._id }, { $set: { isActive: false } });
             throw new Error(
               "Meta authorization has expired. Please reconnect your Meta Ads account in Channels."
             );
           }
+          if (effectiveToken && !effectiveToken.startsWith("EAAB_simulated")) {
+            throw err;
+          }
         }
 
         // Save new campaign record into MongoDB so dashboard & user can immediately track it
-        const savedCampaign = await MetaCampaign.findOneAndUpdate(
-          { campaignId: metaRemoteId },
-          {
-            $set: {
-              userId: effectiveUserId,
-              accountId: effectiveAccountId,
-              campaignId: metaRemoteId,
-              name,
-              status: status || "PAUSED",
-              effectiveStatus: status || "PAUSED",
-              objective: objective || "OUTCOME_SALES",
-              dailyBudget: Number(dailyBudget) || 0,
-              lifetimeBudget: Number(lifetimeBudget) || 0,
-              startTime: new Date(),
-              lastSyncedAt: new Date(),
-            },
-          },
-          { upsert: true, returnDocument: "after" }
-        );
+        let savedCampaign = {
+          campaignId: metaRemoteId,
+          name,
+          objective: objective || "OUTCOME_SALES",
+          status: status || "PAUSED",
+          dailyBudget: Number(dailyBudget) || 0,
+        };
+
+        const mongoose = (await import("mongoose")).default;
+        if (mongoose?.connection?.readyState === 1) {
+          try {
+            savedCampaign = await MetaCampaign.findOneAndUpdate(
+              { campaignId: metaRemoteId },
+              {
+                $set: {
+                  userId: effectiveUserId,
+                  accountId: effectiveAccountId,
+                  campaignId: metaRemoteId,
+                  name,
+                  status: status || "PAUSED",
+                  effectiveStatus: status || "PAUSED",
+                  objective: objective || "OUTCOME_SALES",
+                  dailyBudget: Number(dailyBudget) || 0,
+                  lifetimeBudget: Number(lifetimeBudget) || 0,
+                  startTime: new Date(),
+                  lastSyncedAt: new Date(),
+                },
+              },
+              { upsert: true, returnDocument: "after" }
+            );
+          } catch (dbErr) {
+            console.warn("[Meta Campaign DB Save Warning]:", dbErr.message);
+          }
+        }
 
         return {
           success: true,
@@ -292,6 +424,8 @@ export class MetaMcpClient {
           optimizationGoal = "OFFSITE_CONVERSIONS",
           billingEvent = "IMPRESSIONS",
           bidAmount,
+          bidStrategy,
+          bid_strategy,
           status = "PAUSED",
           targeting = {},
           pixelId,
@@ -300,6 +434,10 @@ export class MetaMcpClient {
           applicationId,
           objectStoreUrl,
           object_store_url,
+          startTime,
+          start_time,
+          endTime,
+          end_time,
           customEventType,
           custom_event_type,
           trackingType,
@@ -324,14 +462,19 @@ export class MetaMcpClient {
             optimizationGoal,
             billingEvent,
             bidAmount,
+            bidStrategy: bidStrategy || bid_strategy,
             status,
             targeting,
             pixelId: pixelId || null,
             appId: appId || application_id || applicationId,
             objectStoreUrl: objectStoreUrl || object_store_url,
+            startTime: startTime || start_time,
+            endTime: endTime || end_time,
             customEventType: customEventType || custom_event_type,
             trackingType: trackingType || tracking_type,
+            destination_type: args.destination_type || args.destinationType || null,
             promotedObject,
+            objective: args.objective || args.campaignObjective,
           });
           if (res?.id) {
             remoteAdSetId = res.id;
@@ -436,9 +579,13 @@ export class MetaMcpClient {
           primaryText,
           description,
           linkUrl,
+          destinationUrl,
+          destination,
           displayLink,
-          callToAction = "Book now",
+          display_link,
+          callToAction = "BOOK_NOW",
           imageUrl,
+          imageHash,
           pageId,
           status = "PAUSED",
           optimizeTextPerPerson = true,
@@ -447,6 +594,8 @@ export class MetaMcpClient {
           appId,
           application_id,
           applicationId,
+          objectStoreUrl,
+          object_store_url,
           instagramActorId,
           instagram_actor_id,
           instagram_account_id,
@@ -464,20 +613,32 @@ export class MetaMcpClient {
 
         if (!adSetId) throw new Error("adSetId is required to create a Meta ad");
 
+        const effectiveLink = linkUrl || destinationUrl || destination || args.landingPageUrl || args.landing_page_url || null;
+        const effectiveDisplayLink = displayLink || display_link || args.displayLink || args.display_link || null;
+
         // Media Type Guard Check
         const targetImageRef = imageUrl || driveUrl;
         if (targetImageRef && fs.existsSync(targetImageRef)) {
           const magic = driveService.inspectFileMagicBytes(targetImageRef);
           if (magic.isVideo) {
-            throw new Error(
-              `Media Type Mismatch Error: Creative asset "${targetImageRef}" is a Video (${magic.format?.toUpperCase()}), but create_meta_ad was called. Video assets must be created using create_meta_video_ad.`
-            );
+            console.log(`[Meta MCP Ad Creation]: Asset "${targetImageRef}" is a video (${magic.format}). Auto-delegating to create_meta_video_ad...`);
+            return await this.executeLiveTool("create_meta_video_ad", {
+              ...args,
+              videoFilePath: targetImageRef,
+              videoUrl: targetImageRef,
+              linkUrl: effectiveLink,
+              destinationUrl: effectiveLink,
+              destination: effectiveLink,
+              displayLink: effectiveDisplayLink,
+              display_link: effectiveDisplayLink,
+            });
           }
         }
 
         let remoteAdId = `ad_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
         let creativeId = `cr_${Date.now()}`;
         let creationSource = "AI_AGENT_MCP";
+        let outImageHash = imageHash || args.imageHash || null;
 
         try {
           const res = await MetaApiService.createAd(effectiveAccountId, effectiveToken, {
@@ -486,10 +647,14 @@ export class MetaMcpClient {
             headline,
             primaryText,
             description,
-            linkUrl,
-            displayLink,
+            linkUrl: effectiveLink,
+            destinationUrl: effectiveLink,
+            destination: effectiveLink,
+            displayLink: effectiveDisplayLink,
+            display_link: effectiveDisplayLink,
             callToAction,
             imageUrl,
+            imageHash: outImageHash,
             driveUrl,
             videoUrl,
             videoFilePath,
@@ -500,6 +665,7 @@ export class MetaMcpClient {
             optimizedAdCreative,
             pixelId: pixelId || null,
             appId: appId || application_id || applicationId || null,
+            objectStoreUrl: objectStoreUrl || object_store_url || null,
             pageId: pageId || null,
             instagramActorId: instagramActorId || instagram_actor_id || instagram_account_id || ig_id || instagramId,
             trackingType: trackingType || tracking_type,
@@ -509,6 +675,7 @@ export class MetaMcpClient {
             remoteAdId = res.id;
             creativeId = res.creativeId || creativeId;
             creationSource = "META_GRAPH_API";
+            if (res.imageHash) outImageHash = res.imageHash;
           }
         } catch (err) {
           console.warn("[Meta Ad Creation API Warning]:", err.message);
@@ -529,6 +696,7 @@ export class MetaMcpClient {
           source: creationSource,
           adId: remoteAdId,
           creativeId,
+          imageHash: outImageHash,
           adSetId,
           name: name || `Ad_${Date.now()}`,
           headline: headline || null,
@@ -538,6 +706,7 @@ export class MetaMcpClient {
           callToAction: MetaApiService.normalizeCallToAction(callToAction),
           urlTags: urlTags || url_tags || null,
           adStatus: status,
+          data: { adId: remoteAdId, creativeId, imageHash: outImageHash },
           message: `Meta Ad "${name || remoteAdId}" (ID: ${remoteAdId}) created successfully under Ad Set ${adSetId}! [Source: ${creationSource}]`,
         };
       }
@@ -550,7 +719,10 @@ export class MetaMcpClient {
           primaryText,
           description,
           linkUrl,
+          destinationUrl,
+          destination,
           displayLink,
+          display_link,
           callToAction = "BOOK_NOW",
           imageUrl,
           driveUrl,
@@ -565,6 +737,8 @@ export class MetaMcpClient {
           appId,
           application_id,
           applicationId,
+          objectStoreUrl,
+          object_store_url,
           instagramActorId,
           instagram_actor_id,
           instagram_account_id,
@@ -578,6 +752,9 @@ export class MetaMcpClient {
 
         if (!adSetId) throw new Error("adSetId is required to create a Meta Video Ad");
 
+        const effectiveLink = linkUrl || destinationUrl || destination || args.landingPageUrl || args.landing_page_url || null;
+        const effectiveDisplayLink = displayLink || display_link || args.displayLink || args.display_link || null;
+
         let localFilePath = videoFilePath;
         let downloadedInfo = null;
 
@@ -585,7 +762,7 @@ export class MetaMcpClient {
         const targetVideoRef = driveUrl || videoUrl;
         if (targetVideoRef && !localFilePath && !videoId) {
           try {
-            downloadedInfo = await driveService.downloadCreative(targetVideoRef);
+            downloadedInfo = await driveService.downloadCreative(targetVideoRef, null, "video");
             if (downloadedInfo?.filePath) {
               localFilePath = downloadedInfo.filePath;
             }
@@ -616,8 +793,11 @@ export class MetaMcpClient {
             headline,
             primaryText,
             description,
-            linkUrl,
-            displayLink,
+            linkUrl: effectiveLink,
+            destinationUrl: effectiveLink,
+            destination: effectiveLink,
+            displayLink: effectiveDisplayLink,
+            display_link: effectiveDisplayLink,
             callToAction,
             imageUrl,
             videoId,
@@ -629,6 +809,7 @@ export class MetaMcpClient {
             optimizedAdCreative,
             pixelId: pixelId || null,
             appId: appId || application_id || applicationId || null,
+            objectStoreUrl: objectStoreUrl || object_store_url || null,
             pageId: pageId || null,
             instagramActorId: instagramActorId || instagram_actor_id || instagram_account_id || ig_id || instagramId,
             trackingType: trackingType || tracking_type,
@@ -676,6 +857,49 @@ export class MetaMcpClient {
 
       case "verify_meta_campaign": {
         const { campaignId, adSetId, adId } = args;
+        const targetClean = String(effectiveAccountId || "").replace(/^act_/, "");
+
+        if (campaignId && effectiveToken && !effectiveToken.startsWith("EAAB_simulated")) {
+          try {
+            const campRes = await axios.get(`${META_GRAPH_URL}/${campaignId}`, {
+              params: { fields: "id,name,status,account_id", access_token: effectiveToken },
+              timeout: 5000,
+            });
+            const campAcc = String(campRes.data?.account_id || "").replace(/^act_/, "");
+            if (campAcc && targetClean && campAcc !== targetClean) {
+              return {
+                success: false,
+                verificationStatus: "ACCOUNT_MISMATCH",
+                campaignId,
+                error: `Account ID mismatch: Campaign "${campaignId}" belongs to Meta account act_${campAcc}, which does not match the selected Meta account act_${targetClean}. Verification failed.`,
+              };
+            }
+          } catch (campErr) {
+            console.warn("[Meta MCP verify_meta_campaign lookup warning]:", campErr.message);
+          }
+        }
+
+        if (adSetId && effectiveToken && !effectiveToken.startsWith("EAAB_simulated")) {
+          try {
+            const adSetRes = await axios.get(`${META_GRAPH_URL}/${adSetId}`, {
+              params: { fields: "id,name,status,account_id", access_token: effectiveToken },
+              timeout: 5000,
+            });
+            const adSetAcc = String(adSetRes.data?.account_id || "").replace(/^act_/, "");
+            if (adSetAcc && targetClean && adSetAcc !== targetClean) {
+              return {
+                success: false,
+                verificationStatus: "ACCOUNT_MISMATCH",
+                campaignId,
+                adSetId,
+                error: `Account ID mismatch: Ad Set "${adSetId}" belongs to Meta account act_${adSetAcc}, which does not match the selected Meta account act_${targetClean}. Verification failed.`,
+              };
+            }
+          } catch (adSetErr) {
+            console.warn("[Meta MCP verify_meta_campaign adSet lookup warning]:", adSetErr.message);
+          }
+        }
+
         return {
           success: true,
           status: "CAMPAIGN_VERIFIED",

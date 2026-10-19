@@ -27,29 +27,42 @@ export const loadWorkspaceSkills = async () => {
       path.resolve(process.cwd(), ".agents/skills"),
       path.resolve(process.cwd(), "backend/.agents/skills"),
       path.resolve(process.cwd(), "../.agents/skills"),
+      path.resolve(process.cwd(), "skills"),
+      path.resolve(process.cwd(), "backend/skills"),
+      path.resolve(process.cwd(), "../skills"),
     ];
 
     const skills = [];
     const seen = new Set();
 
-    for (const dir of skillDirs) {
-      if (fs.existsSync(dir)) {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (entry.isDirectory() && !seen.has(entry.name)) {
-            const skillFile = path.join(dir, entry.name, "SKILL.md");
-            if (fs.existsSync(skillFile)) {
-              seen.add(entry.name);
-              const content = fs.readFileSync(skillFile, "utf8");
-              const descMatch = content.match(/description:\s*>?-?\s*([^\n]+(?:\n\s+[^\n]+)*)/i);
-              skills.push({
-                name: entry.name,
-                description: descMatch ? descMatch[1].replace(/\n\s+/g, " ").trim() : "Custom workspace skill",
-              });
-            }
+    const scanDir = (dir) => {
+      if (!fs.existsSync(dir)) return;
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const subDir = path.join(dir, entry.name);
+          const candidates = [
+            path.join(subDir, "SKILL.md"),
+            path.join(subDir, "skill.md"),
+          ];
+          const foundFile = candidates.find((f) => fs.existsSync(f));
+          if (foundFile && !seen.has(entry.name)) {
+            seen.add(entry.name);
+            const content = fs.readFileSync(foundFile, "utf8");
+            const descMatch = content.match(/description:\s*>?-?\s*([^\n]+(?:\n\s+[^\n]+)*)/i);
+            skills.push({
+              name: entry.name,
+              description: descMatch ? descMatch[1].replace(/\n\s+/g, " ").trim() : "Custom workspace skill",
+            });
+          } else {
+            scanDir(subDir);
           }
         }
       }
+    };
+
+    for (const dir of skillDirs) {
+      scanDir(dir);
     }
 
     if (skills.length === 0) return "None configured.";
@@ -66,12 +79,28 @@ export const buildSystemPrompt = async ({ accountId, userId }) => {
   let skillsText = "None configured.";
 
   try {
-    const [googleAcc, metaAcc, aiCtx, loadedSkills] = await Promise.all([
+    const [googleAcc, aiCtx, loadedSkills] = await Promise.all([
       userId ? GoogleAccount.findOne({ userId, isActive: true }).lean() : null,
-      userId ? MetaAccount.findOne({ userId, isActive: true }).lean() : null,
       userId ? getUserAiContext({ userId }).catch(() => null) : null,
       loadWorkspaceSkills(),
     ]);
+
+    const aiContextMetaChannel = (aiCtx?.adChannels || []).find((c) =>
+      ["meta", "metaads", "facebook", "fb", "meta ads"].includes(String(c.channel || c.channelName || "").toLowerCase())
+    );
+    const lockedMetaAccountId = accountId || aiContextMetaChannel?.accountId || null;
+    let metaAcc = null;
+    if (userId) {
+      if (lockedMetaAccountId) {
+        const cleanLock = String(lockedMetaAccountId).replace(/^act_/, "");
+        metaAcc = await MetaAccount.findOne({
+          userId,
+          $or: [{ accountId: lockedMetaAccountId }, { accountId: cleanLock }, { accountId: `act_${cleanLock}` }],
+        }).lean();
+      } else {
+        metaAcc = await MetaAccount.findOne({ userId, isActive: true }).lean();
+      }
+    }
 
     skillsText = loadedSkills;
 
@@ -105,7 +134,10 @@ Hierarchy: Direct / Single Account (No Manager MCC)`;
       }
 
       if (metaAcc) {
-        metaContextText = `Account ID: ${metaAcc.accountId} | Name: "${metaAcc.accountName}" | Currency: ${metaAcc.currency || "INR"}`;
+        const isLocked = Boolean(lockedMetaAccountId);
+        metaContextText = `${isLocked ? "[STRICT LOCKED META ACCOUNT] " : ""}Account ID: ${metaAcc.accountId} (act_${String(metaAcc.accountId).replace(/^act_/, "")}) | Name: "${metaAcc.accountName}" | Currency: ${metaAcc.currency || "INR"}${metaAcc.isActive ? " | Status: ACTIVE" : " | Status: INACTIVE"}`;
+      } else if (lockedMetaAccountId) {
+        metaContextText = `[STRICT LOCKED META ACCOUNT]: act_${String(lockedMetaAccountId).replace(/^act_/, "")} (Not found in user's connected Meta accounts or inactive)`;
       }
 
       if (aiCtx && (aiCtx.hasContext || (aiCtx.rawNodes && aiCtx.rawNodes.length > 0) || (aiCtx.flows && aiCtx.flows.length > 0))) {
@@ -216,20 +248,26 @@ Capabilities & Exact Execution Guidelines:
        * If user requests creating Meta ads from an Excel sheet or connected data warehouse:
          1. Call "get_connected_sheet_rows" FIRST to retrieve sheetName, headers/columns, and row values.
          2. Explicitly report the sheet name ("sheetName") and row count to the user.
-         3. Read exact row fields: campaign_name, adset_name, ad_name, headline, primary_text, daily_budget, landing_page_url, drive_url, etc.
+         3. Inspect "campaignType" and "selectedSkill":
+            - "WEBSITE": Follow existing website campaign skill ("meta-ads-campaign-creator").
+            - "APP_PROMOTION": Follow dedicated App Promotion campaign skill ("meta-ads-app-campaign") with objective "OUTCOME_APP_PROMOTION", promoted_object (application_id, object_store_url), CTA "DOWNLOAD".
+            - "CONFLICTING" or "UNKNOWN": Ask user for clarification before creating anything. Never fallback to website workflow.
+         4. Read exact row fields: campaign_name, adset_name, ad_name, headline, primary_text, daily_budget, landing_page_url, drive_url, app_id, object_store_url, etc.
        * Dynamic Hierarchy Naming Rules (CRITICAL):
          - Extract both Campaign Name and Ad Set Name dynamically from the user's latest chat instruction (e.g. Campaign name: `<name>`, Ad set name: `<name>`).
          - Never hardcode or invent default campaign names or ad set names.
          - Never search the spreadsheet for these names unless the user explicitly requests that they come from the sheet.
          - If either required name is missing or ambiguous, ask the user for clarification rather than creating campaigns with placeholder or default names.
          - Log/track the source of each name as CHAT_INSTRUCTION.
-       * Execute the complete dependency chain step-by-step:
-         Step 1: create_meta_campaign (name: user-specified campaign name from chat, objective: "OUTCOME_SALES", dailyBudget, status: "PAUSED" or "ACTIVE", accountId) ➔ get campaignId
-         Step 2: create_meta_ad_set (campaignId, name: user-specified ad set name from chat, dailyBudget, optimizationGoal: "OFFSITE_CONVERSIONS", status: "PAUSED", targeting: { locations: ["India"], ageMin: 18, ageMax: 65, interests: [...] }, accountId) ➔ get adSetId
-         Step 3: create_meta_ad (adSetId, name: ad_name from sheet, headline, primaryText, description, linkUrl, callToAction: "SHOP_NOW", status: "PAUSED", accountId) ➔ get adId
-         Step 4: verify_meta_campaign (campaignId, adSetId, adId, accountId) ➔ confirm and report verified complete campaign status
-     - NEVER claim "I will create it" or say a campaign/ad was created unless the creation tools executed and returned real Meta API response IDs!
-     - Never invent IDs. Always pass the actual resource names/IDs returned from the previous step.
+       * Execute creation ONLY AFTER explicit user approval:
+         - Display Preview Tables (Table 1: Campaign Details, Table 2: Ad Set Details, Table 3: Ad Details).
+         - Prompt user: "Approve Campaign & Create Ads" or "Edit Details".
+         - NEVER call create_meta_campaign, create_meta_ad_set, or create_meta_ad before user approval!
+         Step 1: create_meta_campaign (name, objective, dailyBudget, status: "PAUSED", accountId) ➔ get campaignId
+         Step 2: create_meta_ad_set (campaignId, name, dailyBudget, optimizationGoal, status: "PAUSED", accountId) ➔ get adSetId
+         Step 3: create_meta_video_ad (if video/driveUrl) or create_meta_ad (if image) (adSetId, name, headline, primaryText, linkUrl, callToAction, accountId) ➔ get adId (CRITICAL: Never stop before creating the ads!)
+         Step 4: verify_meta_campaign (campaignId, adSetId, adId, accountId)
+     - NEVER create any Meta entity before explicit user approval! Never invent IDs. Always pass real Meta API response IDs.
 
 5. Structured Error Handling for Known Google Ads API Limitations (CRITICAL):
    - **Limitation A: Developer Token Access (DEVELOPER_TOKEN_ACCESS / ACTION_NOT_PERMITTED)**:
@@ -313,7 +351,7 @@ Capabilities & Exact Execution Guidelines:
 
 8. Available Workspace Skills & Workflows:
 ${skillsText}
-   - When executing tasks related to an available skill (especially "meta-ads-campaign-creator"), follow its specific runbook and best practices. Use "get_skill_details" to fetch full guidelines if needed.`;
+   - When executing tasks related to an available skill (especially "meta-ads-campaign-creator" for Website Campaigns or "meta-ads-app-campaign" for App Promotion Campaigns), follow its specific runbook and best practices. Use "get_skill_details" to fetch full guidelines if needed.`;
 };
 
 export class ClaudeAgentService {

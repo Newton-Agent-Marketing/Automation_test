@@ -34,7 +34,11 @@ import { useChannel } from "../../channel/hook/channel";
 import { BrandIcon } from "../../channel/components/BrandIcon";
 import { MarkdownMessage } from "../components/MarkdownMessage";
 import { RowProgressTracker } from "../components/RowProgressTracker";
+import { CampaignPreparationCard } from "../components/CampaignPreparationCard";
+import { chatApi } from "../service/chat.api";
 import { aiContextApi } from "../../aiContext/service/aiContext.api";
+import { fetchAiContext } from "../../aiContext/aiContext.slice";
+import { useDispatch } from "react-redux";
 import { firstName, formatDate, greetingForNow } from "../../../lib/format";
 
 const ALLOWED_CHANNEL_IDS = ["meta", "google"];
@@ -118,7 +122,12 @@ const Chat = () => {
     deleteConversation,
     startNewChat,
     sendMessage,
+    preparationData,
+    updatePreparationData,
+    aiContextMetaAccountId,
   } = useChat();
+
+  const dispatch = useDispatch();
 
   const {
     status,
@@ -136,6 +145,40 @@ const Chat = () => {
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState("");
   const [drawerCollapsed, setDrawerCollapsed] = useState(false);
+  const [prepActionLoading, setPrepActionLoading] = useState(false);
+
+  const handlePreparationAction = async (action, payload = {}) => {
+    if (!activeId) return;
+    setPrepActionLoading(true);
+    try {
+      const activeMetaAcc =
+        aiContextMetaAccountId ||
+        status?.channels?.metaAds?.activeAccount?.accountId ||
+        user?.metaAds?.activeAccount?.accountId;
+      const res = await chatApi.preparationAction({
+        conversationId: activeId,
+        action,
+        payload,
+        metaAccountId: activeMetaAcc,
+        aiContextMetaAccountId,
+      });
+      const updatedSession =
+        res?.data?.session ||
+        res?.data?.preparationSession ||
+        res?.data?.data?.session ||
+        res?.data?.data?.preparationSession ||
+        res?.session ||
+        res?.preparationSession;
+      if (updatedSession) {
+        updatePreparationData(updatedSession);
+      }
+      await openConversation(activeId);
+    } catch (err) {
+      console.error("Preparation action error:", err);
+    } finally {
+      setPrepActionLoading(false);
+    }
+  };
   const [activeModalChannel, setActiveModalChannel] = useState(null);
   const [channelsHubModalOpen, setChannelsHubModalOpen] = useState(false);
   const [performanceMenuOpen, setPerformanceMenuOpen] = useState(false);
@@ -226,6 +269,7 @@ const Chat = () => {
     });
     loadStatus();
     fetchSheetSyncStatus();
+    dispatch(fetchAiContext());
   }, []);
 
   useEffect(() => {
@@ -796,10 +840,44 @@ const Chat = () => {
                       toolCalls={message.toolCalls}
                       tokenUsage={message.tokenUsage}
                     />
+                    {message.preparationData && (
+                      <div className="mt-4 w-full">
+                        <CampaignPreparationCard
+                          session={message.preparationData}
+                          onApprove={() => handlePreparationAction("APPROVE")}
+                          onEdit={(instructions) => handlePreparationAction("EDIT", { instructions })}
+                          onAnswerField={(answers) => handlePreparationAction("ANSWER", { answers })}
+                          isSending={prepActionLoading}
+                        />
+                      </div>
+                    )}
                     {message.jobProgress && <RowProgressTracker jobProgress={message.jobProgress} />}
                   </motion.article>
                 ))}
               </AnimatePresence>
+
+              {/* Active preparation session if newer or not attached to the last message */}
+              {preparationData &&
+                (!messages.length ||
+                  !messages[messages.length - 1]?.preparationData ||
+                  messages[messages.length - 1]?.preparationData?.sessionId !== preparationData?.sessionId ||
+                  messages[messages.length - 1]?.preparationData?.status !== preparationData?.status ||
+                  messages[messages.length - 1]?.preparationData?.updatedAt !== preparationData?.updatedAt ||
+                  messages[messages.length - 1]?.preparationData?.preview?.version !== preparationData?.preview?.version) && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="w-full my-4"
+                  >
+                    <CampaignPreparationCard
+                      session={preparationData}
+                      onApprove={() => handlePreparationAction("APPROVE")}
+                      onEdit={(instructions) => handlePreparationAction("EDIT", { instructions })}
+                      onAnswerField={(answers) => handlePreparationAction("ANSWER", { answers })}
+                      isSending={prepActionLoading}
+                    />
+                  </motion.div>
+                )}
 
               {streamText && (
                 <motion.article

@@ -27,6 +27,13 @@ export class AgentStreamHandler {
     }
   }
 
+  // Preparation session update (for live campaign detail sheet preview)
+  static sendPreparationUpdate(res, session) {
+    if (res && typeof res.write === "function") {
+      res.write(`data: ${JSON.stringify({ type: "preparation_update", session })}\n\n`);
+    }
+  }
+
   // Stream finish
   static endStream(res) {
     res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);

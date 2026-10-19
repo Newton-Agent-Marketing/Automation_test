@@ -10,6 +10,7 @@ const initialState = {
   streamText: "",
   toolStatus: "",
   jobProgress: null,
+  preparationData: null,
   connected: false,
   error: null,
 };
@@ -186,18 +187,28 @@ const chatSlice = createSlice({
       }
     },
     finishStream: (state) => {
-      if (state.streamText) {
+      if (state.streamText || state.preparationData) {
         state.messages.push({
           _id: `assistant-${Date.now()}`,
           role: "assistant",
-          content: state.streamText,
+          content: state.streamText || "Campaign details updated:",
           jobProgress: state.jobProgress ? JSON.parse(JSON.stringify(state.jobProgress)) : null,
+          preparationData: state.preparationData ? JSON.parse(JSON.stringify(state.preparationData)) : null,
         });
       }
       state.streaming = false;
       state.streamText = "";
       state.toolStatus = "";
       state.jobProgress = null;
+    },
+    setPreparationData: (state, action) => {
+      state.preparationData = action.payload;
+      if (action.payload && state.messages.length > 0) {
+        const lastAssistant = [...state.messages].reverse().find((m) => m.role === "assistant");
+        if (lastAssistant) {
+          lastAssistant.preparationData = JSON.parse(JSON.stringify(action.payload));
+        }
+      }
     },
     setChatError: (state, action) => {
       state.error = action.payload;
@@ -208,6 +219,7 @@ const chatSlice = createSlice({
       state.streamText = "";
       state.toolStatus = "";
       state.jobProgress = null;
+      state.preparationData = null;
     },
   },
   extraReducers: (builder) => {
@@ -218,6 +230,8 @@ const chatSlice = createSlice({
       .addCase(fetchHistory.fulfilled, (state, action) => {
         state.activeId = action.payload.conversationId;
         state.messages = action.payload.messages;
+        const lastWithPrep = [...(action.payload.messages || [])].reverse().find((m) => m.preparationData);
+        state.preparationData = lastWithPrep?.preparationData || null;
       })
       .addCase(renameConversationThunk.fulfilled, (state, action) => {
         const { conversationId, title } = action.payload;
@@ -236,6 +250,7 @@ const chatSlice = createSlice({
           state.streamText = "";
           state.toolStatus = "";
           state.jobProgress = null;
+          state.preparationData = null;
         }
       });
   },
@@ -248,6 +263,7 @@ export const {
   appendStreamText,
   setToolStatus,
   updateJobProgress,
+  setPreparationData,
   finishStream,
   setChatError,
   clearMessages,

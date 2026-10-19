@@ -6,6 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "sync:videos": "node scripts/syncVideosFromSheet.js",
+    "sync:videos:force": "node scripts/syncVideosFromSheet.js --force",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

@@ -346,6 +346,34 @@ class DriveService {
   }
 
   /**
+   * List contents of a Google Drive folder and categorize items into image vs video
+   */
+  async listFolderContents(folderId) {
+    const cleanId = this.extractFileId(folderId) || folderId;
+    const { files } = await this.listFiles({ folderId: cleanId, pageSize: 100, recursive: true });
+    return (files || []).map((f) => {
+      const m = String(f.mimeType || "").toLowerCase();
+      const n = String(f.name || "").toLowerCase();
+      const isImage = m.startsWith("image/") || /\.(jpg|jpeg|png|webp|gif|svg)($|\?)/i.test(n);
+      const isVideo = m.startsWith("video/") || /\.(mp4|mov|avi|webm|m4v|mkv)($|\?)/i.test(n);
+      return {
+        fileId: f.id,
+        id: f.id,
+        name: f.name,
+        fileName: f.name,
+        mimeType: f.mimeType,
+        size: f.size,
+        fileSize: f.size,
+        type: isVideo ? "VIDEO" : isImage ? "IMAGE" : "UNKNOWN",
+        isImage,
+        isVideo,
+        url: f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`,
+        webViewLink: f.webViewLink,
+      };
+    });
+  }
+
+  /**
    * List files in user's Drive or inside a specified folder, with pagination & recursive subfolder traversal.
    */
   async listFiles({ folderId = null, query = "", pageSize = 100, pageToken = null, recursive = true, maxDepth = 3, currentDepth = 0, visitedFolderIds = new Set() } = {}) {
@@ -602,8 +630,8 @@ class DriveService {
     });
 
     const reqTypeStr = expectedMediaType ? String(expectedMediaType).toLowerCase() : "";
-    const isTargetImageReq = reqTypeStr ? (reqTypeStr.includes("image") || reqTypeStr.includes("static") || reqTypeStr.includes("photo")) : true;
-    const isTargetVideoReq = reqTypeStr ? (reqTypeStr.includes("video") || reqTypeStr.includes("mp4") || reqTypeStr.includes("reel")) : false;
+    const isTargetImageReq = reqTypeStr.includes("image") || reqTypeStr.includes("static") || reqTypeStr.includes("photo");
+    const isTargetVideoReq = reqTypeStr.includes("video") || reqTypeStr.includes("mp4") || reqTypeStr.includes("reel");
 
     let eligibleFiles = [];
     if (isTargetImageReq && !isTargetVideoReq) {
@@ -611,7 +639,7 @@ class DriveService {
       if (eligibleFiles.length === 0) {
         throw new Error(`No supported image files (JPEG, PNG, WebP) found inside Google Drive folder "${folderName}" (${folderId}). Total files scanned: ${classifiedFiles.length} (Videos: ${videoFiles.length}, Unsupported: ${unsupportedFiles.length}).`);
       }
-    } else if (isTargetVideoReq) {
+    } else if (isTargetVideoReq && !isTargetImageReq) {
       eligibleFiles = videoFiles;
       if (eligibleFiles.length === 0) {
         throw new Error(`No supported video files (MP4, MOV, WebM) found inside Google Drive folder "${folderName}" (${folderId}). Total files scanned: ${classifiedFiles.length} (Images: ${imageFiles.length}, Unsupported: ${unsupportedFiles.length}).`);
@@ -619,7 +647,7 @@ class DriveService {
     } else {
       eligibleFiles = classifiedFiles.filter(f => f.isImage || f.isVideo);
       if (eligibleFiles.length === 0) {
-        throw new Error(`No supported image or video files found inside Google Drive folder "${folderName}" (${folderId}).`);
+        throw new Error(`No supported image or video files found inside Google Drive folder "${folderName}" (${folderId}). Total files scanned: ${classifiedFiles.length}.`);
       }
     }
 
@@ -684,7 +712,17 @@ class DriveService {
   /**
    * Download a file from Google Drive into scratch/ directory
    */
-  async downloadFile(driveLinkOrId, destinationFilename = null) {
+  async downloadFile(driveLinkOrId, destinationFilename = null, expectedMediaType = null) {
+    // If input is explicitly a Google Drive folder link, delegate to processDriveLink
+    if (typeof driveLinkOrId === "string" && driveLinkOrId.includes("/folders/")) {
+      console.log(`[DriveService] downloadFile: Detected folder URL "${driveLinkOrId}". Resolving media asset via processDriveLink (expectedMediaType: ${expectedMediaType || "ALL"})...`);
+      const folderRes = await this.processDriveLink(driveLinkOrId, expectedMediaType);
+      if (folderRes?.assets && folderRes.assets.length > 0) {
+        return folderRes.assets[0];
+      }
+      throw new Error(`Google Drive folder contains no accessible image or video files.`);
+    }
+
     let fileId = this.extractFileId(driveLinkOrId);
     if (!fileId) {
       fileId = await this.resolveFileId(driveLinkOrId);
@@ -748,6 +786,14 @@ class DriveService {
           `https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,mimeType,size`
         );
         meta = metaRes.data || {};
+        if (meta.mimeType === "application/vnd.google-apps.folder") {
+          console.log(`[DriveService] downloadFile: File ID "${fileId}" is a folder. Resolving media asset via processDriveLink...`);
+          const folderRes = await this.processDriveLink(fileId);
+          if (folderRes?.assets && folderRes.assets.length > 0) {
+            return folderRes.assets[0];
+          }
+          throw new Error(`Google Drive folder "${meta.name || fileId}" contains no accessible image or video files.`);
+        }
         if (!filename && meta.name) {
           filename = meta.name;
         }
@@ -755,6 +801,7 @@ class DriveService {
           mimeType = meta.mimeType;
         }
       } catch (mErr) {
+        if (mErr.message.includes("contains no accessible")) throw mErr;
         console.warn("[DriveService] Metadata fetch warning:", mErr.message);
       }
 
@@ -1010,8 +1057,14 @@ class DriveService {
   }
 
   // Alias downloadCreative for compatibility
-  async downloadCreative(driveLinkOrId, destinationFilename = null) {
-    return this.downloadFile(driveLinkOrId, destinationFilename);
+  async downloadCreative(driveLinkOrId, destinationFilename = null, expectedMediaType = null) {
+    if (typeof driveLinkOrId === "string" && driveLinkOrId.includes("/folders/")) {
+      const folderRes = await this.processDriveLink(driveLinkOrId, expectedMediaType);
+      if (folderRes?.assets && folderRes.assets.length > 0) {
+        return folderRes.assets[0];
+      }
+    }
+    return this.downloadFile(driveLinkOrId, destinationFilename, expectedMediaType);
   }
 
   cleanupTempFile(filePath) {

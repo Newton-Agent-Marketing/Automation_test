@@ -3,6 +3,7 @@ import axios from "axios";
 import fs from "fs";
 import path from "path";
 import MetaAssetResolver from "./metaAssetResolver.js";
+import { CampaignRouter } from "../data/campaignRouter.js";
 
 const GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v24.0";
 const META_GRAPH_URL = `https://graph.facebook.com/${GRAPH_VERSION}`;
@@ -70,7 +71,90 @@ export function normalizeCountryCodes(countries) {
   return valid.length > 0 ? Array.from(new Set(valid)) : ["IN"];
 } 
 
+export const VALID_META_APP_CUSTOM_EVENT_TYPES = [
+  "PURCHASE",
+  "COMPLETE_REGISTRATION",
+  "ADD_TO_CART",
+  "INITIATED_CHECKOUT",
+  "SEARCH",
+  "VIEW_CONTENT",
+  "ADD_PAYMENT_INFO",
+  "LEAD",
+  "LEVEL_ACHIEVED",
+  "ACHIEVE_LEVEL",
+  "SPENT_CREDITS",
+  "RATE",
+  "TUTORIAL_COMPLETED",
+  "ADD_TO_WISHLIST",
+  "SUBSCRIBE",
+  "START_TRIAL",
+  "OTHER",
+];
+
 export class MetaApiService {
+  // Helper: Normalize in-app event names to Meta-supported custom_event_type values
+  static normalizeAppCustomEventType(rawEvent) {
+    if (!rawEvent || typeof rawEvent !== "string") return null;
+    const clean = rawEvent.trim().toUpperCase().replace(/[\s-]+/g, "_");
+    if (!clean || clean === "MOBILE_APP_INSTALL" || clean === "INSTALL" || clean === "APP_INSTALL") {
+      return null;
+    }
+    if (clean === "PURCHASE" || clean === "BUY") return "PURCHASE";
+    if (clean === "REGISTRATION" || clean === "COMPLETE_REGISTRATION" || clean === "SIGN_UP" || clean === "REGISTER") return "COMPLETE_REGISTRATION";
+    if (clean === "ADD_TO_CART" || clean === "CART") return "ADD_TO_CART";
+    if (clean === "INITIATE_CHECKOUT" || clean === "INITIATED_CHECKOUT" || clean === "CHECKOUT") return "INITIATED_CHECKOUT";
+    if (clean === "VIEW_CONTENT" || clean === "PAGE_VIEW" || clean === "VIEW") return "VIEW_CONTENT";
+    if (clean === "SEARCH") return "SEARCH";
+    if (clean === "ADD_PAYMENT_INFO" || clean === "PAYMENT_INFO") return "ADD_PAYMENT_INFO";
+    if (clean === "LEAD") return "LEAD";
+    if (clean === "LEVEL_ACHIEVED" || clean === "ACHIEVE_LEVEL") return "LEVEL_ACHIEVED";
+    if (clean === "TUTORIAL_COMPLETED") return "TUTORIAL_COMPLETED";
+    if (clean === "SUBSCRIBE" || clean === "SUBSCRIPTION") return "SUBSCRIBE";
+    if (clean === "START_TRIAL" || clean === "TRIAL") return "START_TRIAL";
+    
+    return VALID_META_APP_CUSTOM_EVENT_TYPES.includes(clean) ? clean : null;
+  }
+
+  // Helper: Validate promoted_object payload before sending to Meta Graph API
+  static validatePromotedObject(promotedObj, optimizationGoal) {
+    if (!promotedObj || typeof promotedObj !== "object") return;
+
+    if (promotedObj.application_id) {
+      if (!CampaignRouter.isMetaAppId(promotedObj.application_id)) {
+        throw new Error(`[Meta AdSet Validation Error]: Invalid application_id "${promotedObj.application_id}". Must be a numeric Meta App ID.`);
+      }
+
+      if (promotedObj.object_store_url && !CampaignRouter.isAppStoreUrl(promotedObj.object_store_url)) {
+        throw new Error(`[Meta AdSet Validation Error]: Invalid object_store_url "${promotedObj.object_store_url}". Must be a valid Google Play Store or Apple App Store URL.`);
+      }
+
+      // Requirement 1: For optimization_goal: APP_INSTALLS, do not send custom_event_type: MOBILE_APP_INSTALL. Omit custom_event_type when it is not required.
+      if (optimizationGoal === "APP_INSTALLS") {
+        if (promotedObj.custom_event_type) {
+          console.warn(`[Meta AdSet Warning]: Omitting custom_event_type "${promotedObj.custom_event_type}" because optimization_goal is APP_INSTALLS.`);
+          delete promotedObj.custom_event_type;
+        }
+      } else if (promotedObj.custom_event_type) {
+        const eventUpper = String(promotedObj.custom_event_type).toUpperCase();
+        if (eventUpper === "MOBILE_APP_INSTALL") {
+          console.warn("[Meta AdSet Warning]: Omitting invalid custom_event_type MOBILE_APP_INSTALL.");
+          delete promotedObj.custom_event_type;
+        } else if (!VALID_META_APP_CUSTOM_EVENT_TYPES.includes(eventUpper)) {
+          throw new Error(
+            `[Meta AdSet Validation Error]: (#100) promoted_object[custom_event_type] must be one of the following values: ${VALID_META_APP_CUSTOM_EVENT_TYPES.join(", ")}. Received: "${promotedObj.custom_event_type}"`
+          );
+        } else {
+          promotedObj.custom_event_type = eventUpper;
+        }
+      }
+    }
+
+    if (promotedObj.pixel_id) {
+      if (!/^\d+$/.test(String(promotedObj.pixel_id).trim())) {
+        throw new Error(`[Meta AdSet Validation Error]: Invalid pixel_id "${promotedObj.pixel_id}". Must be a numeric Pixel ID.`);
+      }
+    }
+  }
   // Helper: Auto-resolve active Meta OAuth Access Token from DB / env
   static async resolveOAuthToken(accountId, userId, passedToken) {
     if (
@@ -97,10 +181,10 @@ export class MetaApiService {
       }
 
       let acc = await MetaAccount.findOne(query).sort({ updatedAt: -1 }).lean();
-      if (!acc && userId) {
-        // If not found by specific accountId under userId, check if user's connected account has access
+      if (!acc && userId && cleanId) {
+        // If not directly stored under accountId, check if user's connected token has explicit access to this account
         const userAcc = await MetaAccount.findOne({ userId, isActive: true, accessToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean();
-        if (userAcc?.accessToken && cleanId) {
+        if (userAcc?.accessToken) {
           try {
             const checkUrl = `${META_GRAPH_URL}/${cleanId}`;
             const checkRes = await axios.get(checkUrl, {
@@ -116,9 +200,28 @@ export class MetaApiService {
         }
       }
 
-      // If accountId was NOT specified, fallback to user's active account
+      // If accountId was NOT specified, read from AI Context Channel Node
       if (!acc && !accountId && userId) {
-        acc = await MetaAccount.findOne({ userId, isActive: true, accessToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean();
+        const AiContext = (await import("../../models/aiContextModel.js")).default;
+        const aiContextDoc = await AiContext.findOne({ userId }).lean().catch(() => null);
+        const channelNodes = (aiContextDoc?.nodes || []).filter((n) => n.type === "ad_channel");
+        const metaChannelNode =
+          channelNodes.find((n) => {
+            const cName = (n.data?.channelName || n.data?.channel || n.label || "").toLowerCase();
+            return cName.includes("meta") || cName.includes("facebook");
+          }) || (channelNodes.length === 1 ? channelNodes[0] : null);
+
+        const contextAccId = metaChannelNode?.data?.adAccountId?.trim();
+        if (contextAccId) {
+          const cleanCtx = contextAccId.startsWith("act_") ? contextAccId : `act_${contextAccId}`;
+          const rawCtx = contextAccId.replace(/^act_/, "");
+          acc = await MetaAccount.findOne({
+            userId,
+            isActive: true,
+            accessToken: { $exists: true, $ne: "" },
+            $or: [{ accountId: cleanCtx }, { accountId: rawCtx }, { accountId: contextAccId }],
+          }).lean();
+        }
       }
 
       if (acc?.accessToken) {
@@ -406,6 +509,8 @@ export class MetaApiService {
       lifetimeBudget,
       status = "PAUSED",
       specialAdCategories = ["NONE"],
+      isSkadnetworkAttribution = false,
+      is_skadnetwork_attribution = false,
       userId = null,
     } = {},
     callerUserId = null
@@ -423,6 +528,11 @@ export class MetaApiService {
       access_token: accessToken,
     };
 
+    const hasSkan = isSkadnetworkAttribution || is_skadnetwork_attribution;
+    if (hasSkan) {
+      payload.is_skadnetwork_attribution = true;
+    }
+
     const rawCampBudget = dailyBudget || daily_budget || daily_budget_inr || campaign_daily_budget || campaign_daily_budget_inr || budget;
     const effectiveDailyBudget = rawCampBudget ? Number(String(rawCampBudget).replace(/[^0-9.]/g, "")) : null;
 
@@ -433,6 +543,20 @@ export class MetaApiService {
     } else if (lifetimeBudget) {
       payload.lifetime_budget = Math.round(Number(lifetimeBudget) * 100);
       payload.bid_strategy = "LOWEST_COST_WITHOUT_CAP";
+    }
+
+    if (accessToken && accessToken.startsWith("EAAB_simulated")) {
+      const simCampId = `sim_camp_${Date.now()}`;
+      return {
+        id: simCampId,
+        campaignId: simCampId,
+        success: true,
+        name: payload.name,
+        objective: payload.objective,
+        status: payload.status,
+        isSkadnetworkAttribution: Boolean(payload.is_skadnetwork_attribution),
+        daily_budget: payload.daily_budget,
+      };
     }
 
     return await this.withRateLimitRetry(async () => {
@@ -533,6 +657,27 @@ export class MetaApiService {
     });
   }
 
+  // 11.2. Check whether the Meta Ad Account is owned by a verified business (required for "Maximise value of conversions" / VALUE goal)
+  static async isAccountBusinessVerified(accountId, accessToken) {
+    if (!accountId || !accessToken || accessToken.startsWith("EAAB_simulated")) {
+      return false;
+    }
+    const cleanId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
+    try {
+      const res = await axios.get(`${META_GRAPH_URL}/${cleanId}`, {
+        params: {
+          fields: "id,name,business{id,name,verification_status}",
+          access_token: accessToken,
+        },
+        timeout: 5000,
+      });
+      const vStatus = (res.data?.business?.verification_status || "").toLowerCase();
+      return vStatus === "verified";
+    } catch (_) {
+      return false;
+    }
+  }
+
   // 11.5. Auto-resolve & verify a valid Instagram User ID (instagram_user_id)
   static async resolveInstagramUserId(accountId, accessToken, pageId, requestedIgId, source = "Excel Sheet / Request") {
     const isPresent = Boolean(requestedIgId && String(requestedIgId).trim());
@@ -618,19 +763,34 @@ export class MetaApiService {
   static accountAppsCache = new Map();
   static userAccountsCache = new Map();
 
+  static getCached(map, key, ttlMs = 30000) {
+    if (!map.has(key)) return null;
+    const entry = map.get(key);
+    if (!entry || Date.now() - entry.timestamp > ttlMs) {
+      map.delete(key);
+      return null;
+    }
+    return entry.data;
+  }
+
+  static setCached(map, key, data) {
+    map.set(key, { data, timestamp: Date.now() });
+  }
+
   // 13. Fetch Pixels on Meta Ad Account
   static async getAccountPixels(accountId, accessToken) {
     if (!accessToken) return [];
     const cleanId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
-    if (this.accountPixelsCache.has(cleanId)) {
-      return this.accountPixelsCache.get(cleanId);
+    const cached = this.getCached(this.accountPixelsCache, cleanId, 30000);
+    if (cached) {
+      return cached;
     }
     try {
       const res = await axios.get(`${META_GRAPH_URL}/${cleanId}/adspixels`, {
         params: { access_token: accessToken, fields: "id,name" },
       });
       const data = res.data?.data || [];
-      this.accountPixelsCache.set(cleanId, data);
+      this.setCached(this.accountPixelsCache, cleanId, data);
       return data;
     } catch (e) {
       return [];
@@ -641,23 +801,58 @@ export class MetaApiService {
   static async getAccountApps(accountId, accessToken) {
     if (!accessToken) return [];
     const cleanId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
-    if (this.accountAppsCache.has(cleanId)) {
-      return this.accountAppsCache.get(cleanId);
+    const cached = this.getCached(this.accountAppsCache, cleanId, 30000);
+    if (cached) {
+      return cached;
     }
     try {
-      const res = await axios.get(`${META_GRAPH_URL}/${cleanId}/applications`, {
-        params: { access_token: accessToken, fields: "id,name" },
-      });
-      const data = res.data?.data || [];
-      this.accountAppsCache.set(cleanId, data);
-      return data;
+      const apps = [];
+      try {
+        const advRes = await axios.get(`${META_GRAPH_URL}/${cleanId}/advertisable_applications`, {
+          params: { access_token: accessToken, fields: "id,name,object_store_urls" },
+        });
+        if (Array.isArray(advRes.data?.data)) {
+          apps.push(...advRes.data.data);
+        }
+      } catch (e) {
+        // ignore and fallback
+      }
+
+      try {
+        const res = await axios.get(`${META_GRAPH_URL}/${cleanId}/applications`, {
+          params: { access_token: accessToken, fields: "id,name" },
+        });
+        if (Array.isArray(res.data?.data)) {
+          for (const item of res.data.data) {
+            if (!apps.some((a) => String(a.id) === String(item.id))) {
+              apps.push(item);
+            }
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      this.setCached(this.accountAppsCache, cleanId, apps);
+      return apps;
     } catch (e) {
       return [];
     }
   }
 
+
   // 13.5. Dynamically verify and resolve Pixel asset for the selected ad account
   static async verifyAndResolvePixelAsset({ accountId, accessToken, requestedPixelId, objective, allowFallbackPixel = false }) {
+    if (accessToken && String(accessToken).startsWith("EAAB_simulated")) {
+      return {
+        valid: true,
+        pixelId: requestedPixelId || "simulated_pixel_123",
+        status: "VERIFIED",
+        blocked: false,
+        source: "SIMULATED",
+        message: "Simulated pixel verification.",
+      };
+    }
     const cleanId = accountId ? (String(accountId).startsWith("act_") ? accountId : `act_${accountId}`) : null;
     const objUpper = String(objective || "").toUpperCase();
     const isPixelRequired = ["OUTCOME_SALES", "SALES", "CONVERSIONS", "OFFSITE_CONVERSIONS"].includes(objUpper);
@@ -747,10 +942,10 @@ export class MetaApiService {
       let directMetaCheck = null;
       if (accessToken) {
         try {
-          const directRes = await axios.get(`https://graph.facebook.com/v24.0/${cleanPixelId}`, {
+          const directRes = await axios.get(`${META_GRAPH_URL}/${cleanPixelId}`, {
             params: {
               access_token: accessToken,
-              fields: "id,name,owner_business,creation_time",
+              fields: "id,name",
             },
             timeout: 10000,
           });
@@ -780,7 +975,7 @@ export class MetaApiService {
           status: "INVALID_PIXEL_ID",
           blocked: true,
           error: `Incorrect Pixel ID: Pixel ${cleanPixelId} does not exist on Meta Graph API (Meta Error 100/Subcode 33: Object does not exist).`,
-          requiredAction: `Pixel ${cleanPixelId} does not exist on Meta. Verify the spreadsheet cell for typos or inadvertent spreadsheet drag/auto-fill series increments (e.g. 909136826822894 vs 909136826822895), and ensure the ID matches an active Pixel in Meta Events Manager.`,
+          requiredAction: `Pixel ${cleanPixelId} does not exist on Meta. Verify the spreadsheet cell for typos or inadvertent spreadsheet drag/auto-fill series increments, and ensure the ID matches an active Pixel in Meta Events Manager.`,
         };
       }
 
@@ -800,17 +995,17 @@ export class MetaApiService {
         };
       }
 
-      // 4C: Pixel exists on Meta in an external business -> PIXEL_NOT_SHARED_WITH_ACCOUNT
+      // 4C: Pixel exists on Meta but is not connected to this ad account -> PIXEL_NOT_SHARED_WITH_ACCOUNT
       if (directMetaCheck && directMetaCheck.success) {
         const pixData = directMetaCheck.data;
-        const bizName = pixData.owner_business?.name || "External Business";
+        const pixelDisplayName = pixData.name ? `"${pixData.name}" (${cleanPixelId})` : `Pixel ${cleanPixelId}`;
         return {
           valid: false,
           pixelId: cleanPixelId,
           status: "PIXEL_NOT_SHARED_WITH_ACCOUNT",
           blocked: true,
-          error: `Pixel Not Connected to Ad Account: Pixel ${cleanPixelId} (${pixData.name || "Pixel"}) exists in Meta Business Manager (${bizName}), but is not added as a Connected Asset to selected ad account ${cleanId}.`,
-          requiredAction: `In Meta Business Manager for ${bizName}, go to Business Settings -> Data Sources -> Pixels -> select Pixel ${cleanPixelId} -> click 'Connected Assets' -> add Ad Account ${cleanId}.`,
+          error: `Pixel Not Connected to Ad Account: Pixel ${pixelDisplayName} exists and is accessible, but is not added as a Connected Asset to selected ad account ${cleanId}.`,
+          requiredAction: `In Meta Business Manager, go to Business Settings -> Data Sources -> Datasets (or Pixels) -> select ${pixelDisplayName} -> click the "Connected Assets" tab -> click "Add Assets" -> select Ad Account ${cleanId} and confirm.`,
         };
       }
 
@@ -883,20 +1078,149 @@ export class MetaApiService {
   }
 
   // 13.6. Dynamically verify and resolve App asset for the selected ad account
-  static async verifyAndResolveAppAsset({ accountId, accessToken, requestedAppId, objective }) {
+  static async verifyAndResolveAppAsset({ accountId, accessToken, requestedAppId, requestedStoreUrl, objective }) {
     const cleanId = accountId ? (String(accountId).startsWith("act_") ? accountId : `act_${accountId}`) : null;
     const objUpper = String(objective || "").toUpperCase();
     const isAppRequired = ["APP_INSTALLS", "OUTCOME_APP_PROMOTION"].includes(objUpper);
 
     if (requestedAppId && String(requestedAppId).trim()) {
       const cleanAppId = String(requestedAppId).trim();
+      if (accessToken && accessToken.startsWith("EAAB_simulated")) {
+        return {
+          valid: true,
+          appId: cleanAppId,
+          status: "SIMULATED_VERIFIED",
+          source: "SIMULATED_TEST",
+          message: `App ${cleanAppId} verified for simulated test mode.`,
+        };
+      }
       if (cleanId) {
         const accountApps = await this.getAccountApps(cleanId, accessToken);
-        const isAssociated = accountApps.some((a) => String(a.id) === cleanAppId);
-        if (isAssociated) {
+        const matchedApp = accountApps.find((a) => String(a.id) === cleanAppId);
+        if (matchedApp) {
+          const urlsObj = matchedApp.object_store_urls || {};
+          const appHasPlayStore = Boolean(urlsObj.google_play);
+          const appHasAppStore = Boolean(urlsObj.itunes);
+          const fallbackStore = urlsObj.google_play || urlsObj.itunes;
+
+          if (isAppRequired) {
+            let isMismatch = false;
+            let expectedStoreType = "";
+
+            if (requestedStoreUrl) {
+              const storeLower = String(requestedStoreUrl).toLowerCase();
+              const hasPlayStore = storeLower.includes("play.google.com");
+              const hasAppStore = storeLower.includes("apps.apple.com") || storeLower.includes("itunes.apple.com");
+
+              if (hasPlayStore && !appHasPlayStore) {
+                isMismatch = true;
+                expectedStoreType = "Google Play Store";
+              } else if (hasAppStore && !appHasAppStore) {
+                isMismatch = true;
+                expectedStoreType = "Apple App Store";
+              } else if (hasPlayStore && appHasPlayStore) {
+                const reqPkg = (requestedStoreUrl.match(/[?&]id=([a-zA-Z0-9._]+)/i) || [])[1];
+                const appPkg = (String(urlsObj.google_play).match(/[?&]id=([a-zA-Z0-9._]+)/i) || [])[1];
+                if (reqPkg && appPkg && reqPkg.toLowerCase() !== appPkg.toLowerCase()) {
+                  isMismatch = true;
+                  expectedStoreType = `Google Play package "${reqPkg}" (app is registered with "${appPkg}")`;
+                }
+              }
+            } else if (!fallbackStore) {
+              // No store URL requested and matchedApp has NO store URL on Meta
+              isMismatch = true;
+              expectedStoreType = "Mobile App Store URL";
+            }
+
+            if (isMismatch) {
+              let otherAccountWithApp = null;
+              let otherAppMatch = null;
+              try {
+                const userAccounts = await this.getUserAdAccounts(accessToken);
+                // 1. Search for an app matching requestedStoreUrl across all accounts
+                if (requestedStoreUrl) {
+                  const storeLower = String(requestedStoreUrl).toLowerCase();
+                  const reqPkg = (requestedStoreUrl.match(/[?&]id=([a-zA-Z0-9._]+)/i) || [])[1]?.toLowerCase();
+                  for (const otherAcc of userAccounts) {
+                    const otherId = String(otherAcc.id || otherAcc.account_id);
+                    const cleanOtherId = otherId.startsWith("act_") ? otherId : `act_${otherId}`;
+                    const otherApps = await this.getAccountApps(cleanOtherId, accessToken);
+                    for (const oApp of otherApps) {
+                      const oUrls = Object.values(oApp.object_store_urls || {}).map((u) => String(u).toLowerCase());
+                      const hasMatch = oUrls.some((u) => (reqPkg ? u.includes(reqPkg) : u === storeLower));
+                      if (hasMatch) {
+                        otherAccountWithApp = otherAcc;
+                        otherAppMatch = oApp;
+                        break;
+                      }
+                    }
+                    if (otherAppMatch) break;
+                  }
+                }
+
+                // 2. If not matched by store URL, check if any other account has a valid mobile app with store URL
+                if (!otherAppMatch) {
+                  for (const otherAcc of userAccounts) {
+                    const otherId = String(otherAcc.id || otherAcc.account_id);
+                    const cleanOtherId = otherId.startsWith("act_") ? otherId : `act_${otherId}`;
+                    if (cleanOtherId === cleanId) continue;
+                    const otherApps = await this.getAccountApps(cleanOtherId, accessToken);
+                    const mobApp = otherApps.find((a) => a.object_store_urls?.google_play || a.object_store_urls?.itunes);
+                    if (mobApp) {
+                      otherAccountWithApp = otherAcc;
+                      otherAppMatch = mobApp;
+                      break;
+                    }
+                  }
+                }
+              } catch (e) {}
+
+              if (otherAppMatch && otherAccountWithApp) {
+                const otherAccId = String(otherAccountWithApp.id || otherAccountWithApp.account_id);
+                const cleanOtherId = otherAccId.startsWith("act_") ? otherAccId : `act_${otherAccId}`;
+                const autoStore = otherAppMatch.object_store_urls?.google_play || otherAppMatch.object_store_urls?.itunes || requestedStoreUrl;
+                return {
+                  valid: true,
+                  appId: otherAppMatch.id,
+                  resolvedStoreUrl: autoStore,
+                  targetAccountId: cleanOtherId,
+                  targetAccountName: otherAccountWithApp.name || cleanOtherId,
+                  status: "CROSS_ACCOUNT_APP_ROUTED",
+                  blocked: false,
+                  message: `App "${otherAppMatch.name}" (${otherAppMatch.id}) with store URL "${autoStore}" is authorized on account "${otherAccountWithApp.name || cleanOtherId}" (${cleanOtherId}). Auto-routed campaign to this account.`,
+                };
+              }
+
+              // If no other account had the store URL, but matchedApp on current account has its own valid store URL, auto-adopt it!
+              if (fallbackStore) {
+                return {
+                  valid: true,
+                  appId: cleanAppId,
+                  resolvedStoreUrl: fallbackStore,
+                  targetAccountId: cleanId,
+                  status: "APP_STORE_URL_AUTO_FALLBACK",
+                  blocked: false,
+                  message: `Automatically adopted registered store URL for App ${cleanAppId} ("${matchedApp.name}"): ${fallbackStore}`,
+                };
+              }
+
+              return {
+                valid: false,
+                appId: cleanAppId,
+                status: "APP_STORE_URL_MISMATCH",
+                blocked: true,
+                requiredAction: `App ${cleanAppId} ("${matchedApp.name}") on account ${cleanId} does not match the provided store URL "${requestedStoreUrl || "N/A"}". Please verify the application configuration in Meta App Dashboard or provide the correct App ID matching this store URL.`,
+                error: `Application/Object Store URL Mismatch: App ${cleanAppId} ("${matchedApp.name}") on account ${cleanId} does not support ${expectedStoreType}.`,
+              };
+            }
+          }
+
+          const defaultStore = fallbackStore || requestedStoreUrl || null;
           return {
             valid: true,
             appId: cleanAppId,
+            resolvedStoreUrl: defaultStore,
+            targetAccountId: cleanId,
             status: "VERIFIED",
             source: "SELECTED_ACCOUNT",
             message: `App ${cleanAppId} is verified and authorized on account ${cleanId}.`,
@@ -925,14 +1249,16 @@ export class MetaApiService {
           const otherApps = await this.getAccountApps(cleanOtherId, accessToken);
           const match = otherApps.find((a) => String(a.id) === cleanAppId);
           if (match) {
+            const autoStore = match.object_store_urls?.google_play || match.object_store_urls?.itunes || requestedStoreUrl;
             return {
-              valid: false,
+              valid: true,
               appId: cleanAppId,
-              status: "CROSS_ACCOUNT_PERMISSION_REQUIRED",
-              blocked: true,
-              owningAccount: { id: cleanOtherId, name: otherAcc.name },
-              requiredAction: `App ${cleanAppId} is associated with authorized account ${otherAcc.name || cleanOtherId} (${cleanOtherId}), but is not linked to selected account ${cleanId}. In Meta Business Manager, link App ${cleanAppId} to Ad Account ${cleanId}.`,
-              error: `Cross-account asset sharing required: App ${cleanAppId} belongs to ${otherAcc.name || cleanOtherId} and must be shared with ${cleanId}.`,
+              resolvedStoreUrl: autoStore,
+              targetAccountId: cleanOtherId,
+              targetAccountName: otherAcc.name || cleanOtherId,
+              status: "CROSS_ACCOUNT_APP_ROUTED",
+              blocked: false,
+              message: `App ${cleanAppId} ("${match.name}") is authorized on your account "${otherAcc.name || cleanOtherId}" (${cleanOtherId}). Auto-routed campaign to this account.`,
             };
           }
         }
@@ -943,22 +1269,82 @@ export class MetaApiService {
         console.warn(`[Meta App Cross-Account Verification Warning]: HTTP ${status} from ${endpoint}:`, typeof metaError === "object" ? JSON.stringify(metaError) : metaError);
       }
 
+      // Cross-account search by store URL if requestedStoreUrl is supplied
+      if (requestedStoreUrl) {
+        try {
+          const userAccounts = await this.getUserAdAccounts(accessToken);
+          const storeLower = String(requestedStoreUrl).toLowerCase();
+          const reqPkg = (requestedStoreUrl.match(/[?&]id=([a-zA-Z0-9._]+)/i) || [])[1]?.toLowerCase();
+          for (const acc of userAccounts) {
+            const accId = String(acc.id || acc.account_id);
+            const cleanAccId = accId.startsWith("act_") ? accId : `act_${accId}`;
+            const apps = await this.getAccountApps(cleanAccId, accessToken);
+            for (const a of apps) {
+              const urls = Object.values(a.object_store_urls || {}).map((u) => String(u).toLowerCase());
+              if (urls.some((u) => (reqPkg ? u.includes(reqPkg) : u === storeLower))) {
+                const autoStore = a.object_store_urls?.google_play || a.object_store_urls?.itunes || requestedStoreUrl;
+                return {
+                  valid: true,
+                  appId: a.id,
+                  resolvedStoreUrl: autoStore,
+                  targetAccountId: cleanAccId,
+                  targetAccountName: acc.name || cleanAccId,
+                  status: "STORE_URL_DISCOVERED_APP_ROUTED",
+                  blocked: false,
+                  message: `Found app "${a.name}" (${a.id}) matching store URL "${requestedStoreUrl}" on account "${acc.name || cleanAccId}" (${cleanAccId}). Auto-routed campaign to this account.`,
+                };
+              }
+            }
+          }
+        } catch (e) {}
+      }
+
       if (cleanId) {
         try {
           const accountApps = await this.getAccountApps(cleanId, accessToken);
-          if (accountApps && accountApps.length === 1) {
+          const mobApps = (accountApps || []).filter((a) => a.object_store_urls?.google_play || a.object_store_urls?.itunes);
+          if (mobApps.length >= 1) {
+            const a = mobApps[0];
+            const autoStore = a.object_store_urls?.google_play || a.object_store_urls?.itunes;
             return {
               valid: true,
-              appId: accountApps[0].id,
+              appId: a.id,
+              resolvedStoreUrl: autoStore,
+              targetAccountId: cleanId,
               status: "DYNAMIC_ACCOUNT_ALTERNATIVE_RESOLVED",
               blocked: false,
-              message: `Supplied App ${cleanAppId} is unlinked to account ${cleanId}, but account has a single verified active app: ${accountApps[0].id} (${accountApps[0].name || "App"}). Dynamically resolved alternative.`,
+              message: `Supplied App ${cleanAppId} is unlinked to account ${cleanId}, but account has active mobile app: ${a.id} (${a.name || "App"}). Auto-resolved with store URL ${autoStore}.`,
             };
           }
         } catch (e) {
           // ignore inspection failure
         }
       }
+
+      // Check if any other accessible account has ANY mobile app with store URL
+      try {
+        const userAccounts = await this.getUserAdAccounts(accessToken);
+        for (const otherAcc of userAccounts) {
+          const otherId = String(otherAcc.id || otherAcc.account_id);
+          const cleanOtherId = otherId.startsWith("act_") ? otherId : `act_${otherId}`;
+          if (cleanOtherId === cleanId) continue;
+          const otherApps = await this.getAccountApps(cleanOtherId, accessToken);
+          const mobApp = otherApps.find((a) => a.object_store_urls?.google_play || a.object_store_urls?.itunes);
+          if (mobApp) {
+            const autoStore = mobApp.object_store_urls?.google_play || mobApp.object_store_urls?.itunes;
+            return {
+              valid: true,
+              appId: mobApp.id,
+              resolvedStoreUrl: autoStore,
+              targetAccountId: cleanOtherId,
+              targetAccountName: otherAcc.name || cleanOtherId,
+              status: "CROSS_ACCOUNT_APP_ROUTED",
+              blocked: false,
+              message: `App ${cleanAppId} was not found on ${cleanId}, but account "${otherAcc.name || cleanOtherId}" (${cleanOtherId}) has mobile app "${mobApp.name}" (${mobApp.id}). Auto-routed to this account.`,
+            };
+          }
+        }
+      } catch (e) {}
 
       if (!isAppRequired) {
         return {
@@ -1001,14 +1387,107 @@ export class MetaApiService {
       };
     }
 
+    // When requestedAppId is NOT supplied:
+    // 1. If requestedStoreUrl is supplied, search current account and other accounts for matching app
+    if (requestedStoreUrl) {
+      try {
+        const storeLower = String(requestedStoreUrl).toLowerCase();
+        const reqPkg = (requestedStoreUrl.match(/[?&]id=([a-zA-Z0-9._]+)/i) || [])[1]?.toLowerCase();
+        if (cleanId) {
+          const currentApps = await this.getAccountApps(cleanId, accessToken);
+          for (const a of currentApps) {
+            const urls = Object.values(a.object_store_urls || {}).map((u) => String(u).toLowerCase());
+            if (urls.some((u) => (reqPkg ? u.includes(reqPkg) : u === storeLower))) {
+              const autoStore = a.object_store_urls?.google_play || a.object_store_urls?.itunes || requestedStoreUrl;
+              return {
+                valid: true,
+                appId: a.id,
+                resolvedStoreUrl: autoStore,
+                targetAccountId: cleanId,
+                status: "STORE_URL_DISCOVERED_APP",
+                blocked: false,
+                message: `Found app "${a.name}" (${a.id}) matching store URL "${requestedStoreUrl}" on current account ${cleanId}.`,
+              };
+            }
+          }
+        }
+
+        const userAccounts = await this.getUserAdAccounts(accessToken);
+        for (const acc of userAccounts) {
+          const accId = String(acc.id || acc.account_id);
+          const cleanAccId = accId.startsWith("act_") ? accId : `act_${accId}`;
+          if (cleanAccId === cleanId) continue;
+          const apps = await this.getAccountApps(cleanAccId, accessToken);
+          for (const a of apps) {
+            const urls = Object.values(a.object_store_urls || {}).map((u) => String(u).toLowerCase());
+            if (urls.some((u) => (reqPkg ? u.includes(reqPkg) : u === storeLower))) {
+              const autoStore = a.object_store_urls?.google_play || a.object_store_urls?.itunes || requestedStoreUrl;
+              return {
+                valid: true,
+                appId: a.id,
+                resolvedStoreUrl: autoStore,
+                targetAccountId: cleanAccId,
+                targetAccountName: acc.name || cleanAccId,
+                status: "STORE_URL_DISCOVERED_APP_ROUTED",
+                blocked: false,
+                message: `Found app "${a.name}" (${a.id}) matching store URL "${requestedStoreUrl}" on account "${acc.name || cleanAccId}" (${cleanAccId}). Auto-routed campaign to this account.`,
+              };
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
+    // 2. Check if current account has any mobile apps
     const accountApps = await this.getAccountApps(cleanId, accessToken);
+    const mobileAppsOnCurrent = (accountApps || []).filter((a) => a.object_store_urls?.google_play || a.object_store_urls?.itunes);
+    if (mobileAppsOnCurrent.length >= 1) {
+      const a = mobileAppsOnCurrent[0];
+      const autoStore = a.object_store_urls?.google_play || a.object_store_urls?.itunes;
+      return {
+        valid: true,
+        appId: a.id,
+        resolvedStoreUrl: autoStore,
+        targetAccountId: cleanId,
+        status: "DISCOVERED_SINGLE_ACCOUNT_ASSET",
+        blocked: false,
+        message: `Dynamically resolved verified mobile app "${a.name}" (${a.id}) with store URL "${autoStore}" from account ${cleanId}.`,
+      };
+    }
+
+    // 3. Scan other accounts for ANY mobile app
+    try {
+      const userAccounts = await this.getUserAdAccounts(accessToken);
+      for (const otherAcc of userAccounts) {
+        const otherId = String(otherAcc.id || otherAcc.account_id);
+        const cleanOtherId = otherId.startsWith("act_") ? otherId : `act_${otherId}`;
+        if (cleanOtherId === cleanId) continue;
+        const otherApps = await this.getAccountApps(cleanOtherId, accessToken);
+        const mobileApps = otherApps.filter((a) => a.object_store_urls?.google_play || a.object_store_urls?.itunes);
+        if (mobileApps.length >= 1) {
+          const a = mobileApps[0];
+          const autoStore = a.object_store_urls?.google_play || a.object_store_urls?.itunes;
+          return {
+            valid: true,
+            appId: a.id,
+            resolvedStoreUrl: autoStore,
+            targetAccountId: cleanOtherId,
+            targetAccountName: otherAcc.name || cleanOtherId,
+            status: "CROSS_ACCOUNT_APP_ROUTED",
+            blocked: false,
+            message: `Selected account ${cleanId} has no mobile apps, but account "${otherAcc.name || cleanOtherId}" (${cleanOtherId}) has mobile app "${a.name}" (${a.id}). Auto-routed campaign to this account with store URL ${autoStore}.`,
+          };
+        }
+      }
+    } catch (e) {}
+
     if (!accountApps || accountApps.length === 0) {
       return {
         valid: false,
         appId: null,
         status: "MISSING_REQUIRED_ASSET",
         blocked: true,
-        requiredAction: `Campaign objective (${objUpper}) requires an Application ID, but no App ID was specified in the spreadsheet row and account ${cleanId} has no linked apps.`,
+        requiredAction: `Campaign objective (${objUpper}) requires an Application ID, but no App ID was specified and account ${cleanId} has no linked apps.`,
         error: `Missing required App ID for objective ${objUpper} on account ${cleanId}.`,
       };
     }
@@ -1059,26 +1538,63 @@ export class MetaApiService {
       appId,
       applicationId,
       objectStoreUrl,
+      object_store_url,
+      startTime,
+      start_time,
+      endTime,
+      end_time,
       customEventType,
       trackingType,
       tracking_type,
       promotedObject,
-    }
+      objective,
+      campaignObjective,
+      destination_type,
+      destinationType,
+    } = {}
   ) {
     // --- 1. LIVE META CAMPAIGN VALIDATION CHECK ---
     const campaignUrl = `${META_GRAPH_URL}/${campaignId}`;
     console.log(`[Meta Campaign Validation Check] campaign_id: ${campaignId}`);
     let liveCampaign = null;
-    try {
-      const campRes = await this.withRateLimitRetry(async () => {
-        return await axios.get(campaignUrl, {
-          params: {
-            fields: "id,name,status,effective_status,daily_budget,lifetime_budget",
-            access_token: accessToken,
-          },
+    if (accessToken && accessToken.startsWith("EAAB_simulated")) {
+      let simObjective = objective || campaignObjective;
+      if (!simObjective) {
+        try {
+          const mongoose = (await import("mongoose")).default;
+          if (mongoose?.connection?.readyState === 1) {
+            const MetaCampaign = (await import("../../models/metaCampaign.js")).default;
+            const foundCamp = await MetaCampaign.findOne({ campaignId }).lean();
+            if (foundCamp?.objective) {
+              simObjective = foundCamp.objective;
+            }
+          }
+        } catch (_) {}
+      }
+      if (!simObjective) {
+        simObjective = (optimizationGoal === "APP_INSTALLS" || appId || applicationId || objectStoreUrl || object_store_url)
+          ? "OUTCOME_APP_PROMOTION"
+          : "OUTCOME_SALES";
+      }
+
+      liveCampaign = {
+        id: campaignId,
+        name: "Simulated Campaign",
+        status: "ACTIVE",
+        effective_status: "ACTIVE",
+        objective: simObjective,
+      };
+    } else {
+      try {
+        const campRes = await this.withRateLimitRetry(async () => {
+          return await axios.get(campaignUrl, {
+            params: {
+              fields: "id,name,status,effective_status,daily_budget,lifetime_budget,objective,account_id",
+              access_token: accessToken,
+            },
+          });
         });
-      });
-      liveCampaign = campRes.data;
+        liveCampaign = campRes.data;
     } catch (campErr) {
       const metaErr = campErr.response?.data?.error;
       console.error("[Meta API error] Failed live campaign lookup:", {
@@ -1102,6 +1618,7 @@ export class MetaApiService {
         `Selected campaign (${campaignId}) is invalid, deleted, or inaccessible: ${metaMsg}. Please select an active campaign.`
       );
     }
+  }
 
     const campStatus = String(liveCampaign?.status || "").toUpperCase();
     const effectiveStatus = String(liveCampaign?.effective_status || "").toUpperCase();
@@ -1127,6 +1644,15 @@ export class MetaApiService {
     }
 
     const cleanId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
+    const cleanTargetRaw = cleanId.replace(/^act_/, "");
+    if (liveCampaign?.account_id) {
+      const campAccRaw = String(liveCampaign.account_id).replace(/^act_/, "");
+      if (campAccRaw !== cleanTargetRaw) {
+        throw new Error(
+          `Account ID mismatch: Campaign "${campaignId}" belongs to account "act_${campAccRaw}", which does not match the selected account "${cleanId}". Creating ad sets across different accounts is strictly prohibited.`
+        );
+      }
+    }
     const url = `${META_GRAPH_URL}/${cleanId}/adsets`;
 
     const normalizedCountries = normalizeCountryCodes(
@@ -1167,12 +1693,13 @@ export class MetaApiService {
 
     // Determine tracking mode & promoted object
     const requestedAppId = appId || applicationId || targeting.appId || targeting.applicationId || (promotedObject && typeof promotedObject === "object" ? promotedObject?.application_id : null);
-    const requestedStoreUrl = objectStoreUrl || targeting.objectStoreUrl || (promotedObject && typeof promotedObject === "object" ? promotedObject?.object_store_url : null);
+    const requestedStoreUrl = objectStoreUrl || object_store_url || targeting.objectStoreUrl || (promotedObject && typeof promotedObject === "object" ? promotedObject?.object_store_url : null);
     const requestedPixelId = pixelId || targeting.pixelId || (promotedObject && typeof promotedObject === "object" ? promotedObject?.pixel_id : null) || null;
     
     let mode = (trackingType || tracking_type || "").toUpperCase();
+    const isAppCampObjective = liveCampaign?.objective === "OUTCOME_APP_PROMOTION";
     if (!mode) {
-      if (optimizationGoal === "APP_INSTALLS" || (requestedAppId && !requestedPixelId)) {
+      if (optimizationGoal === "APP_INSTALLS" || isAppCampObjective || (requestedAppId && !requestedPixelId)) {
         mode = "APP";
       } else if (requestedPixelId && requestedAppId) {
         mode = "BOTH";
@@ -1184,11 +1711,21 @@ export class MetaApiService {
     let effectiveGoal = optimizationGoal;
     let effectivePromotedObject = promotedObject;
 
-    if (mode === "APP" || (requestedAppId && !requestedPixelId && mode !== "WEBSITE")) {
+    if (mode === "APP" || isAppCampObjective || (requestedAppId && !requestedPixelId && mode !== "WEBSITE")) {
+      // Validate that App ID and Store URL are not swapped or confused
+      if (requestedAppId && (String(requestedAppId).startsWith("http://") || String(requestedAppId).startsWith("https://"))) {
+        throw new Error("[Meta AdSet Validation Error]: App Store URL was provided where Meta Application ID was expected. Application ID must be a numeric Meta App Dashboard ID.");
+      }
+      if (requestedAppId && !CampaignRouter.isMetaAppId(requestedAppId)) {
+        throw new Error(`[Meta AdSet Validation Error]: Invalid Meta Application ID "${requestedAppId}". application_id must be a 10-20 digit numeric Meta App ID, not a package name or store URL.`);
+      }
+      const isStoreUrlValid = requestedStoreUrl && CampaignRouter.isAppStoreUrl(requestedStoreUrl);
+
       const appRes = await this.verifyAndResolveAppAsset({
         accountId: cleanId,
         accessToken,
         requestedAppId: requestedAppId || null,
+        requestedStoreUrl: isStoreUrlValid ? requestedStoreUrl : null,
         objective: effectiveGoal,
       });
 
@@ -1196,17 +1733,49 @@ export class MetaApiService {
         throw new Error(`[Meta AdSet Asset Resolution Error]: ${appRes.error} ${appRes.requiredAction || ""}`.trim());
       }
 
-      if (appRes.valid && appRes.appId) {
-        effectivePromotedObject = {
-          application_id: String(appRes.appId),
-          ...(requestedStoreUrl ? { object_store_url: String(requestedStoreUrl) } : {}),
-          custom_event_type: customEventType || (promotedObject && typeof promotedObject === "object" ? promotedObject?.custom_event_type : null) || "MOBILE_APP_INSTALL",
-        };
-        if (effectiveGoal === "OFFSITE_CONVERSIONS") {
-          effectiveGoal = "APP_INSTALLS";
+      const resolvedAppId = appRes.valid && appRes.appId ? appRes.appId : requestedAppId;
+      const effectiveStoreUrl = appRes.resolvedStoreUrl || (isStoreUrlValid ? requestedStoreUrl : null);
+
+      if (isAppCampObjective || effectiveGoal === "APP_INSTALLS") {
+        if (!resolvedAppId) {
+          throw new Error("[Meta AdSet Validation Error]: Meta Application ID (application_id) is required for App Promotion campaigns.");
+        }
+        if (!effectiveStoreUrl) {
+          throw new Error(`[Meta AdSet Validation Error]: object_store_url must be a valid Google Play Store or Apple App Store URL for App Promotion campaigns. Received: "${requestedStoreUrl || "none"}"`);
+        }
+
+        const storeLower = String(effectiveStoreUrl).toLowerCase();
+        if (storeLower.includes("play.google.com") && !targetingObj.user_os) {
+          targetingObj.user_os = ["Android"];
+        } else if ((storeLower.includes("apps.apple.com") || storeLower.includes("itunes.apple.com")) && !targetingObj.user_os) {
+          targetingObj.user_os = ["iOS"];
+        }
+
+        if (!targetingObj.targeting_automation) {
+          targetingObj.targeting_automation = { advantage_audience: 0 };
         }
       }
-    } else if (mode === "WEBSITE" || requestedPixelId) {
+
+      if (resolvedAppId) {
+        effectivePromotedObject = {
+          application_id: String(resolvedAppId),
+          ...(effectiveStoreUrl ? { object_store_url: String(effectiveStoreUrl) } : {}),
+        };
+
+        const rawEvent = customEventType || (promotedObject && typeof promotedObject === "object" ? promotedObject?.custom_event_type : null);
+        const mappedAppEvent = this.normalizeAppCustomEventType(rawEvent);
+
+        if (effectiveGoal === "OFFSITE_CONVERSIONS" && !mappedAppEvent) {
+          effectiveGoal = "APP_INSTALLS";
+        }
+
+        // Requirements 1 & 2: For APP_INSTALLS, do not send custom_event_type: MOBILE_APP_INSTALL.
+        // Omit custom_event_type when it is not required. Only map valid in-app event when appropriate.
+        if (effectiveGoal !== "APP_INSTALLS" && mappedAppEvent) {
+          effectivePromotedObject.custom_event_type = mappedAppEvent;
+        }
+      }
+    } else if (mode === "WEBSITE" || mode === "BOTH" || requestedPixelId) {
       const pixRes = await this.verifyAndResolvePixelAsset({
         accountId: cleanId,
         accessToken,
@@ -1223,7 +1792,12 @@ export class MetaApiService {
           pixel_id: String(pixRes.pixelId),
           custom_event_type: customEventType || (promotedObject && typeof promotedObject === "object" ? promotedObject?.custom_event_type : null) || "PURCHASE",
         };
-        effectiveGoal = "OFFSITE_CONVERSIONS";
+        const rawGoal = String(effectiveGoal || "").toUpperCase();
+        if (rawGoal.includes("CONVERSION") && !rawGoal.includes("VALUE")) {
+          effectiveGoal = "OFFSITE_CONVERSIONS";
+        } else {
+          effectiveGoal = "VALUE"; // User requested: ALWAYS Maximise number of value for website meta ads!
+        }
       } else if (effectiveGoal === "OFFSITE_CONVERSIONS" && !effectivePromotedObject) {
         effectiveGoal = "LINK_CLICKS";
       }
@@ -1235,11 +1809,23 @@ export class MetaApiService {
       optimization_goal: effectiveGoal,
       billing_event: billingEvent || "IMPRESSIONS",
       status: status || "PAUSED",
+      destination_type: destination_type || destinationType || (isAppCampObjective || mode === "APP" || (requestedAppId && !requestedPixelId && mode !== "WEBSITE") ? "APP" : "WEBSITE"),
       targeting: JSON.stringify(targetingObj),
       access_token: accessToken,
     };
 
+    const effectiveStartTime = startTime || start_time;
+    if (effectiveStartTime) {
+      payload.start_time = effectiveStartTime;
+    }
+    const effectiveEndTime = endTime || end_time;
+    if (effectiveEndTime) {
+      payload.end_time = effectiveEndTime;
+    }
+
+    // Requirement 4: Validate the final promoted_object payload before calling the Meta API
     if (effectivePromotedObject) {
+      this.validatePromotedObject(effectivePromotedObject, effectiveGoal);
       payload.promoted_object = JSON.stringify(effectivePromotedObject);
     }
 
@@ -1265,6 +1851,23 @@ export class MetaApiService {
       payload.bid_strategy = bidStrategy;
     } else {
       payload.bid_strategy = "LOWEST_COST_WITHOUT_CAP";
+    }
+
+    if (accessToken && accessToken.startsWith("EAAB_simulated")) {
+      const simAdSetId = `sim_adset_${Date.now()}`;
+      return {
+        id: simAdSetId,
+        adSetId: simAdSetId,
+        campaignId,
+        name: payload.name,
+        optimizationGoal: effectiveGoal,
+        billingEvent: payload.billing_event,
+        status: payload.status,
+        promotedObject: effectivePromotedObject,
+        destinationType: payload.destination_type,
+        destination_type: payload.destination_type,
+        success: true,
+      };
     }
 
     console.log("[Final Ad Set Payload]:", {
@@ -1377,12 +1980,38 @@ export class MetaApiService {
             return retryRes.data;
           } catch (retryErr) {
             const retryMetaErr = retryErr.response?.data?.error;
-            if (retryMetaErr) {
+            const rMsg = (retryMetaErr?.message || retryMetaErr?.error_user_msg || "").toLowerCase();
+            const isValIssue = retryMetaErr?.error_subcode === 2446146 || retryMetaErr?.error_subcode === 1885260 || rMsg.includes("value optimization");
+            if (!isValIssue && retryMetaErr) {
               const detailMsg = retryMetaErr.error_user_msg || retryMetaErr.message || "Invalid parameter";
               const errToThrow = new Error(`Meta API AdSet Error [${retryMetaErr.code || "100"}]: ${detailMsg}`);
               errToThrow.response = retryErr.response;
               throw errToThrow;
             }
+          }
+        }
+
+        // Auto-retry 3: If VALUE optimization is not yet eligible on this account/pixel (Meta Subcode 2446146 / 1885260), fallback to OFFSITE_CONVERSIONS
+        const isValueIssue =
+          payload.optimization_goal === "VALUE" &&
+          (errMsg.includes("value optimization") ||
+            metaErr?.error_subcode === 1885260 ||
+            metaErr?.error_subcode === 2446146 ||
+            errMsg.includes("optimization_goal") ||
+            errMsg.includes("optimization goal"));
+
+        if (isValueIssue) {
+          console.warn("[Meta AdSet VALUE Fallback]: Account/Pixel not yet eligible for VALUE optimization goal (Meta Subcode 2446146: business not verified). Retrying with OFFSITE_CONVERSIONS...");
+          try {
+            const retryPayload = { ...payload, optimization_goal: "OFFSITE_CONVERSIONS" };
+            delete retryPayload.daily_budget;
+            delete retryPayload.lifetime_budget;
+            delete retryPayload.bid_amount;
+            delete retryPayload.bid_strategy;
+            const retryRes = await axios.post(url, null, { params: retryPayload });
+            return retryRes.data;
+          } catch (valRetryErr) {
+            // continue to error reporting
           }
         }
 
@@ -1459,10 +2088,10 @@ export class MetaApiService {
 
   // Normalize Call to Action Enum (BOOK_TRAVEL maps to "Book now" in Meta Ads Manager UI)
   static normalizeCallToAction(cta) {
-    if (!cta) return "BOOK_TRAVEL";
+    if (!cta) return "BOOK_NOW";
     const cleaned = String(cta).trim().toUpperCase().replace(/[\s-]+/g, "_");
     if (cleaned === "BOOK_NOW" || cleaned === "BOOK" || cleaned === "BOOKING" || cleaned === "BOOK_TRAVEL") {
-      return "BOOK_TRAVEL";
+      
     }
     if (cleaned === "SHOP_NOW" || cleaned === "SHOP" || cleaned === "BUY_NOW" || cleaned === "BUY") {
       return "SHOP_NOW";
@@ -1470,11 +2099,17 @@ export class MetaApiService {
     if (cleaned === "LEARN_MORE" || cleaned === "LEARN") {
       return "LEARN_MORE";
     }
+    if (cleaned === "INSTALL_MOBILE_APP" || cleaned === "INSTALL_APP" || cleaned === "INSTALL") {
+      return "INSTALL_APP";
+    }
+    if (cleaned === "DOWNLOAD" || cleaned === "DOWNLOAD_NOW") {
+      return "DOWNLOAD";
+    }
     const validCtas = [
-      "BOOK_TRAVEL", "BOOK_NOW", "SHOP_NOW", "LEARN_MORE", "SIGN_UP", "CONTACT_US",
+      "BOOK_NOW", "LEARN_MORE", "SHOP_NOW", "SIGN_UP", "CONTACT_US",
       "APPLY_NOW", "GET_OFFER", "ORDER_NOW", "DOWNLOAD", "WATCH_MORE",
       "SUBSCRIBE", "GET_QUOTE", "LISTEN_NOW", "SEND_WHATSAPP_MESSAGE",
-      "SEND_MESSAGE", "INSTALL_APP", "USE_APP"
+      "SEND_MESSAGE", "INSTALL_APP", "USE_APP", "BOOK_TRAVEL"
     ];
     return validCtas.includes(cleaned) ? cleaned : "BOOK_TRAVEL";
   }
@@ -1597,7 +2232,12 @@ export class MetaApiService {
       primaryText,
       description,
       linkUrl,
+      destinationUrl,
+      destination,
+      landingPageUrl,
+      landing_page_url,
       displayLink,
+      display_link,
       callToAction = "BOOK_NOW",
       imageUrl,
       videoId,
@@ -1612,6 +2252,8 @@ export class MetaApiService {
       pixelId,
       appId,
       applicationId,
+      objectStoreUrl,
+      object_store_url,
       customEventType,
       instagramActorId,
       instagram_actor_id,
@@ -1645,10 +2287,35 @@ export class MetaApiService {
     }
 
     const cleanId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
+    const cleanTargetRaw = cleanId.replace(/^act_/, "");
+
+    // Early validation: Verify Ad Set belongs to the selected Meta account before creating creative
+    if (adSetId && accessToken && !accessToken.startsWith("EAAB_simulated")) {
+      try {
+        const adSetAccountCheck = await axios.get(`${META_GRAPH_URL}/${adSetId}`, {
+          params: { fields: "account_id", access_token: accessToken },
+          timeout: 5000,
+        });
+        if (adSetAccountCheck.data?.account_id) {
+          const adSetAccRaw = String(adSetAccountCheck.data.account_id).replace(/^act_/, "");
+          if (adSetAccRaw !== cleanTargetRaw) {
+            throw new Error(
+              `Account ID mismatch: Ad Set "${adSetId}" belongs to Meta account "act_${adSetAccRaw}", which does not match the selected Meta account "${cleanId}". Aborting ad creation to prevent cross-account creation.`
+            );
+          }
+        }
+      } catch (checkErr) {
+        if (checkErr.message?.includes("Account ID mismatch")) {
+          throw checkErr;
+        }
+      }
+    }
+
     const pageResolution = await MetaAssetResolver.verifyAndResolvePageAsset({
       accountId: cleanId,
       accessToken,
       requestedPageId: pageId,
+      allowFallbackPage: true,
     });
 
     if (!pageResolution.valid || !pageResolution.pageId) {
@@ -1665,12 +2332,16 @@ export class MetaApiService {
     const requestedIgId = instagramActorId || instagram_actor_id || instagram_account_id || ig_id || instagramId;
     const effectiveInstagramUserId = await this.resolveInstagramUserId(cleanId, accessToken, effectivePageId, requestedIgId);
 
-    const effectiveCta = this.normalizeCallToAction(callToAction);
-    const cleanLinkUrl = this.sanitizeLinkUrl(linkUrl);
+    const storeLinkCandidate = objectStoreUrl || object_store_url;
+    const effectiveCta = this.normalizeCallToAction(callToAction || (storeLinkCandidate ? "DOWNLOAD" : "BOOK_TRAVEL"));
+    const candidateDestUrl = linkUrl || destinationUrl || destination || null;
+    const rawDestLink = (candidateDestUrl && candidateDestUrl !== "https://facebook.com") ? candidateDestUrl : (storeLinkCandidate || candidateDestUrl);
+    const cleanLinkUrl = this.sanitizeLinkUrl(rawDestLink);
 
+    const effectiveDisplayLink = displayLink || display_link || params.displayLink || params.display_link || null;
     let cleanDisplayLink = null;
-    if (displayLink && typeof displayLink === "string" && displayLink.trim()) {
-      cleanDisplayLink = displayLink.trim().replace(/^https?:\/\//i, "");
+    if (effectiveDisplayLink && typeof effectiveDisplayLink === "string" && effectiveDisplayLink.trim()) {
+      cleanDisplayLink = effectiveDisplayLink.trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
     }
 
     // Resolve Image Hash or Upload local image / Google Drive image asset to Meta /adimages
@@ -1683,14 +2354,25 @@ export class MetaApiService {
       if (typeof targetImg === "string" && fs.existsSync(targetImg)) {
         localPath = targetImg;
       } else if (typeof targetImg === "string" && (targetImg.includes("drive.google.com") || targetImg.includes("docs.google.com") || /^[a-zA-Z0-9_-]{25,60}$/.test(targetImg.trim()))) {
+        let dl = null;
         try {
           const { default: driveService } = await import("../../google/driveService.js");
-          const dl = await driveService.downloadFile(targetImg);
-          if (dl?.filePath && fs.existsSync(dl.filePath) && dl.isImage) {
-            localPath = dl.filePath;
-          }
+          dl = await driveService.downloadFile(targetImg);
         } catch (dlErr) {
           console.warn("[Meta Image Ad Download Warning]:", dlErr.message);
+        }
+
+        if (dl?.filePath && fs.existsSync(dl.filePath)) {
+          if (dl.isVideo) {
+            console.log(`[Meta Ad Creation]: Creative asset "${targetImg}" is an authenticated Video (${dl.fileName}). Auto-delegating to createVideoAd...`);
+            return await this.createVideoAd(accountId, accessToken, {
+              ...params,
+              videoFilePath: dl.filePath,
+              videoUrl: targetImg,
+            });
+          } else if (dl.isImage) {
+            localPath = dl.filePath;
+          }
         }
       }
 
@@ -1767,6 +2449,7 @@ export class MetaApiService {
       object_story_spec: JSON.stringify(objectStorySpec),
       access_token: accessToken,
     };
+    if (cleanLinkUrl) creativeParams.link_url = cleanLinkUrl;
     if (cleanUrlTags) creativeParams.url_tags = cleanUrlTags;
 
     const parseBoolean = (val) => {
@@ -1785,12 +2468,13 @@ export class MetaApiService {
     const statusVal = isOptEnabled ? "OPT_IN" : "OPT_OUT";
 
     const fullCreativeFeaturesSpec = {
-      text_optimizations: { enroll_status: statusVal },
-      inline_comment: { enroll_status: statusVal },
-      video_auto_crop: { enroll_status: statusVal },
-      video_uncrop: { enroll_status: statusVal },
-      enhance_cta: { enroll_status: statusVal },
-      image_touchups: { enroll_status: statusVal },
+      advantage_plus_creative: { enroll_status: "OPT_IN" },
+      text_optimizations: { enroll_status: "OPT_IN" },
+      inline_comment: { enroll_status: "OPT_IN" },
+      enhance_cta: { enroll_status: "OPT_IN" },
+      image_touchups: { enroll_status: "OPT_IN" },
+      video_auto_crop: { enroll_status: "OPT_IN" },
+      video_filtering: { enroll_status: "OPT_IN" },
     };
 
     creativeParams.degrees_of_freedom_spec = JSON.stringify({
@@ -1809,6 +2493,38 @@ export class MetaApiService {
       creativeParams: { ...creativeParams, access_token: "[REDACTED]" },
     });
 
+    if (accessToken && accessToken.startsWith("EAAB_simulated")) {
+      const simAdId = `sim_ad_${Date.now()}`;
+      const simCreativeId = `sim_creative_${Date.now()}`;
+      const simTrackingSpecs = [];
+      if (pixelId) {
+        simTrackingSpecs.push({
+          "action.type": ["offsite_conversion"],
+          fb_pixel: [String(pixelId)],
+        });
+      }
+      if (appId || applicationId) {
+        simTrackingSpecs.push({
+          "action.type": [pixelId ? "app_custom_event" : "mobile_app_install"],
+          application: [String(appId || applicationId)],
+        });
+      }
+      return {
+        id: simAdId,
+        adId: simAdId,
+        creativeId: simCreativeId,
+        success: true,
+        name: name || "Simulated Ad",
+        adSetId,
+        callToAction: effectiveCta,
+        linkUrl: cleanLinkUrl,
+        displayLink: cleanDisplayLink,
+        trackingSpecs: simTrackingSpecs,
+        pixelId: pixelId || null,
+        appId: appId || applicationId || null,
+      };
+    }
+
     let creativeId = null;
     try {
       const creativeRes = await axios.post(creativeUrl, null, { params: creativeParams });
@@ -1823,6 +2539,26 @@ export class MetaApiService {
       console.warn("[Meta Image Creative Attempt 1 Warning]:", err.response?.data?.error || err.message);
 
       const firstErr = err.response?.data?.error;
+      let errData = null;
+      try {
+        if (typeof firstErr?.error_data === "string") {
+          errData = JSON.parse(firstErr.error_data);
+        } else if (typeof firstErr?.error_data === "object") {
+          errData = firstErr.error_data;
+        }
+      } catch (_) {}
+
+      const isAccountUnsettled =
+        errData?.ad_account_status === 3 ||
+        firstErr?.error_subcode === 1487194 ||
+        errData?.has_write_ad_account_permissions === "false";
+
+      if (isAccountUnsettled) {
+        throw new Error(
+          `Ad Account Unsettled (Unpaid Balance) [Meta Error 200 / Subcode 1487194]: Meta Ad Account has an unsettled balance (ad_account_status: 3). Meta strictly prohibits publishing new ads until the pending payment is cleared in Meta Ads Manager. Please click "Pay Now" in Meta Ads Manager to clear the balance.`
+        );
+      }
+
       const isPermissionErr = firstErr?.code === 10 || firstErr?.error_subcode === 3858749 || (firstErr?.message || "").toLowerCase().includes("permission");
 
       if (isPermissionErr) {
@@ -1837,16 +2573,16 @@ export class MetaApiService {
         delete objectStorySpec.instagram_user_id;
         creativeParams.object_story_spec = JSON.stringify(objectStorySpec);
       }
-      // Attempt 2: Retry with exact 5 requested core spec keys
+      // Attempt 2: Retry with exact core spec keys without non-standard keys
       try {
         creativeParams.degrees_of_freedom_spec = JSON.stringify({
           degrees_of_freedom_type: "USER_ENROLLED",
           creative_features_spec: {
-            text_optimizations: { enroll_status: statusVal },
-            inline_comment: { enroll_status: statusVal },
-            video_auto_crop: { enroll_status: statusVal },
-            video_uncrop: { enroll_status: statusVal },
-            enhance_cta: { enroll_status: statusVal },
+            advantage_plus_creative: { enroll_status: "OPT_IN" },
+            text_optimizations: { enroll_status: "OPT_IN" },
+            inline_comment: { enroll_status: "OPT_IN" },
+            enhance_cta: { enroll_status: "OPT_IN" },
+            image_touchups: { enroll_status: "OPT_IN" },
           },
         });
         console.log("[Final Creative Payload (Retry 2)]:", {
@@ -1864,12 +2600,16 @@ export class MetaApiService {
           delete objectStorySpec.instagram_user_id;
           creativeParams.object_story_spec = JSON.stringify(objectStorySpec);
         }
-        // Attempt 3: Single text_optimizations spec fallback with USER_ENROLLED
+        // Attempt 3: Core text, comment & CTA fallback with USER_ENROLLED
         try {
           creativeParams.degrees_of_freedom_spec = JSON.stringify({
             degrees_of_freedom_type: "USER_ENROLLED",
             creative_features_spec: {
-              text_optimizations: { enroll_status: statusVal },
+              advantage_plus_creative: { enroll_status: "OPT_IN" },
+              text_optimizations: { enroll_status: "OPT_IN" },
+              inline_comment: { enroll_status: "OPT_IN" },
+              enhance_cta: { enroll_status: "OPT_IN" },
+              image_touchups: { enroll_status: "OPT_IN" },
             },
           });
           const retryRes3 = await axios.post(creativeUrl, null, { params: creativeParams });
@@ -1877,7 +2617,8 @@ export class MetaApiService {
           creativeId = retryRes3.data?.id;
         } catch (retryErr3) {
           console.warn("[Meta Image Creative Attempt 3 Warning]:", retryErr3.response?.data?.error || retryErr3.message);
-          const metaErr = retryErr3.response?.data?.error || retryErr2.response?.data?.error || err.response?.data?.error;
+          const metaErr = retryErr3.response?.data?.error || retryEr
+          r2.response?.data?.error || err.response?.data?.error;
           const msg = metaErr ? `[${metaErr.code}]: ${metaErr.message || metaErr.error_user_msg}` : retryErr3.message;
           throw new Error(`Meta Ad Creative Creation Failed: ${msg}`);
         }
@@ -1925,7 +2666,7 @@ export class MetaApiService {
     }
 
     let effectiveAppId = appId || applicationId || null;
-    if (!effectiveAppId && mode === "APP") {
+    if (!effectiveAppId && (mode === "APP" || mode === "BOTH")) {
       try {
         const appRes = await this.verifyAndResolveAppAsset({
           accountId: cleanId,
@@ -1949,17 +2690,22 @@ export class MetaApiService {
         "action.type": targetActionType,
         fb_pixel: [String(effectivePixelId)],
       });
-    } else if (effectiveAppId) {
+    }
+    if (effectiveAppId) {
+      const appAction = (typeof customEventType !== "undefined" && customEventType)
+        ? customEventType
+        : (effectivePixelId ? "app_custom_event" : "mobile_app_install");
       trackingSpecs.push({
-        "action.type": [typeof customEventType !== "undefined" && customEventType ? "app_custom_event" : "mobile_app_install"],
+        "action.type": [appAction],
         application: [String(effectiveAppId)],
       });
     }
 
     // Step 3: Create Ad
     const formatAdName = (strName) => MetaApiService.formatAdName(strName, 250);
+    const targetAdAccount = cleanId;
 
-    const adUrl = `${META_GRAPH_URL}/${cleanId}/ads`;
+    const adUrl = `${META_GRAPH_URL}/${targetAdAccount}/ads`;
     const payload = {
       name: formatAdName(name),
       adset_id: adSetId,
@@ -1982,7 +2728,7 @@ export class MetaApiService {
     return await this.withRateLimitRetry(async () => {
       try {
         const response = await axios.post(adUrl, null, { params: payload });
-        return { ...response.data, creativeId, pageId: effectivePageId, pixelId: effectivePixelId, urlTags: cleanUrlTags };
+        return { ...response.data, creativeId, pageId: effectivePageId, pixelId: effectivePixelId, urlTags: cleanUrlTags, imageHash: effectiveImageHash };
       } catch (error) {
         const initialMetaErr = error.response?.data?.error;
         const errMsg = (initialMetaErr?.message || initialMetaErr?.error_user_msg || error.message || "").toLowerCase();
@@ -1994,9 +2740,9 @@ export class MetaApiService {
             const retryPayload = { ...payload };
             delete retryPayload.tracking_specs;
             const retryRes = await axios.post(adUrl, null, { params: retryPayload });
-            return { ...retryRes.data, creativeId, pageId: effectivePageId };
+            return { ...retryRes.data, creativeId, pageId: effectivePageId, imageHash: effectiveImageHash };
           } catch (retryErr) {
-            console.error("[DEBUG Meta Ad Retry Error Details]:", retryErr.response?.data);
+            // continue to error handling
           }
         }
 
@@ -2010,8 +2756,13 @@ export class MetaApiService {
         }
 
         if (initialMetaErr) {
+          const userMsg = initialMetaErr.error_user_msg || initialMetaErr.error_user_title;
+          const specificMsg = (initialMetaErr.error_subcode === 1359188 || (userMsg && userMsg.toLowerCase().includes("payment")))
+            ? `No Payment Method on Ad Account [Subcode 1359188]: ${userMsg || "Please add a valid payment method in Meta Billing & Payments centre."}`
+            : (userMsg || initialMetaErr.message || error.message);
+
           const errToThrow = new Error(
-            `Meta API Ad Creation Error [${initialMetaErr.code || "unknown"}]: ${initialMetaErr.message || initialMetaErr.error_user_msg || error.message}`
+            `Meta API Ad Creation Error [${initialMetaErr.code || "unknown"}]: ${specificMsg}`
           );
           errToThrow.response = error.response;
           throw errToThrow;
@@ -2110,11 +2861,27 @@ export class MetaApiService {
         formData.append("video_file_chunk", new File([chunkBuffer], path.basename(filePath), { type: "video/mp4" }));
         formData.append("access_token", accessToken);
 
-        const transferRes = await axios.post(url, formData, {
-          maxContentLength: Infinity,
-          maxBodyLength: Infinity,
-          timeout: 300000,
-        });
+        let transferRes;
+        let attempts = 0;
+        while (attempts < 3) {
+          try {
+            attempts++;
+            transferRes = await axios.post(url, formData, {
+              maxContentLength: Infinity,
+              maxBodyLength: Infinity,
+              timeout: 300000,
+            });
+            break;
+          } catch (tErr) {
+            const status = tErr.response?.status;
+            if (attempts < 3 && (status === 500 || status === 502 || status === 503 || tErr.code === "ECONNRESET" || tErr.code === "ETIMEDOUT")) {
+              console.warn(`[Meta Video Chunk Upload] Attempt ${attempts} failed with status ${status || tErr.code}, retrying in 2s...`);
+              await new Promise((r) => setTimeout(r, 2000));
+            } else {
+              throw tErr;
+            }
+          }
+        }
 
         startOffset = parseInt(transferRes.data.start_offset ?? (startOffset + chunkSize), 10);
         endOffset = parseInt(transferRes.data.end_offset ?? Math.min(fileSize, startOffset + CHUNK_SIZE), 10);
@@ -2145,7 +2912,7 @@ export class MetaApiService {
   static imageUploadCache = new Map();
 
   // 17. Upload Video to Meta Ad Account (/act_<id>/advideos)
-  static async uploadVideo(accountId, accessToken, { filePath, fileUrl, title, description, userId = null } = {}) {
+  static async uploadVideo(accountId, accessToken, { filePath, fileUrl, title, description, userId = null, sourceRow = null, rowNo = null } = {}) {
     accessToken = await this.resolveOAuthToken(accountId, userId, accessToken);
     const cleanId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
     const url = `${META_GRAPH_VIDEO_URL}/${cleanId}/advideos`;
@@ -2202,7 +2969,28 @@ export class MetaApiService {
             access_token: accessToken,
           },
         });
-        return response.data;
+        const retData = response.data;
+        const vidId = retData?.id || retData?.video_id;
+        if (vidId) {
+          const finalRow = sourceRow !== null ? sourceRow : rowNo;
+          try {
+            const MetaUploadedMedia = (await import("../../models/metaUploadedMedia.js")).default;
+            await MetaUploadedMedia.recordMedia({
+              userId,
+              accountId: cleanId,
+              mediaType: "VIDEO",
+              metaMediaId: String(vidId),
+              videoId: String(vidId),
+              sourceRow: finalRow,
+              rowNumber: finalRow,
+              adName: cleanTitle,
+              sourceUrl: fileUrl || "",
+              metaResponse: retData,
+              status: "READY",
+            });
+          } catch (_) {}
+        }
+        return retData;
       } catch (err) {
         console.warn("[Meta Video Upload] Meta file_url upload failed, attempting local stream download fallback:", err.message);
         try {
@@ -2233,40 +3021,30 @@ export class MetaApiService {
     }
 
     if (filePath && fs.existsSync(filePath)) {
-      const stats = await fs.promises.stat(filePath);
-      // For video files larger than 15MB, use chunked resumable upload to avoid HTTP 413 Payload Too Large
-      if (stats.size >= 15 * 1024 * 1024) {
-        return await this.uploadVideoChunked(cleanId, accessToken, filePath, { title: cleanTitle, description: cleanDesc });
+      const chunkRes = await this.uploadVideoChunked(cleanId, accessToken, filePath, { title: cleanTitle, description: cleanDesc });
+      const vidId = chunkRes?.id || chunkRes?.video_id;
+      if (vidId) {
+        this.videoUploadCache.set(cacheKey, { id: vidId, video_id: vidId });
+        const finalRow = sourceRow !== null ? sourceRow : rowNo;
+        try {
+          const MetaUploadedMedia = (await import("../../models/metaUploadedMedia.js")).default;
+          await MetaUploadedMedia.recordMedia({
+            userId,
+            accountId: cleanId,
+            mediaType: "VIDEO",
+            metaMediaId: String(vidId),
+            videoId: String(vidId),
+            sourceRow: finalRow,
+            rowNumber: finalRow,
+            adName: cleanTitle,
+            sourceUrl: fileUrl || filePath || "",
+            localFilePath: filePath || "",
+            metaResponse: chunkRes,
+            status: "READY",
+          });
+        } catch (_) {}
       }
-
-      try {
-        const fileBuffer = await fs.promises.readFile(filePath);
-        const formData = new FormData();
-        formData.append("source", new File([fileBuffer], path.basename(filePath), { type: "video/mp4" }));
-        if (cleanTitle) formData.append("title", cleanTitle);
-        if (cleanDesc) formData.append("description", cleanDesc);
-        formData.append("access_token", accessToken);
-
-        const response = await axios.post(url, formData, {
-          maxContentLength: Infinity,
-          maxBodyLength: Infinity,
-          timeout: 300000,
-        });
-        const vidId = response.data?.id || response.data?.video_id;
-        if (vidId) this.videoUploadCache.set(cacheKey, { id: vidId, video_id: vidId });
-        return response.data;
-      } catch (err) {
-        // If single upload hits 413 or payload limits, fallback seamlessly to chunked upload
-        if (err.response?.status === 413 || err.message?.includes("413")) {
-          console.warn("[Meta Video Upload] Direct upload returned 413 Payload Too Large. Retrying with chunked resumable upload...");
-          const chunkRes = await this.uploadVideoChunked(cleanId, accessToken, filePath, { title: cleanTitle, description: cleanDesc });
-          const vidId = chunkRes?.id || chunkRes?.video_id;
-          if (vidId) this.videoUploadCache.set(cacheKey, { id: vidId, video_id: vidId });
-          return chunkRes;
-        }
-        const metaErr = err.response?.data?.error;
-        throw new Error(`Meta Video File Upload Error: ${metaErr?.message || err.message}`);
-      }
+      return chunkRes;
     }
 
     throw new Error("filePath or fileUrl is required to upload a video to Meta Ads");
@@ -2308,7 +3086,7 @@ export class MetaApiService {
   }
 
   // Helper: Upload Ad Image to Meta Ad Account (/act_<id>/adimages) -> returns { hash, url }
-  static async uploadAdImage(accountId, accessToken, { filePath, fileUrl, imageBuffer, userId = null } = {}) {
+  static async uploadAdImage(accountId, accessToken, { filePath, fileUrl, imageBuffer, userId = null, sourceRow = null, rowNo = null, adName = "" } = {}) {
     accessToken = await this.resolveOAuthToken(accountId, userId, accessToken);
     const cleanId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
     const url = `${META_GRAPH_URL}/${cleanId}/adimages`;
@@ -2379,6 +3157,26 @@ export class MetaApiService {
         if (imgData?.hash) {
           const res = { hash: imgData.hash, url: imgData.url };
           this.imageUploadCache.set(cacheKey, res);
+
+          const finalRow = sourceRow !== null ? sourceRow : rowNo;
+          try {
+            const MetaUploadedMedia = (await import("../../models/metaUploadedMedia.js")).default;
+            await MetaUploadedMedia.recordMedia({
+              userId,
+              accountId: cleanId,
+              mediaType: "IMAGE",
+              metaMediaId: String(imgData.hash),
+              imageHash: String(imgData.hash),
+              sourceRow: finalRow,
+              rowNumber: finalRow,
+              adName: adName || "",
+              sourceUrl: fileUrl || filePath || "",
+              localFilePath: filePath || "",
+              metaResponse: imgData,
+              status: "READY",
+            });
+          } catch (_) {}
+
           return res;
         }
       }
@@ -2432,7 +3230,12 @@ export class MetaApiService {
       primaryText,
       description,
       linkUrl,
+      destinationUrl,
+      destination,
+      landingPageUrl,
+      landing_page_url,
       displayLink,
+      display_link,
       callToAction = "BOOK_NOW",
       imageUrl,
       videoId,
@@ -2447,6 +3250,9 @@ export class MetaApiService {
       pixelId,
       appId,
       applicationId,
+      objectStoreUrl,
+      object_store_url,
+      customEventType,
       instagramActorId,
       instagram_actor_id,
       instagram_account_id,
@@ -2457,10 +3263,35 @@ export class MetaApiService {
       urlTags,
     } = params;
     const cleanId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
+    const cleanTargetRaw = cleanId.replace(/^act_/, "");
+
+    // Early validation: Verify Ad Set belongs to the selected Meta account before creating video creative
+    if (adSetId && accessToken && !accessToken.startsWith("EAAB_simulated")) {
+      try {
+        const adSetAccountCheck = await axios.get(`${META_GRAPH_URL}/${adSetId}`, {
+          params: { fields: "account_id", access_token: accessToken },
+          timeout: 5000,
+        });
+        if (adSetAccountCheck.data?.account_id) {
+          const adSetAccRaw = String(adSetAccountCheck.data.account_id).replace(/^act_/, "");
+          if (adSetAccRaw !== cleanTargetRaw) {
+            throw new Error(
+              `Account ID mismatch: Ad Set "${adSetId}" belongs to Meta account "act_${adSetAccRaw}", which does not match the selected Meta account "${cleanId}". Aborting video ad creation to prevent cross-account creation.`
+            );
+          }
+        }
+      } catch (checkErr) {
+        if (checkErr.message?.includes("Account ID mismatch")) {
+          throw checkErr;
+        }
+      }
+    }
+
     const pageResolution = await MetaAssetResolver.verifyAndResolvePageAsset({
       accountId: cleanId,
       accessToken,
       requestedPageId: pageId,
+      allowFallbackPage: true,
     });
 
     if (!pageResolution.valid || !pageResolution.pageId) {
@@ -2499,12 +3330,16 @@ export class MetaApiService {
       await this.waitForVideoReady(effectiveVideoId, accessToken, 30);
     }
 
-    const effectiveCta = this.normalizeCallToAction(callToAction);
-    const cleanLinkUrl = this.sanitizeLinkUrl(linkUrl);
+    const storeLinkCandidate = objectStoreUrl || object_store_url;
+    const effectiveCta = this.normalizeCallToAction(callToAction || (storeLinkCandidate ? "DOWNLOAD" : "BOOK_NOW"));
+    const candidateDestUrl = linkUrl || destinationUrl || destination || landingPageUrl || landing_page_url || params.landingPageUrl || params.landing_page_url || null;
+    const rawDestLink = (candidateDestUrl && candidateDestUrl !== "https://facebook.com") ? candidateDestUrl : (storeLinkCandidate || candidateDestUrl);
+    const cleanLinkUrl = this.sanitizeLinkUrl(rawDestLink);
 
+    const effectiveDisplayLink = displayLink || display_link || params.displayLink || params.display_link || null;
     let cleanDisplayLink = null;
-    if (displayLink && typeof displayLink === "string" && displayLink.trim()) {
-      cleanDisplayLink = displayLink.trim().replace(/^https?:\/\//i, "");
+    if (effectiveDisplayLink && typeof effectiveDisplayLink === "string" && effectiveDisplayLink.trim()) {
+      cleanDisplayLink = effectiveDisplayLink.trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
     }
 
     const sanitizeFieldValue = (val) => {
@@ -2640,6 +3475,7 @@ export class MetaApiService {
       object_story_spec: JSON.stringify(objectStorySpec),
       access_token: accessToken,
     };
+    if (cleanLinkUrl) creativeParams.link_url = cleanLinkUrl;
     if (cleanUrlTags) creativeParams.url_tags = cleanUrlTags;
 
     const parseBoolean = (val) => {
@@ -2658,12 +3494,13 @@ export class MetaApiService {
     const statusVal = isOptEnabled ? "OPT_IN" : "OPT_OUT";
 
     const fullCreativeFeaturesSpec = {
-      text_optimizations: { enroll_status: statusVal },
-      inline_comment: { enroll_status: statusVal },
-      video_auto_crop: { enroll_status: statusVal },
-      video_uncrop: { enroll_status: statusVal },
-      enhance_cta: { enroll_status: statusVal },
-      image_touchups: { enroll_status: statusVal },
+      advantage_plus_creative: { enroll_status: "OPT_IN" },
+      text_optimizations: { enroll_status: "OPT_IN" },
+      inline_comment: { enroll_status: "OPT_IN" },
+      enhance_cta: { enroll_status: "OPT_IN" },
+      image_touchups: { enroll_status: "OPT_IN" },
+      video_auto_crop: { enroll_status: "OPT_IN" },
+      video_filtering: { enroll_status: "OPT_IN" },
     };
 
     creativeParams.degrees_of_freedom_spec = JSON.stringify({
@@ -2682,6 +3519,38 @@ export class MetaApiService {
       creativeParams: { ...creativeParams, access_token: "[REDACTED]" },
     });
 
+    if (accessToken && accessToken.startsWith("EAAB_simulated")) {
+      const simAdId = `sim_ad_${Date.now()}`;
+      const simCreativeId = `sim_creative_${Date.now()}`;
+      const simTrackingSpecs = [];
+      if (pixelId) {
+        simTrackingSpecs.push({
+          "action.type": ["offsite_conversion"],
+          fb_pixel: [String(pixelId)],
+        });
+      }
+      if (appId || applicationId) {
+        simTrackingSpecs.push({
+          "action.type": [pixelId ? "app_custom_event" : "mobile_app_install"],
+          application: [String(appId || applicationId)],
+        });
+      }
+      return {
+        id: simAdId,
+        adId: simAdId,
+        creativeId: simCreativeId,
+        success: true,
+        name: name || "Simulated Video Ad",
+        adSetId,
+        callToAction: effectiveCta,
+        linkUrl: cleanLinkUrl,
+        displayLink: cleanDisplayLink,
+        trackingSpecs: simTrackingSpecs,
+        pixelId: pixelId || null,
+        appId: appId || applicationId || null,
+      };
+    }
+
     let creativeId = null;
     try {
       const creativeRes = await axios.post(creativeUrl, null, { params: creativeParams });
@@ -2699,6 +3568,26 @@ export class MetaApiService {
       console.warn("[Meta Video Creative Attempt 1 Warning]:", err.response?.data?.error || err.message);
 
       const firstErr = err.response?.data?.error;
+      let errData = null;
+      try {
+        if (typeof firstErr?.error_data === "string") {
+          errData = JSON.parse(firstErr.error_data);
+        } else if (typeof firstErr?.error_data === "object") {
+          errData = firstErr.error_data;
+        }
+      } catch (_) {}
+
+      const isAccountUnsettled =
+        errData?.ad_account_status === 3 ||
+        firstErr?.error_subcode === 1487194 ||
+        errData?.has_write_ad_account_permissions === "false";
+
+      if (isAccountUnsettled) {
+        throw new Error(
+          `Ad Account Unsettled (Unpaid Balance) [Meta Error 200 / Subcode 1487194]: Meta Ad Account has an unsettled balance (ad_account_status: 3). Meta strictly prohibits publishing new ads until the pending payment is cleared in Meta Ads Manager. Please click "Pay Now" in Meta Ads Manager to clear the balance.`
+        );
+      }
+
       const isPermissionErr = firstErr?.code === 10 || firstErr?.error_subcode === 3858749 || (firstErr?.message || "").toLowerCase().includes("permission");
 
       if (isPermissionErr && !objectStorySpec.instagram_actor_id && !objectStorySpec.instagram_user_id) {
@@ -2713,16 +3602,18 @@ export class MetaApiService {
         delete objectStorySpec.instagram_user_id;
         creativeParams.object_story_spec = JSON.stringify(objectStorySpec);
       }
-      // Attempt 2: Retry with exact 5 requested core spec keys
+      // Attempt 2: Retry with exact core video spec keys
       try {
         creativeParams.degrees_of_freedom_spec = JSON.stringify({
           degrees_of_freedom_type: "USER_ENROLLED",
           creative_features_spec: {
-            text_optimizations: { enroll_status: statusVal },
-            inline_comment: { enroll_status: statusVal },
-            video_auto_crop: { enroll_status: statusVal },
-            video_uncrop: { enroll_status: statusVal },
-            enhance_cta: { enroll_status: statusVal },
+            advantage_plus_creative: { enroll_status: "OPT_IN" },
+            text_optimizations: { enroll_status: "OPT_IN" },
+            inline_comment: { enroll_status: "OPT_IN" },
+            enhance_cta: { enroll_status: "OPT_IN" },
+            image_touchups: { enroll_status: "OPT_IN" },
+            video_auto_crop: { enroll_status: "OPT_IN" },
+            video_filtering: { enroll_status: "OPT_IN" },
           },
         });
         const retryRes2 = await axios.post(creativeUrl, null, { params: creativeParams });
@@ -2736,12 +3627,16 @@ export class MetaApiService {
           delete objectStorySpec.instagram_user_id;
           creativeParams.object_story_spec = JSON.stringify(objectStorySpec);
         }
-        // Attempt 3: Pure text_optimizations fallback with USER_ENROLLED
+        // Attempt 3: Core video enhancements fallback with USER_ENROLLED
         try {
           creativeParams.degrees_of_freedom_spec = JSON.stringify({
             degrees_of_freedom_type: "USER_ENROLLED",
             creative_features_spec: {
-              text_optimizations: { enroll_status: statusVal },
+              advantage_plus_creative: { enroll_status: "OPT_IN" },
+              text_optimizations: { enroll_status: "OPT_IN" },
+              inline_comment: { enroll_status: "OPT_IN" },
+              enhance_cta: { enroll_status: "OPT_IN" },
+              image_touchups: { enroll_status: "OPT_IN" },
             },
           });
           const retryRes3 = await axios.post(creativeUrl, null, { params: creativeParams });
@@ -2800,7 +3695,7 @@ export class MetaApiService {
     }
 
     let effectiveAppId = appId || applicationId || null;
-    if (!effectiveAppId && mode === "APP") {
+    if (!effectiveAppId && (mode === "APP" || mode === "BOTH")) {
       try {
         const appRes = await this.verifyAndResolveAppAsset({
           accountId: cleanId,
@@ -2824,17 +3719,22 @@ export class MetaApiService {
         "action.type": targetActionType,
         fb_pixel: [String(effectivePixelId)],
       });
-    } else if (effectiveAppId) {
+    }
+    if (effectiveAppId) {
+      const appAction = (typeof customEventType !== "undefined" && customEventType)
+        ? customEventType
+        : (effectivePixelId ? "app_custom_event" : "mobile_app_install");
       trackingSpecs.push({
-        "action.type": [typeof customEventType !== "undefined" && customEventType ? "app_custom_event" : "mobile_app_install"],
+        "action.type": [appAction],
         application: [String(effectiveAppId)],
       });
     }
 
     // Step 3: Create Ad
     const formatAdName = (strName) => MetaApiService.formatAdName(strName, 250);
+    const targetAdAccount = cleanId;
 
-    const adUrl = `${META_GRAPH_URL}/${cleanId}/ads`;
+    const adUrl = `${META_GRAPH_URL}/${targetAdAccount}/ads`;
     const payload = {
       name: formatAdName(name),
       adset_id: adSetId,
@@ -2856,7 +3756,7 @@ export class MetaApiService {
 
     if (accessToken && accessToken.startsWith("EAAB_simulated")) {
       const simAdId = `sim_ad_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-      return { id: simAdId, adId: simAdId, creativeId, videoId: effectiveVideoId, pageId: effectivePageId, pixelId: effectivePixelId, adSetId, success: true };
+      return { id: simAdId, adId: simAdId, creativeId, videoId: effectiveVideoId, pageId: effectivePageId, pixelId: effectivePixelId, appId: effectiveAppId, trackingSpecs, adSetId, success: true };
     }
 
     return await this.withRateLimitRetry(async () => {
@@ -2890,8 +3790,13 @@ export class MetaApiService {
         }
 
         if (initialMetaErr) {
+          const userMsg = initialMetaErr.error_user_msg || initialMetaErr.error_user_title;
+          const specificMsg = (initialMetaErr.error_subcode === 1359188 || (userMsg && userMsg.toLowerCase().includes("payment")))
+            ? `No Payment Method on Ad Account [Subcode 1359188]: ${userMsg || "Please add a valid payment method in Meta Billing & Payments centre."}`
+            : (userMsg || initialMetaErr.message || error.message);
+
           const errToThrow = new Error(
-            `Meta API Video Ad Creation Error [${initialMetaErr.code || "unknown"}]: ${initialMetaErr.message || initialMetaErr.error_user_msg || error.message}`
+            `Meta API Video Ad Creation Error [${initialMetaErr.code || "unknown"}]: ${specificMsg}`
           );
           errToThrow.response = error.response;
           throw errToThrow;

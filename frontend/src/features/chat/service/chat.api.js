@@ -7,6 +7,10 @@ export const chatApi = {
     api.patch(`/api/agent/conversation/${conversationId}`, { title }),
   deleteConversation: (conversationId) =>
     api.delete(`/api/agent/conversation/${conversationId}`),
+  getPreparation: (conversationId) =>
+    api.get(`/api/agent/preparation/${conversationId}`),
+  preparationAction: ({ conversationId, action, payload, metaAccountId }) =>
+    api.post("/api/agent/preparation/action", { conversationId, action, payload, metaAccountId }),
   stream: async ({
     conversationId,
     userMessage,

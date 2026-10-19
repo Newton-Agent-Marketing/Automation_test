@@ -106,8 +106,8 @@ export class DynamicSheetFilter {
     s = s.replace(/(?:[\s,;.]+(?:and|aur|also|with|using|for|under|into|in|on|from|sheet|excel|ad|ads|campaign|adset|rows?|lines?)\b)+$/i, "").trim();
     s = s.replace(/[.,;]+$/, "").trim();
 
-    // Strip enclosing parentheses: (val1, val2) -> val1, val2
-    if (s.startsWith("(") && s.endsWith(")")) {
+    // Strip enclosing parentheses or brackets: (val1, val2) or [val1, val2]
+    if ((s.startsWith("(") && s.endsWith(")")) || (s.startsWith("[") && s.endsWith("]"))) {
       s = s.slice(1, -1).trim();
     }
 
@@ -224,29 +224,30 @@ export class DynamicSheetFilter {
     }
 
     let text = promptMessage;
+
+    // 1. Strip explicit campaign / ad set name declarations FIRST so quoted values with spaces are removed before token splitting
+    text = text
+      .replace(/\b(?:(?:(?:make|create|launch|set\s*up|build|banao|with|for|having|use)\s+)?(?:an?|the\s+)?(?:campaign\s*(?:names?|title|titled|label|called|ka\s*name)?|campaign_name|camp\s*(?:names?|title)?)\s*(?:is|will\s*be|as|named|called|titled|[:=\-–—])\s*(?:["'“«][^"'”»\r\n]*["'”»]|[^"'”»\s,;]+))/gi, " ")
+      .replace(/\b(?:(?:(?:make|create|launch|set\s*up|build|banao|with|for|having|use)\s+)?(?:an?|the\s+)?(?:(?:adset|ad_set|ad\s*set|adgroup)\s*(?:names?|title|titled|label|called|ka\s*name)?|ad_set_name|adset_name)\s*(?:is|will\s*be|as|named|called|titled|[:=\-–—])\s*(?:["'“«][^"'”»\r\n]*["'”»]|[^"'”»\s,;]+))/gi, " ")
+      .trim();
+
     const extractedCamp = this.parseNameFromMessage(promptMessage, "campaign");
     const extractedAdSet = this.parseNameFromMessage(promptMessage, "adset");
 
     if (extractedCamp) {
       const escCamp = extractedCamp.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&");
-      text = text.replace(new RegExp("(?:\\b(?:campaign\\s*(?:names?|title|titled|label|called|ka\\s*name)?|campaign_name|camp\\s*(?:names?|title)?)\\s*(?:is|will\\s*be|as|named|called|titled|[:=\\-–—])?\\s*)?[\"'\u201c\u201d\u2018\u2019\\x60]?" + escCamp + "[\"'\u201c\u201d\u2018\u2019\\x60]?", "gi"), " ");
+      text = text.replace(new RegExp("(?:\\b(?:campaign\\s*(?:names?|title|titled|label|called|ka\\s*name)?|campaign_name|camp\\s*(?:names?|title)?)\\s*(?:is|will\\s*be|as|named|called|titled|[:=\\-–—])?\\s*)?[\"\'\u201c\u201d\u2018\u2019\x60]?\\s*" + escCamp + "\\s*[\"\'\u201c\u201d\u2018\u2019\x60]?", "gi"), " ");
     }
     if (extractedAdSet) {
       const escAdSet = extractedAdSet.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&");
-      text = text.replace(new RegExp("(?:\\b(?:(?:adset|ad_set|ad\\s*set|adgroup)\\s*(?:names?|title|titled|label|called|ka\\s*name)?|ad_set_name|adset_name)\\s*(?:is|will\\s*be|as|named|called|titled|[:=\\-–—])?\\s*)?[\"'\u201c\u201d\u2018\u2019\\x60]?" + escAdSet + "[\"'\u201c\u201d\u2018\u2019\\x60]?", "gi"), " ");
+      text = text.replace(new RegExp("(?:\\b(?:(?:adset|ad_set|ad\\s*set|adgroup)\\s*(?:names?|title|titled|label|called|ka\\s*name)?|ad_set_name|adset_name)\\s*(?:is|will\\s*be|as|named|called|titled|[:=\\-–—])?\\s*)?[\"\'\u201c\u201d\u2018\u2019\x60]?\\s*" + escAdSet + "\\s*[\"\'\u201c\u201d\u2018\u2019\x60]?", "gi"), " ");
     }
-
-    // Strip explicit campaign / ad set name declarations (with name/title/label keywords) so they are not treated as filters
-    text = text
-      .replace(/\b(?:(?:(?:make|create|launch|set\s*up|build|banao|with|for|having|use)\s+)?(?:an?|the\s+)?(?:campaign\s*(?:names?|title|titled|label|called|ka\s*name)|campaign_name|camp\s*(?:names?|title))\s*(?:is|will\s*be|as|named|called|titled|[:=\-–—]))\s*["'“«]?[^"'”»\s,;]+["'”»]?/gi, " ")
-      .replace(/\b(?:(?:(?:make|create|launch|set\s*up|build|banao|with|for|having|use)\s+)?(?:an?|the\s+)?(?:(?:adset|ad_set|ad\s*set|adgroup)\s*(?:names?|title|titled|label|called|ka\s*name)|ad_set_name|adset_name)\s*(?:is|will\s*be|as|named|called|titled|[:=\-–—]))\s*["'“«]?[^"'”»\s,;]+["'”»]?/gi, " ")
-      .trim();
 
     // Strip explicit row ranges and row lists (e.g., "for rows 2 to 9", "rows 2, 4, 5, 8", "from row 5 to 15", "upload row 7 only")
     text = text.replace(/(?:\b(?:from|for|on|in|process|upload|retry)?\s*(?:rows?|lines?)\s*#?\d+(?:(?:\s*,\s*|\s+(?:to|–|-|till|through|and|or)\s*)#?\d+)*\b(?:\s*only)?)/gi, " ");
 
-    // Strip conversational file/context references (e.g. "I will attached excel sheet in ai context")
-    text = text.replace(/\b(?:i\s*will\s*)?(?:attach|attached)?\s*(?:the\s*)?(?:excel|google\s*sheet|spreadsheet)?\s*(?:sheet\s*)?in\s*(?:the\s*)?(?:ai\s*context|context)\b/gi, " ");
+    // Strip conversational file/context references (e.g. "I will attached excel sheet in ai context section")
+    text = text.replace(/\b(?:and\s+)?(?:also\s+)?(?:i\s*will\s*)?(?:attach|attached)?\s*(?:the\s*)?(?:excel|google\s*sheet|spreadsheet)?\s*(?:sheet\s*)?in\s*(?:the\s*)?(?:ai\s*context|context)(?:\s*section)?\b/gi, " ");
 
     const lowerText = text.toLowerCase();
     const conditions = [];
@@ -256,9 +257,10 @@ export class DynamicSheetFilter {
     let ambiguityReason = null;
 
     // Helper: Match input query string to actual sheet header
-    const findHeader = (colQuery) => {
+    const findHeader = (colQuery, recordAmbiguity = false) => {
       if (!colQuery) return null;
-      const cleanQ = String(colQuery).trim();
+      let cleanQ = String(colQuery).trim();
+      cleanQ = cleanQ.replace(/^[-*•–—\d.)\]\s]+/, "").replace(/[:=\-–—\s]+$/, "").trim();
       const normQ = this.normalize(cleanQ);
       if (!normQ || normQ.length < 2) return null;
 
@@ -279,16 +281,35 @@ export class DynamicSheetFilter {
         }
       }
 
-      // Pass 3: Unique Substring match (min 4 chars)
+      // Pass 3: Substring match (min 4 chars)
       if (normQ.length >= 4) {
-        const matches = headers.filter((h) => {
+        let matches = headers.filter((h) => {
           const normH = this.normalize(h);
-          return normH === normQ || normH.includes(normQ) || normQ.includes(normH);
+          if (normH === normQ) return true;
+          if (normH.includes(normQ)) return true;
+          if (normQ.includes(normH) && normQ.length <= normH.length + 6) return true;
+          return false;
         });
+
         if (matches.length === 1) return matches[0];
         if (matches.length > 1) {
-          isAmbiguous = true;
-          ambiguityReason = `Requested column "${cleanQ}" is ambiguous and could match: [ ${matches.map((m) => `"${m}"`).join(", ")} ]`;
+          const exact = matches.find((m) => this.normalize(m) === normQ);
+          if (exact) return exact;
+
+          // If one match is a superset/longer more specific version of another (e.g. "call_to_action" vs "action"),
+          // eliminate the shorter sub-matches
+          const nonSubMatches = matches.filter((m) => {
+            const normM = this.normalize(m);
+            return !matches.some((other) => other !== m && this.normalize(other).includes(normM));
+          });
+          if (nonSubMatches.length === 1) {
+            return nonSubMatches[0];
+          }
+
+          if (recordAmbiguity) {
+            isAmbiguous = true;
+            ambiguityReason = `Requested column "${cleanQ}" is ambiguous and could match: [ ${matches.map((m) => `"${m}"`).join(", ")} ]`;
+          }
           return null;
         }
       }
@@ -314,6 +335,17 @@ export class DynamicSheetFilter {
       if (!rawCol) return "";
       let col = String(rawCol).trim();
 
+      // If the candidate contains newlines, isolate the last line
+      if (col.includes("\n")) {
+        const lines = col.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        if (lines.length > 0) {
+          col = lines[lines.length - 1];
+        }
+      }
+
+      // Strip leading bullet markers (- , * , • , 1. , etc.)
+      col = col.replace(/^[-*•–—\d.)\]\s]+/, "").trim();
+
       // If the candidate already matches a known header, keep it
       if (findHeader(col)) {
         return col;
@@ -322,8 +354,8 @@ export class DynamicSheetFilter {
       // Strip row range or list prefix (e.g., "for rows 2, 4, 5, 8", "rows 2 to 9", "row 7")
       col = col.replace(/^(?:(?:from|for|in|on)?\s*(?:rows?|lines?)\s*#?\d+(?:(?:\s*,\s*|\s+(?:to|–|-|till|through|and|or)\s*)#?\d+)*)\s*/i, "").trim();
 
-      // Strip leading prompt action prefixes
-      const prefixRegex = /^(?:(?:create|launch|start|process|upload|filter|select|read|only|retry)\s+(?:ads?\s+)?(?:only\s+)?(?:where|for|with|in|under)?|(?:where|only\s+for|only|having|with|and|in|under|the|attached|context|please))\s+/i;
+      // Strip leading prompt action prefixes & conversational field keywords
+      const prefixRegex = /^(?:(?:create|launch|start|process|upload|filter|select|read|only|retry|use)\s+(?:a\s+)?(?:meta\s+)?(?:ads?\s+)?(?:only\s+)?(?:where|for|with|in|under)?|(?:where|only\s+for|only|having|with|and|in|under|the|attached|context|section|please|use\s+(?:a\s+)?(?:sheet\s+)?(?:field|column)\s*(?:name)?\s*(?:is)?|(?:a\s+)?(?:sheet\s+)?(?:field|column)\s*(?:name)?\s*(?:is)?))\s+/i;
       let prev = "";
       while (col !== prev) {
         prev = col;
@@ -332,6 +364,23 @@ export class DynamicSheetFilter {
       }
 
       return col;
+    };
+
+    // Helper: Resolve header with tail-word fallback for conversational column candidates
+    const resolveHeaderFromCandidate = (cand, recordAmbiguity = false) => {
+      if (!cand) return null;
+      const cleaned = cleanColCandidate(cand);
+      const direct = findHeader(cleaned, recordAmbiguity);
+      if (direct) return direct;
+
+      // Check tail words (last 1 to 6 words)
+      const words = cleaned.trim().split(/\s+/);
+      for (let w = Math.min(words.length, 6); w >= 1; w--) {
+        const tail = cleanColCandidate(words.slice(words.length - w).join(" "));
+        const match = findHeader(tail, recordAmbiguity);
+        if (match) return match;
+      }
+      return null;
     };
 
     const mapOp = (opRaw) => {
@@ -349,6 +398,25 @@ export class DynamicSheetFilter {
     const ops = [];
     let oMatch;
     while ((oMatch = opRegex.exec(text)) !== null) {
+      if (oMatch[0] === ":") {
+        // Ignore colon if part of URL protocol (http://, https://, ftp://)
+        if (text.slice(oMatch.index, oMatch.index + 3) === "://") {
+          continue;
+        }
+        const prev5 = text.substring(Math.max(0, oMatch.index - 5), oMatch.index).toLowerCase();
+        if (prev5.endsWith("http") || prev5.endsWith("https")) {
+          continue;
+        }
+      }
+      if (oMatch[0] === "=" || oMatch[0] === "==") {
+        // Ignore equals sign if inside URL query string without spaces (e.g. ?id=com.stan.app)
+        const textBefore = text.substring(0, oMatch.index);
+        const lastSpace = Math.max(textBefore.lastIndexOf(" "), textBefore.lastIndexOf("\n"), textBefore.lastIndexOf("\t"));
+        const currentToken = textBefore.substring(lastSpace + 1);
+        if (currentToken.includes("://") || currentToken.startsWith("http")) {
+          continue;
+        }
+      }
       ops.push({
         rawOp: oMatch[0],
         op: mapOp(oMatch[0]),
@@ -369,7 +437,7 @@ export class DynamicSheetFilter {
 
       for (let i = 0; i < ops.length - 1; i++) {
         const segment = text.substring(ops[i].end, ops[i + 1].start);
-        const connectorRegex = /\s+(and|aur|also|with|or|OR|ya|athva|,)\s+/gi;
+        const connectorRegex = /(?:\s+(?:and|aur|also|with|or|OR|ya|athva|,)\s+|\s+[-*•–—|]\s+|\r?\n+[-*•–—\s]*)/gi;
         let connMatch;
         let lastValidSplit = -1;
         let lastConnector = "and";
@@ -378,14 +446,32 @@ export class DynamicSheetFilter {
           const candidateCol = cleanColCandidate(segment.substring(connMatch.index + connMatch[0].length));
           if (findHeader(candidateCol) || candidateCol.length >= 2) {
             lastValidSplit = connMatch.index;
-            lastConnector = connMatch[1].toLowerCase();
+            lastConnector = connMatch[0].trim().toLowerCase() || "and";
+          }
+        }
+
+        // Fallback: check if the end of segment matches any known header
+        if (lastValidSplit === -1) {
+          const trimmedSeg = segment.trim();
+          const words = trimmedSeg.split(/\s+/);
+          for (let w = Math.min(words.length - 1, 5); w >= 1; w--) {
+            const tailWords = words.slice(words.length - w).join(" ");
+            const cleanedTail = cleanColCandidate(tailWords);
+            if (findHeader(cleanedTail)) {
+              const splitIdx = segment.lastIndexOf(tailWords);
+              if (splitIdx > 0) {
+                lastValidSplit = splitIdx;
+                lastConnector = "and";
+                break;
+              }
+            }
           }
         }
 
         if (lastValidSplit !== -1) {
           clauses[i].valSubstr = segment.substring(0, lastValidSplit).trim();
           clauses[i].nextConnector = lastConnector;
-          const nextCol = cleanColCandidate(segment.substring(lastValidSplit).replace(/^\s*(?:and|aur|also|with|or|OR|ya|athva|,)\s+/i, ""));
+          const nextCol = cleanColCandidate(segment.substring(lastValidSplit).replace(/^(?:\s*(?:and|aur|also|with|or|OR|ya|athva|,)\s*|[\r\n\-*•–—\s]+)/i, ""));
           clauses.push({
             colCandidate: nextCol,
             opCandidate: ops[i + 1].op,
@@ -416,13 +502,13 @@ export class DynamicSheetFilter {
 
         const cleanVal = (cl.valSubstr || "")
           .replace(/(?:[\s,;.]+(?:and|aur|also|with|using|for|under|into|in|on|from|sheet|excel|ad|ads|campaign|adset|rows?|lines?)\b)+$/i, "")
-          .replace(/\s+(?:upload|create|launch|process|start|banao)\b.*$/i, "")
+          .replace(/\s+(?:for|to|keliye|ke\s*liye)?\s*(?:upload|create|launch|process|start|banao)\b.*$/i, "")
           .replace(/[.,;]+$/, "")
           .trim();
 
         const extractedVals = this.extractValuesList(cleanVal);
         if (extractedVals.length > 0) {
-          const actualHeader = findHeader(cl.colCandidate);
+          const actualHeader = resolveHeaderFromCandidate(cl.colCandidate, true);
           if (actualHeader) {
             for (const v of extractedVals) {
               conditions.push({
@@ -445,8 +531,8 @@ export class DynamicSheetFilter {
     // Fallback 1: Hinglish / Hindi pattern
     if (conditions.length === 0) {
       const hinglishRegexes = [
-        /([a-zA-Z0-9_\s]{2,40}?)\s+(?:mein|me|in|field\s+me|column\s+me|column\s+mein)\s+["']?([a-zA-Z0-9_\s\-]{2,50}?)["']?\s+(?:wali|wala|wale|walu|row|rows|data|upload|karo|banao|kar do|set|chahiye)/gi,
-        /(?:upload|process|filter|create|select)\s+["']?([a-zA-Z0-9_\s\-]{2,50}?)["']?\s+(?:from|in|under|for|mein|me)\s+([a-zA-Z0-9_\s]{2,40}?)\s+(?:column|field|category|type)?/gi,
+        /([a-zA-Z0-9_\s]{2,40}?)\s+(?:mein|me|in|field\s+me|column\s+me|column\s+mein)\s+([^\r\n]{1,100}?)\s+(?:wali|wala|wale|walu|row|rows|data|upload|karo|banao|kar do|set|chahiye)/gi,
+        /(?:upload|process|filter|create|select)\s+([^\r\n]{1,100}?)\s+(?:from|in|under|for|mein|me)\s+([a-zA-Z0-9_\s]{2,40}?)\s+(?:column|field|category|type)?/gi,
       ];
 
       for (const regex of hinglishRegexes) {
@@ -466,11 +552,14 @@ export class DynamicSheetFilter {
 
           if (isCommandKeyword(colCandidate) || isCommandKeyword(valCandidate)) continue;
 
-          const actualHeader = findHeader(colCandidate);
+          const actualHeader = resolveHeaderFromCandidate(colCandidate);
           if (actualHeader) {
             const op = (lowerText.includes("contains") || lowerText.includes("includes")) ? "contains" : "equals";
             const vals = this.extractValuesList(valCandidate);
             const finalVals = vals.length > 0 ? vals : [valCandidate];
+            if (finalVals.length > 1) {
+              detectedLogicalOp = "OR";
+            }
             for (const v of finalVals) {
               conditions.push({
                 header: actualHeader,
@@ -800,13 +889,27 @@ export class DynamicSheetFilter {
       .replace(/\b(?:range|rows?|lines?)\s*:\s*/gi, (match) => match.replace(":", " "))
       .trim();
 
+    // Check for row exclusion keywords: "except row 3", "excluding rows 3, 5", "row 3 chod kar", "without row 3", "skip row 4"
+    const excludeRegex = /(?:except|excluding|without|skip|not|chod\s*kar|chhod\s*kar)\s*(?:rows?|lines?)?\s*#?\s*(\d+(?:\s*(?:,|and|or|ya|&|\+)\s*(?:rows?|lines?)?\s*#?\s*\d+)*)/i;
+    const excludeMatch = normalizedText.match(excludeRegex);
+    let excludedRowNums = [];
+    if (excludeMatch) {
+      const exNums = excludeMatch[1].match(/\d+/g);
+      if (exNums) {
+        excludedRowNums = exNums.map((n) => parseInt(n, 10)).filter((n) => !isNaN(n) && n > 0);
+      }
+    }
+
     // 2. Check for multi-row list: "row 10, row 11", "rows 10, 11", "row 10 and row 11", "row 10 aur 11", "row 10, 11, 12", "row 10 aur row 11", "row 10 & row 11"
     const multiRowListRegex = /(?:rows?|lines?)\s*#?\s*\d+\s*(?:(?:,|and|&|\+|aur|or|ya|tatha|evam)\s*(?:rows?|lines?)?\s*#?\s*\d+\s*)+/i;
     const listMatch = normalizedText.match(multiRowListRegex);
     if (listMatch) {
       const numbers = listMatch[0].match(/\d+/g);
       if (numbers && numbers.length > 1) {
-        const rowNums = numbers.map((n) => parseInt(n, 10)).filter((n) => !isNaN(n) && n > 0);
+        let rowNums = numbers.map((n) => parseInt(n, 10)).filter((n) => !isNaN(n) && n > 0);
+        if (excludedRowNums.length > 0) {
+          rowNums = rowNums.filter((n) => !excludedRowNums.includes(n));
+        }
         if (rowNums.length > 0) {
           const start = Math.min(...rowNums);
           const end = Math.max(...rowNums);
@@ -852,9 +955,12 @@ export class DynamicSheetFilter {
             s = e;
             e = temp;
           }
-          const rowNums = [];
+          let rowNums = [];
           for (let r = s; r <= e; r++) {
             rowNums.push(r);
+          }
+          if (excludedRowNums.length > 0) {
+            rowNums = rowNums.filter((n) => !excludedRowNums.includes(n));
           }
           const isHeader = s === 1;
           return {
@@ -882,9 +988,12 @@ export class DynamicSheetFilter {
         const s = parseInt(m[1], 10);
         if (!isNaN(s) && s > 0) {
           const max = maxAvailableRow > 0 ? maxAvailableRow : s + 50;
-          const rowNums = [];
+          let rowNums = [];
           for (let r = s; r <= max; r++) {
             rowNums.push(r);
+          }
+          if (excludedRowNums.length > 0) {
+            rowNums = rowNums.filter((n) => !excludedRowNums.includes(n));
           }
           return {
             isExplicitRange: true,
@@ -925,6 +1034,27 @@ export class DynamicSheetFilter {
       }
     }
 
+    // 6. Check if standalone exclusion was requested: "all rows except row 3", "skip row 4"
+    if (excludedRowNums.length > 0) {
+      const max = maxAvailableRow > 0 ? maxAvailableRow : 30;
+      const rowNums = [];
+      for (let r = 2; r <= max; r++) {
+        if (!excludedRowNums.includes(r)) {
+          rowNums.push(r);
+        }
+      }
+      return {
+        isExplicitRange: true,
+        start: Math.min(...rowNums),
+        end: Math.max(...rowNums),
+        targetRowNumbers: new Set(rowNums),
+        type: "EXCLUSION_LIST",
+        headerRowIncluded: false,
+        rawText: excludeMatch ? excludeMatch[0] : "row exclusion",
+        exceedsAvailableRows: false,
+      };
+    }
+
     return {
       isExplicitRange: false,
       start: 2,
@@ -944,7 +1074,7 @@ export class DynamicSheetFilter {
     if (!rangeInfo || !rangeInfo.isExplicitRange) {
       // Exclude row 1 if accidentally present as a data row
       const selected = rows.filter((r) => {
-        const rowNo = r._originalRowNumber || r.originalRowNumber || r.__excelRowNumber;
+        const rowNo = r.rowNumber || r._originalRowNumber || r.originalRowNumber || r.__excelRowNumber;
         return rowNo === undefined || rowNo >= 2;
       });
       return { selectedRows: selected, blankRows: [], skippedOutsideRange: 0 };
@@ -955,7 +1085,7 @@ export class DynamicSheetFilter {
     let skippedOutsideRange = 0;
 
     for (const r of rows) {
-      const rowNo = r._originalRowNumber || r.originalRowNumber || r.__excelRowNumber;
+      const rowNo = r.rowNumber || r._originalRowNumber || r.originalRowNumber || r.__excelRowNumber;
       if (rowNo === 1) continue; // Header row is NEVER an ad record!
 
       let inRange = false;

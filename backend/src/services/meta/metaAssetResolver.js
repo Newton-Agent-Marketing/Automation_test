@@ -18,13 +18,21 @@ const META_GRAPH_URL = "https://graph.facebook.com/v24.0";
  * 6. Instagram Resolution: Verifies linked Instagram business accounts; cleanly omits unlinked optional Instagram accounts.
  */
 export class MetaAssetResolver {
+  static userPagesCache = new Map();
+  static promotePagesCache = new Map();
+
   /**
    * Fetch promotable pages associated with an Ad Account (/act_<id>/promote_pages)
    */
   static async getPromotePages(accountId, accessToken) {
     if (!accessToken || !accountId) return [];
+    const cleanId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
+    const cacheKey = `${cleanId}_${String(accessToken).slice(-15)}`;
+    const cached = this.promotePagesCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.data;
+    }
     try {
-      const cleanId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
       const url = `${META_GRAPH_URL}/${cleanId}/promote_pages`;
       const response = await axios.get(url, {
         params: {
@@ -33,9 +41,12 @@ export class MetaAssetResolver {
           limit: 50,
         },
       });
-      return response.data?.data || [];
+      const data = response.data?.data || [];
+      this.promotePagesCache.set(cacheKey, { data, expiresAt: Date.now() + 5 * 60 * 1000 });
+      return data;
     } catch (err) {
       console.warn(`[MetaAssetResolver getPromotePages]: ${err.response?.data?.error?.message || err.message}`);
+      if (cached?.data) return cached.data;
       return [];
     }
   }
@@ -45,6 +56,11 @@ export class MetaAssetResolver {
    */
   static async getUserPages(accessToken) {
     if (!accessToken) return [];
+    const cacheKey = String(accessToken).slice(-20);
+    const cached = this.userPagesCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.data;
+    }
     try {
       const url = `${META_GRAPH_URL}/me/accounts`;
       const response = await axios.get(url, {
@@ -54,9 +70,12 @@ export class MetaAssetResolver {
           limit: 100,
         },
       });
-      return response.data?.data || [];
+      const data = response.data?.data || [];
+      this.userPagesCache.set(cacheKey, { data, expiresAt: Date.now() + 5 * 60 * 1000 });
+      return data;
     } catch (err) {
       console.warn(`[MetaAssetResolver getUserPages]: ${err.response?.data?.error?.message || err.message}`);
+      if (cached?.data) return cached.data;
       return [];
     }
   }
@@ -259,6 +278,22 @@ export class MetaAssetResolver {
       }
 
       // Page is not accessible or does not belong to selected ad account context
+      // Resilient check: If userPages or promotePages was empty (due to rate limits like #4 Application request limit reached or restricted API scope),
+      // and cleanRequestedId is provided by the user/sheet, trust the explicit Page ID rather than falsely blocking creation.
+      if (cleanRequestedId && (userPages.length === 0 || promotePages.length === 0)) {
+        console.warn(`⚠️ [MetaAssetResolver]: Page discovery returned incomplete/rate-limited results. Trusting explicitly requested Page ID "${cleanRequestedId}"`);
+        return {
+          valid: true,
+          pageId: cleanRequestedId,
+          pageName: `Page_${cleanRequestedId}`,
+          status: "TRUSTED_EXPLICIT_PAGE",
+          source: "USER_PROVIDED_FALLBACK",
+          blocked: false,
+          isAccessible: true,
+          isAuthorized: true,
+        };
+      }
+
       const result = {
         valid: false,
         pageId: cleanRequestedId,
@@ -434,7 +469,7 @@ export class MetaAssetResolver {
           const directRes = await axios.get(`${META_GRAPH_URL}/${cleanPixelId}`, {
             params: {
               access_token: accessToken,
-              fields: "id,name,owner_business,creation_time",
+              fields: "id,name",
             },
             timeout: 10000,
           });
@@ -464,7 +499,7 @@ export class MetaAssetResolver {
           status: "INVALID_PIXEL_ID",
           blocked: true,
           error: `Incorrect Pixel ID: Pixel ${cleanPixelId} does not exist on Meta Graph API (Meta Error 100/Subcode 33: Object does not exist).`,
-          requiredAction: `Pixel ${cleanPixelId} does not exist on Meta. Verify the spreadsheet cell for typos or inadvertent spreadsheet drag/auto-fill series increments (e.g. 909136826822894 vs 909136826822895), and ensure the ID matches an active Pixel in Meta Events Manager.`,
+          requiredAction: `Pixel ${cleanPixelId} does not exist on Meta. Verify the spreadsheet cell for typos or inadvertent spreadsheet drag/auto-fill series increments, and ensure the ID matches an active Pixel in Meta Events Manager.`,
         };
       }
 
@@ -484,17 +519,17 @@ export class MetaAssetResolver {
         };
       }
 
-      // 4C: Pixel exists on Meta in an external business -> PIXEL_NOT_SHARED_WITH_ACCOUNT
+      // 4C: Pixel exists on Meta but is not connected to this ad account -> PIXEL_NOT_SHARED_WITH_ACCOUNT
       if (directMetaCheck && directMetaCheck.success) {
         const pixData = directMetaCheck.data;
-        const bizName = pixData.owner_business?.name || "External Business";
+        const pixelDisplayName = pixData.name ? `"${pixData.name}" (${cleanPixelId})` : `Pixel ${cleanPixelId}`;
         return {
           valid: false,
           pixelId: cleanPixelId,
           status: "PIXEL_NOT_SHARED_WITH_ACCOUNT",
           blocked: true,
-          error: `Pixel Not Connected to Ad Account: Pixel ${cleanPixelId} (${pixData.name || "Pixel"}) exists in Meta Business Manager (${bizName}), but is not added as a Connected Asset to selected ad account ${cleanId}.`,
-          requiredAction: `In Meta Business Manager for ${bizName}, go to Business Settings -> Data Sources -> Pixels -> select Pixel ${cleanPixelId} -> click 'Connected Assets' -> add Ad Account ${cleanId}.`,
+          error: `Pixel Not Connected to Ad Account: Pixel ${pixelDisplayName} exists and is accessible, but is not added as a Connected Asset to selected ad account ${cleanId}.`,
+          requiredAction: `In Meta Business Manager, go to Business Settings -> Data Sources -> Datasets (or Pixels) -> select ${pixelDisplayName} -> click the "Connected Assets" tab -> click "Add Assets" -> select Ad Account ${cleanId} and confirm.`,
         };
       }
 
@@ -572,9 +607,29 @@ export class MetaAssetResolver {
     const isAppRequired = ["APP_INSTALLS", "OUTCOME_APP_PROMOTION"].includes(objUpper);
 
     const getApps = getAccountAppsFn || (async (acc) => {
-      const url = `${META_GRAPH_URL}/${acc}/applications`;
-      const res = await axios.get(url, { params: { access_token: accessToken, fields: "id,name" } }).catch(() => ({ data: {} }));
-      return res.data?.data || [];
+      const apps = [];
+      try {
+        const advRes = await axios.get(`${META_GRAPH_URL}/${acc}/advertisable_applications`, {
+          params: { access_token: accessToken, fields: "id,name,object_store_urls" },
+        }).catch(() => ({ data: {} }));
+        if (Array.isArray(advRes.data?.data)) {
+          apps.push(...advRes.data.data);
+        }
+      } catch (e) {}
+
+      try {
+        const url = `${META_GRAPH_URL}/${acc}/applications`;
+        const res = await axios.get(url, { params: { access_token: accessToken, fields: "id,name" } }).catch(() => ({ data: {} }));
+        if (Array.isArray(res.data?.data)) {
+          for (const item of res.data.data) {
+            if (!apps.some((a) => String(a.id) === String(item.id))) {
+              apps.push(item);
+            }
+          }
+        }
+      } catch (e) {}
+
+      return apps;
     });
 
     const getUserAccounts = getUserAdAccountsFn || (async () => {

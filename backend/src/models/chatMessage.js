@@ -61,6 +61,11 @@ const chatMessageSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.Mixed,
       default: null,
     },
+    // Preparation workflow session data (validation, missing fields, preview, approval)
+    preparationData: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
     // Token Burn & Action Tracking Details
     tokenUsage: {
       inputTokens: {

@@ -10,6 +10,7 @@ import { MetaMcpClient } from "../mcp/metaMcpClient.js";
 import { GoogleMcpClient } from "../mcp/googleMcpClient.js";
 import { GoogleSyncPipeline } from "../google/googleSyncPipe.js";
 import { googleDriveService } from "../google/googleDriveService.js";
+import CampaignRouter from "../data/campaignRouter.js";
 
 // 1. LLM Tool Schema (OpenAI / Anthropic standard format)
 export const AGENT_TOOLS_DEFINITIONS = [
@@ -1039,6 +1040,13 @@ export async function executeAgentTool(toolName, args) {
       warehouseNode.data?.title ||
       (sheetUrl ? sheetUrl.split("/").pop().split("?")[0] : "Connected Sheet");
 
+    const routing = CampaignRouter.routeSheet({
+      headers: columns,
+      rows,
+      sheetName,
+      userInstruction: args.userMessage || args.userInstruction || "",
+    });
+
     return {
       success: true,
       sheetUrl,
@@ -1048,7 +1056,18 @@ export async function executeAgentTool(toolName, args) {
       columns,
       rows,
       lastSyncedAt: warehouseNode.data?.lastSyncedAt || null,
+      campaignType: routing.campaignType,
+      selectedSkill: routing.selectedSkill,
+      confidence: routing.confidence,
+      routingReason: routing.routingReason,
+      detectedAppConfig: routing.detectedAppConfig,
+      detectedWebConfig: routing.detectedWebConfig,
     };
+  }
+
+  if (toolName === "route_campaign_sheet") {
+    const { headers = [], rows = [], sheetName = "", userInstruction = "" } = args;
+    return CampaignRouter.routeSheet({ headers, rows, sheetName, userInstruction });
   }
 
   if (toolName === "validate_google_drive_asset") {

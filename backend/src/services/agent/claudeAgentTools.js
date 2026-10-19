@@ -26,7 +26,23 @@ const toToolError = (error) => ({
   isError: true,
 });
 
+export const validateSessionMetaAccountLock = (lockedAccountId, requestedAccountId) => {
+  const clean = (id) => String(id || "").replace(/^act_/, "").trim();
+  const lockedClean = clean(lockedAccountId);
+  const toolClean = clean(requestedAccountId);
+
+  if (lockedClean && toolClean && lockedClean !== toolClean) {
+    throw new Error(
+      `Account ID mismatch: Tool requested Meta account "act_${toolClean}", but the session is strictly locked to Meta account "act_${lockedClean}" selected in AI Context. Cross-account operations are strictly prohibited.`
+    );
+  }
+  return lockedClean || toolClean || null;
+};
+
 export const createAdsMcpServer = ({ userId, accountId }) => {
+  const resolveTargetMetaAccountId = (toolProvidedAccountId) =>
+    validateSessionMetaAccountLock(accountId, toolProvidedAccountId);
+
   const getAccountContext = tool(
     "get_account_context",
     "Get workspace context including active ad accounts, selected child advertising account, Manager MCC accounts, and connected channels.",
@@ -129,9 +145,10 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
     },
     async (args) => {
       try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
         const result = await executeAgentTool("fetch_live_meta_ads_mcp", {
           toolType: args.toolType,
-          accountId: args.accountId || accountId,
+          accountId: effectiveMetaAccountId,
           userId,
         });
         return toToolResult(result);
@@ -197,12 +214,14 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
       lifetimeBudget: z.number().optional().describe("Lifetime budget (optional)"),
       status: z.enum(["ACTIVE", "PAUSED"]).default("ACTIVE").describe("Initial campaign status"),
       accountId: z.string().optional().describe("Ad Account ID"),
+      isSkadnetworkAttribution: z.boolean().optional().describe("Whether SKAdNetwork attribution is enabled for iOS App Promotion campaigns"),
     },
     async (args) => {
       try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
         const result = await executeAgentTool("create_meta_campaign", {
           ...args,
-          accountId: args.accountId || accountId,
+          accountId: effectiveMetaAccountId,
           userId,
         });
         return toToolResult(result);
@@ -522,9 +541,10 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
     },
     async (args) => {
       try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
         const result = await executeAgentTool("update_meta_campaign", {
           ...args,
-          accountId: accountId,
+          accountId: effectiveMetaAccountId,
           userId,
         });
         return toToolResult(result);
@@ -547,11 +567,14 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
         .describe("Ad Set optimization goal"),
       billingEvent: z.enum(["IMPRESSIONS", "LINK_CLICKS"]).default("IMPRESSIONS").describe("Billing event"),
       bidAmount: z.number().optional().describe("Optional bid amount"),
+      bidStrategy: z.string().optional().describe("Optional bid strategy e.g. LOWEST_COST_WITHOUT_CAP, LOWEST_COST_WITH_BID_CAP, COST_CAP"),
       status: z.enum(["ACTIVE", "PAUSED"]).default("PAUSED").describe("Initial ad set status"),
       pixelId: z.string().optional().describe("Optional Meta Pixel ID for tracking website conversions"),
       appId: z.string().optional().describe("Optional Meta Application ID for App Events tracking"),
       applicationId: z.string().optional().describe("Optional Meta Application ID (alias for appId)"),
       objectStoreUrl: z.string().optional().describe("Optional App Store URL (Google Play or Apple App Store link)"),
+      startTime: z.string().optional().describe("Optional scheduled start time in ISO-8601 format"),
+      endTime: z.string().optional().describe("Optional scheduled end time in ISO-8601 format"),
       customEventType: z.string().optional().describe("Optional Custom Event Type for conversion tracking (e.g. PURCHASE, MOBILE_APP_INSTALL)"),
       trackingType: z.enum(["WEBSITE", "APP", "BOTH"]).optional().describe("Tracking mode: WEBSITE, APP, or BOTH"),
       targeting: z
@@ -569,9 +592,10 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
     },
     async (args) => {
       try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
         const result = await executeAgentTool("create_meta_ad_set", {
           ...args,
-          accountId: args.accountId || accountId,
+          accountId: effectiveMetaAccountId,
           userId,
         });
         return toToolResult(result);
@@ -604,9 +628,10 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
     },
     async (args) => {
       try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
         const result = await executeAgentTool("update_meta_ad_set", {
           ...args,
-          accountId: args.accountId || accountId,
+          accountId: effectiveMetaAccountId,
           userId,
         });
         return toToolResult(result);
@@ -631,9 +656,10 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
     },
     async (args) => {
       try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
         const result = await executeAgentTool("set_meta_targeting", {
           ...args,
-          accountId: args.accountId || accountId,
+          accountId: effectiveMetaAccountId,
           userId,
         });
         return toToolResult(result);
@@ -652,21 +678,36 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
       headline: z.string().describe("Catchy ad headline (title)"),
       primaryText: z.string().describe("Main promotional copy/body text"),
       description: z.string().optional().describe("Secondary link description"),
-      linkUrl: z.string().describe("Destination website URL"),
+      linkUrl: z.string().optional().describe("Destination website or app store URL"),
+      destinationUrl: z.string().optional().describe("Destination website URL"),
+      destination: z.string().optional().describe("Destination website URL"),
+      displayLink: z.string().optional().describe("Vanity display link shown on the ad (e.g. 'puja.utsavapp.in')"),
+      display_link: z.string().optional().describe("Vanity display link shown on the ad"),
+      objectStoreUrl: z.string().optional().describe("Optional Google Play or Apple App Store URL for App Promotion campaigns"),
       callToAction: z
-        .enum(["SHOP_NOW", "LEARN_MORE", "SIGN_UP", "BOOK_TRAVEL", "CONTACT_US", "ORDER_NOW", "GET_OFFER"])
-        .default("SHOP_NOW")
-        .describe("Call to action button"),
+        .string()
+        .optional()
+        .default("BOOK_NOW")
+        .describe("Call to action button (e.g. 'BOOK_NOW', 'SHOP_NOW', 'LEARN_MORE', 'DOWNLOAD', 'INSTALL_APP', etc.)"),
       imageUrl: z.string().optional().describe("Optional image URL"),
       pageId: z.string().optional().describe("Optional Facebook Page ID (auto-resolved from connected pages if omitted)"),
+      instagramId: z.string().optional().describe("Optional Instagram account ID"),
+      instagramActorId: z.string().optional().describe("Optional Instagram actor ID"),
+      pixelId: z.string().optional().describe("Optional Meta Pixel ID for website event tracking"),
+      appId: z.string().optional().describe("Optional Meta App ID for app event tracking"),
+      applicationId: z.string().optional().describe("Optional Meta App ID"),
+      trackingType: z.string().optional().describe("Tracking type: WEBSITE, APP, or BOTH"),
+      urlTags: z.string().optional().describe("Optional URL parameter tracking string (e.g. UTM tags)"),
+      url_tags: z.string().optional().describe("Optional URL parameter tracking string"),
       status: z.enum(["ACTIVE", "PAUSED"]).default("PAUSED").describe("Ad status"),
       accountId: z.string().optional(),
     },
     async (args) => {
       try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
         const result = await executeAgentTool("create_meta_ad", {
           ...args,
-          accountId: args.accountId || accountId,
+          accountId: effectiveMetaAccountId,
           userId,
         });
         return toToolResult(result);
@@ -685,24 +726,40 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
       headline: z.string().describe("Ad headline (title)"),
       primaryText: z.string().describe("Main promotional copy/caption"),
       description: z.string().optional().describe("Secondary link description"),
-      linkUrl: z.string().describe("Destination website URL"),
+      linkUrl: z.string().optional().describe("Destination website or app store URL"),
+      destinationUrl: z.string().optional().describe("Destination website URL"),
+      destination: z.string().optional().describe("Destination website URL"),
+      displayLink: z.string().optional().describe("Vanity display link shown on the ad (e.g. 'puja.utsavapp.in')"),
+      display_link: z.string().optional().describe("Vanity display link shown on the ad"),
+      objectStoreUrl: z.string().optional().describe("Optional Google Play or Apple App Store URL for App Promotion campaigns"),
       driveUrl: z.string().optional().describe("Google Drive video link (e.g. 'https://drive.google.com/file/d/...') to auto-download via OAuth and upload to Meta Ads"),
       videoUrl: z.string().optional().describe("Direct video URL"),
       videoFilePath: z.string().optional().describe("Local video file path from scratch/"),
       videoId: z.string().optional().describe("Pre-uploaded Meta Video ID (if already uploaded)"),
       imageUrl: z.string().optional().describe("Optional video thumbnail or fallback image URL"),
+      pageId: z.string().optional().describe("Optional Facebook Page ID"),
+      instagramId: z.string().optional().describe("Optional Instagram account ID"),
+      instagramActorId: z.string().optional().describe("Optional Instagram actor ID"),
+      pixelId: z.string().optional().describe("Optional Meta Pixel ID for website event tracking"),
+      appId: z.string().optional().describe("Optional Meta App ID for app event tracking"),
+      applicationId: z.string().optional().describe("Optional Meta App ID"),
+      trackingType: z.string().optional().describe("Tracking type: WEBSITE, APP, or BOTH"),
+      urlTags: z.string().optional().describe("Optional URL parameter tracking string (e.g. UTM tags)"),
+      url_tags: z.string().optional().describe("Optional URL parameter tracking string"),
       callToAction: z
-        .enum(["SHOP_NOW", "LEARN_MORE", "SIGN_UP", "BOOK_TRAVEL", "CONTACT_US", "ORDER_NOW", "GET_OFFER", "WATCH_MORE"])
-        .default("SHOP_NOW")
-        .describe("Call to action button"),
+        .string()
+        .optional()
+        .default("BOOK_NOW")
+        .describe("Call to action button (e.g. 'BOOK_NOW', 'SHOP_NOW', 'LEARN_MORE', 'DOWNLOAD', 'INSTALL_APP', etc.)"),
       status: z.enum(["ACTIVE", "PAUSED"]).default("PAUSED").describe("Ad status"),
       accountId: z.string().optional(),
     },
     async (args) => {
       try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
         const result = await executeAgentTool("create_meta_video_ad", {
           ...args,
-          accountId: args.accountId || accountId,
+          accountId: effectiveMetaAccountId,
           userId,
         });
         return toToolResult(result);
@@ -723,9 +780,10 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
     },
     async (args) => {
       try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
         const result = await executeAgentTool("verify_meta_campaign", {
           ...args,
-          accountId: args.accountId || accountId,
+          accountId: effectiveMetaAccountId,
           userId,
         });
         return toToolResult(result);
@@ -907,9 +965,30 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
     }
   );
 
+  const routeCampaignSheet = tool(
+    "route_campaign_sheet",
+    "Inspect the connected campaign sheet or provided data and deterministically route between Website campaigns (meta-ads-campaign-creator) and App Promotion campaigns (meta-ads-app-campaign), with conflict detection.",
+    {
+      sheetUrl: z.string().optional().describe("Optional spreadsheet URL to inspect"),
+      userInstruction: z.string().optional().describe("Optional user instruction/prompt context"),
+    },
+    async (args) => {
+      try {
+        const result = await executeAgentTool("get_connected_sheet_rows", {
+          userId,
+          sheetUrl: args.sheetUrl,
+          userInstruction: args.userInstruction,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
   const listWorkspaceSkills = tool(
     "list_workspace_skills",
-    "Lists all available agent skills discovered from .agents/skills/ across the workspace.",
+    "Lists all available agent skills discovered from .agents/skills/ and skills/ across the workspace.",
     {},
     async () => {
       try {
@@ -919,30 +998,45 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
           path.resolve(process.cwd(), ".agents/skills"),
           path.resolve(process.cwd(), "backend/.agents/skills"),
           path.resolve(process.cwd(), "../.agents/skills"),
+          path.resolve(process.cwd(), "skills"),
+          path.resolve(process.cwd(), "backend/skills"),
+          path.resolve(process.cwd(), "../skills"),
         ];
 
         const skills = [];
         const seen = new Set();
 
-        for (const dir of skillDirs) {
-          if (fs.existsSync(dir)) {
-            const entries = fs.readdirSync(dir, { withFileTypes: true });
-            for (const entry of entries) {
-              if (entry.isDirectory() && !seen.has(entry.name)) {
-                const skillFile = path.join(dir, entry.name, "SKILL.md");
-                if (fs.existsSync(skillFile)) {
-                  seen.add(entry.name);
-                  const content = fs.readFileSync(skillFile, "utf8");
-                  const descMatch = content.match(/description:\s*>?-?\s*([^\n]+(?:\n\s+[^\n]+)*)/i);
-                  skills.push({
-                    name: entry.name,
-                    description: descMatch ? descMatch[1].replace(/\n\s+/g, " ").trim() : "Custom workspace skill",
-                    path: skillFile,
-                  });
-                }
+        const scanDir = (dir) => {
+          if (!fs.existsSync(dir)) return;
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isDirectory()) {
+              const subDir = path.join(dir, entry.name);
+              // Check if directory contains SKILL.md or skill.md
+              const candidates = [
+                path.join(subDir, "SKILL.md"),
+                path.join(subDir, "skill.md"),
+              ];
+              const foundFile = candidates.find((f) => fs.existsSync(f));
+              if (foundFile && !seen.has(entry.name)) {
+                seen.add(entry.name);
+                const content = fs.readFileSync(foundFile, "utf8");
+                const descMatch = content.match(/description:\s*>?-?\s*([^\n]+(?:\n\s+[^\n]+)*)/i);
+                skills.push({
+                  name: entry.name,
+                  description: descMatch ? descMatch[1].replace(/\n\s+/g, " ").trim() : "Custom workspace skill",
+                  path: foundFile,
+                });
+              } else {
+                // Check one level deeper for nested skills like skills/meta-ads/app-campaign
+                scanDir(subDir);
               }
             }
           }
+        };
+
+        for (const dir of skillDirs) {
+          scanDir(dir);
         }
 
         return toToolResult({ totalSkills: skills.length, skills });
@@ -954,9 +1048,9 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
 
   const getSkillDetails = tool(
     "get_skill_details",
-    "Retrieves the full instructions, guides, or examples for a specific skill from .agents/skills/<skillName>.",
+    "Retrieves the full instructions, guides, or examples for a specific skill from .agents/skills/<skillName> or skills/<skillName>.",
     {
-      skillName: z.string().describe("The name of the skill e.g. 'claude-agent-sdk'"),
+      skillName: z.string().describe("The name of the skill e.g. 'meta-ads-campaign-creator' or 'meta-ads-app-campaign'"),
       subPath: z.string().optional().describe("Optional subfile to read e.g. 'references/sdk-guide.md' or 'examples/agent-runner.js'"),
     },
     async ({ skillName, subPath }) => {
@@ -967,22 +1061,32 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
           path.resolve(process.cwd(), ".agents/skills", skillName),
           path.resolve(process.cwd(), "backend/.agents/skills", skillName),
           path.resolve(process.cwd(), "../.agents/skills", skillName),
+          path.resolve(process.cwd(), "skills", skillName),
+          path.resolve(process.cwd(), "backend/skills", skillName),
+          path.resolve(process.cwd(), "../skills", skillName),
+          path.resolve(process.cwd(), "skills/meta-ads", skillName),
+          path.resolve(process.cwd(), "backend/skills/meta-ads", skillName),
+          path.resolve(process.cwd(), "../skills/meta-ads", skillName),
         ];
 
         let targetDir = basePaths.find((p) => fs.existsSync(p));
         if (!targetDir) {
-          throw new Error(`Skill '${skillName}' not found in .agents/skills/`);
+          throw new Error(`Skill '${skillName}' not found in .agents/skills/ or skills/`);
         }
 
-        const targetFile = subPath ? path.join(targetDir, subPath) : path.join(targetDir, "SKILL.md");
-        if (!fs.existsSync(targetFile)) {
+        const candidates = subPath
+          ? [path.join(targetDir, subPath)]
+          : [path.join(targetDir, "SKILL.md"), path.join(targetDir, "skill.md")];
+
+        const targetFile = candidates.find((f) => fs.existsSync(f));
+        if (!targetFile) {
           throw new Error(`File '${subPath || "SKILL.md"}' not found for skill '${skillName}'`);
         }
 
         const content = fs.readFileSync(targetFile, "utf8");
         return toToolResult({
           skillName,
-          file: subPath || "SKILL.md",
+          file: path.basename(targetFile),
           content,
         });
       } catch (error) {
@@ -1027,6 +1131,7 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
       getGoogleCampaignStructure,
       queryTokenUsageMetrics,
       getConnectedSheetRows,
+      routeCampaignSheet,
       validateGoogleDriveAsset,
       downloadGoogleDriveAsset,
       listWorkspaceSkills,
@@ -1040,6 +1145,7 @@ export const ADS_ALLOWED_TOOLS = [
   "mcp__ads__get_user_connected_accounts",
   "mcp__ads__get_user_ai_context",
   "mcp__ads__get_connected_sheet_rows",
+  "mcp__ads__route_campaign_sheet",
   "mcp__ads__validate_google_drive_asset",
   "mcp__ads__download_google_drive_asset",
   "mcp__ads__query_database_metrics",

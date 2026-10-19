@@ -628,6 +628,77 @@ class SheetsService {
       };
     });
   }
+
+  /**
+   * Convert 0-indexed column number to A1 notation column letter (0 -> A, 1 -> B, 26 -> AA)
+   */
+  colIndexToA1(colIndex) {
+    let temp = colIndex;
+    let letter = "";
+    while (temp >= 0) {
+      letter = String.fromCharCode((temp % 26) + 65) + letter;
+      temp = Math.floor(temp / 26) - 1;
+    }
+    return letter;
+  }
+
+  /**
+   * Update specific cells in Google Sheet using Google Sheets API v4
+   */
+  async batchUpdateValues({ spreadsheetIdOrUrl, sheetTitle = null, data = [] }) {
+    const spreadsheetId = this.extractSpreadsheetId(spreadsheetIdOrUrl);
+    if (!spreadsheetId) {
+      throw new Error("No valid Google Sheet ID or URL provided.");
+    }
+    if (!data || data.length === 0) {
+      return { success: true, updatedCells: 0 };
+    }
+
+    const auth = await googleOAuth.getAuthenticatedClient();
+    const payload = {
+      valueInputOption: "USER_ENTERED",
+      data: data.map((item) => {
+        let effectiveRange = item.range;
+        if (sheetTitle && !effectiveRange.includes("!")) {
+          effectiveRange = `'${sheetTitle}'!${effectiveRange}`;
+        }
+        return {
+          range: effectiveRange,
+          values: item.values,
+        };
+      }),
+    };
+
+    const res = await auth.axiosInstance.post(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`,
+      payload
+    );
+
+    return {
+      success: true,
+      updatedCells: res.data?.totalUpdatedCells || data.length,
+      responses: res.data?.responses || [],
+    };
+  }
+
+  /**
+   * Read specific cell ranges back to verify saved values
+   */
+  async batchGetValues({ spreadsheetIdOrUrl, ranges = [] }) {
+    const spreadsheetId = this.extractSpreadsheetId(spreadsheetIdOrUrl);
+    if (!spreadsheetId) throw new Error("No valid Google Sheet ID or URL provided.");
+    if (!ranges.length) return [];
+
+    const auth = await googleOAuth.getAuthenticatedClient();
+    const params = new URLSearchParams();
+    ranges.forEach((r) => params.append("ranges", r));
+
+    const res = await auth.axiosInstance.get(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet?${params.toString()}`
+    );
+
+    return res.data?.valueRanges || [];
+  }
 }
 
 export const sheetsService = new SheetsService();

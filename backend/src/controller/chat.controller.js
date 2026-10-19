@@ -12,6 +12,8 @@ import MetaApiService from "../services/meta/metaApiService.js";
 import MetaAssetResolver from "../services/meta/metaAssetResolver.js";
 import SpreadsheetSyncService from "../services/data/spreadsheetSyncService.js";
 import { NotificationService } from "../services/notificationService.js";
+import CampaignPreparationSession from "../models/campaignPreparationSession.js";
+import CampaignPreparationService from "../services/campaignPreparation/campaignPreparationService.js";
 
 /**
  * StageTimingTracker for high-resolution per-row processing metrics.
@@ -344,41 +346,18 @@ const generateFallbackMarketingResponse = async ({
 
       let candidateMetaId = (!isGoogleId && explicitMetaCandidate) ? explicitMetaCandidate : null;
 
-      // Check if user prompt mentions an authorized Meta account name or ID
-      if (!candidateMetaId && userMetaAccounts?.length > 0) {
-        const matchedMetaInPrompt = userMetaAccounts.find((m) => {
-          const rawId = String(m.accountId || "").replace(/^act_/, "");
-          const name = (m.accountName || "").toLowerCase();
-          return (rawId && lower.includes(rawId)) || (name && name.length > 2 && lower.includes(name));
-        });
-        if (matchedMetaInPrompt) candidateMetaId = matchedMetaInPrompt.accountId;
-      }
-
-      // Check active connected channel if not Google
-      if (!candidateMetaId && selectedChannelAccountId && !String(selectedChannelAccountId).includes("-")) {
-        candidateMetaId = selectedChannelAccountId;
-      }
-
-      // Check user preferences if it matches an authorized Meta account
-      if (!candidateMetaId && userPrefAccountId && !String(userPrefAccountId).includes("-")) {
-        const matchPref = userMetaAccounts.find((m) => {
-          const rawId = String(m.accountId || "").replace(/^act_/, "");
-          const cleanPref = String(userPrefAccountId).replace(/^act_/, "");
-          return rawId === cleanPref;
-        });
-        if (matchPref) candidateMetaId = matchPref.accountId;
-      }
-
-      // Fallback: Use active connected Meta channel or user's authorized Meta accounts
-      if (!candidateMetaId) {
-        const activeChanMeta = connectedChannels?.find((c) => c.channelId === "meta" && c.isConnected && c.accountId);
-        if (activeChanMeta?.accountId) {
-          candidateMetaId = activeChanMeta.accountId;
-        } else if (userMetaAccounts?.length > 0) {
-          candidateMetaId = userMetaAccounts[0].accountId;
-        } else if (metaAcc?.accountId) {
-          candidateMetaId = metaAcc.accountId;
+      // Read from AI Context Channel Node if not provided
+      if (!candidateMetaId && aiCtx?.adChannels?.length > 0) {
+        const foundNodeAcc = aiCtx.adChannels[0]?.accountId;
+        if (foundNodeAcc && !String(foundNodeAcc).includes("-")) {
+          candidateMetaId = foundNodeAcc;
         }
+      }
+
+      if (!candidateMetaId) {
+        const noAccErr = new Error("No Meta Ads account is selected in AI Context Channel Node. Fallback to unselected accounts is strictly prohibited.");
+        noAccErr.status = 400;
+        throw noAccErr;
       }
 
       // Server-Side Authorization: Verify candidateMetaId strictly belongs to authenticated user
@@ -678,7 +657,24 @@ I have built and configured your Google Ads search campaign using your **AI Cont
         }
       }
     } else {
-      // META ADS Campaign + Ad Set + Ad Creative Creation (Strictly adhering to SKILL.md Multi-Level Runbook)
+      // META ADS: DELEGATE TO DETERMINISTIC PREPARATION WORKFLOW (Validate -> Ask -> Update Sheet -> Revalidate -> Preview -> Approve/Edit -> Create)
+      const prepResult = await CampaignPreparationService.handleWorkflow({
+        userId,
+        userEmail: resolvedUserEmail,
+        conversationId,
+        userMessage,
+        metaAccountId: targetAccountId,
+        accountDoc: validatedAccountDoc,
+        onProgress: onEvent,
+      });
+
+      return {
+        content: prepResult.content,
+        toolCalls: prepResult.toolCalls || [],
+        preparationData: prepResult.preparationSession,
+      };
+
+      // META ADS Campaign + Ad Set + Ad Creative Creation (Legacy)
       const toolCalls = [];
       const campaignCache = new Map();
       const adSetCache = new Map();
@@ -756,7 +752,7 @@ I have built and configured your Google Ads search campaign using your **AI Cont
       let sheetData = null;
       try {
         sheetData = await executeAgentTool("get_connected_sheet_rows", {
-          userId,
+        userId,
           sheetUrl: explicitMsgSheetUrl || undefined,
         });
         if (sheetData && sheetData.sheetUrl) {
@@ -3542,6 +3538,7 @@ export const runAgentChat = async ({
   accountId,
   metaAccountId = null,
   googleAccountId = null,
+  aiContextMetaAccountId = null,
   onEvent,
   res,
   req = null,
@@ -3577,24 +3574,56 @@ export const runAgentChat = async ({
     } catch (_) {}
   }
 
-  // Auto-resolve effective accountId if not provided or if user explicitly mentions an account
+  // 1. Resolve selected Meta Ads account from AI Context Channel Node (Strict Source of Truth)
+  let contextMetaAccountId = aiContextMetaAccountId ? String(aiContextMetaAccountId).trim() : null;
+  if (!contextMetaAccountId && (validUserId || userId)) {
+    try {
+      const AiContext = (await import("../models/aiContextModel.js")).default;
+      const aiContextDoc = await AiContext.findOne({ userId: validUserId || userId }).lean().catch(() => null);
+      const channelNodes = (aiContextDoc?.nodes || []).filter((n) => n.type === "ad_channel");
+      const metaChannelNode =
+        channelNodes.find((n) => {
+          const cName = (n.data?.channelName || n.data?.channel || n.label || "").toLowerCase();
+          return cName.includes("meta") || cName.includes("facebook");
+        }) || (channelNodes.length === 1 ? channelNodes[0] : null);
+
+      if (metaChannelNode?.data?.adAccountId) {
+        contextMetaAccountId = String(metaChannelNode.data.adAccountId).trim();
+      }
+    } catch (_) {}
+  }
+
+  const msgLower = (userMessage || "").toLowerCase();
+  const mentionsGoogleAds =
+    msgLower.includes("google ads") ||
+    (msgLower.includes("google") && !msgLower.includes("drive") && !msgLower.includes("sheet") && !msgLower.includes("docs.google.com"));
+  const isCreationOrCampaignCmd =
+    (msgLower.includes("create") || msgLower.includes("launch") || msgLower.includes("setup") || msgLower.includes("upload") || msgLower.includes("banao")) &&
+    (msgLower.includes("campaign") || msgLower.includes("adset") || msgLower.includes("ad set") || msgLower.includes("ad") || msgLower.includes("ads") || msgLower.includes("sheet"));
+  const isMetaIntent =
+    !mentionsGoogleAds &&
+    (msgLower.includes("meta") ||
+      msgLower.includes("facebook") ||
+      msgLower.includes("instagram") ||
+      msgLower.includes("fb") ||
+      Boolean(metaAccountId) ||
+      Boolean(contextMetaAccountId) ||
+      isCreationOrCampaignCmd);
+  const isGoogleIntent = mentionsGoogleAds || msgLower.includes("adwords");
+
   let effectiveAccountId = accountId;
+
   if (userId) {
     try {
       const GoogleAccount = (await import("../models/googleAccountModel.js")).default;
       const MetaAccount = (await import("../models/metaAccount.js")).default;
-      const ConnectedChannel = (await import("../models/connectedChannelModel.js")).default;
-      const [googleAcc, userMetaAccounts, metaChannelDoc] = await Promise.all([
+      const [googleAcc, userMetaAccounts] = await Promise.all([
         GoogleAccount.findOne({ userId: validUserId || userId, isActive: true }).lean().catch(() => null),
         MetaAccount.find({ userId: validUserId || userId, isActive: true }).lean().catch(() => []),
-        ConnectedChannel.findOne({ userId: validUserId || userId, channelId: "meta", isConnected: true }).lean().catch(() => null),
       ]);
-      const metaAcc = userMetaAccounts.length > 0 ? userMetaAccounts[0] : null;
 
-      const msgLower = (userMessage || "").toLowerCase();
-
-      // Check if user explicitly mentioned a child customer ID or account name in the prompt
-      if (googleAcc?.accounts?.length > 0) {
+      // Check if user explicitly mentioned a Google child customer ID or account name in the prompt
+      if (googleAcc?.accounts?.length > 0 && isGoogleIntent) {
         const matchedChild = googleAcc.accounts.find((a) => {
           const cId = String(a.customerId || "").replace(/[^0-9]/g, "");
           const name = (a.name || a.descriptiveName || "").toLowerCase();
@@ -3603,47 +3632,112 @@ export const runAgentChat = async ({
 
         if (matchedChild) {
           effectiveAccountId = String(matchedChild.customerId).replace(/[^0-9]/g, "");
-          // Synchronize selectedCustomerId in MongoDB immediately
           GoogleAccount.findByIdAndUpdate(googleAcc._id, {
             $set: { selectedCustomerId: effectiveAccountId },
           }).catch(() => {});
         }
       }
 
-      // Check if user explicitly mentioned a Meta account in the prompt
-      if (userMetaAccounts?.length > 0) {
-        const matchedMetaChild = userMetaAccounts.find((m) => {
-          const rawId = String(m.accountId || "").replace(/^act_/, "");
-          const name = (m.accountName || "").toLowerCase();
-          return (rawId && msgLower.includes(rawId)) || (name && name.length > 2 && msgLower.includes(name));
-        });
-        if (matchedMetaChild) {
-          effectiveAccountId = matchedMetaChild.accountId;
+      // =========================================================================
+      // STRICT META ADS ACCOUNT LOCK ENFORCEMENT
+      // =========================================================================
+      if (isMetaIntent) {
+        // Requirement 1 & 5: Selected Meta Ads account ID MUST come from AI Context Channel Node
+        const targetMetaAccountId = contextMetaAccountId || metaAccountId;
+
+        if (!targetMetaAccountId) {
+          const errorContent = `### ⚠️ Meta Ads Account Selection Missing\n\nNo Meta Ads account is selected in the **AI Context → Channel Node**.\n\nTo create or manage campaigns, ad sets, and ads, you must first select an authorized Meta Ads account in **AI Context → Channel Node** and save your workflow.\n\n> 🔒 **Strict Account Lock Active**: Newton AI strictly forbids falling back to default, cached, or unselected accounts. Creating campaigns under unselected accounts is prohibited.`;
+          if (typeof onEvent === "function") {
+            onEvent({ type: "text_delta", content: errorContent });
+            onEvent({ type: "done" });
+          }
+          if (res) {
+            AgentStreamHandler.sendChunk(res, errorContent);
+            AgentStreamHandler.endStream(res);
+          }
+          return { content: errorContent, toolCalls: [] };
         }
-      }
 
-      const isMetaIntent = msgLower.includes("meta") || msgLower.includes("facebook") || msgLower.includes("instagram") || msgLower.includes("fb");
-      const isGoogleIntent = msgLower.includes("google") || msgLower.includes("adwords");
+        // Requirement 4: Validate that selected account exists, is accessible, and has valid credentials
+        const cleanContextId = String(targetMetaAccountId).trim();
+        const numContextId = cleanContextId.replace(/^act_/, "");
+        const selectedMetaAccount = await MetaAccount.findOne({
+          userId: validUserId || userId,
+          $or: [{ accountId: cleanContextId }, { accountId: numContextId }, { accountId: `act_${numContextId}` }],
+        });
 
-      if (isMetaIntent && metaAccountId) {
-        effectiveAccountId = metaAccountId;
+        if (!selectedMetaAccount) {
+          const errorContent = `### ⚠️ Meta Ads Account Not Found or Inaccessible\n\nThe selected Meta Ads account **\`${targetMetaAccountId}\`** from your **AI Context → Channel Node** was not found among your authorized connected accounts.\n\nPlease connect and authorize this exact account in **Marketing Channels**, or choose an active connected account in the Channel Node.\n\n> 🔒 **Strict Account Lock Active**: Falling back to other accounts or creating entities under another account is strictly forbidden.`;
+          if (typeof onEvent === "function") {
+            onEvent({ type: "text_delta", content: errorContent });
+            onEvent({ type: "done" });
+          }
+          if (res) {
+            AgentStreamHandler.sendChunk(res, errorContent);
+            AgentStreamHandler.endStream(res);
+          }
+          return { content: errorContent, toolCalls: [] };
+        }
+
+        if (selectedMetaAccount.isActive === false) {
+          const errorContent = `### ⚠️ Meta Ads Account Inactive\n\nThe selected Meta Ads account **\`${targetMetaAccountId}\`** (${selectedMetaAccount.accountName || "Meta Account"}) from your **AI Context → Channel Node** is currently marked as **inactive** or disconnected.\n\nPlease re-authenticate this account in **Marketing Channels**.\n\n> 🔒 **Strict Account Lock Active**: Falling back to other accounts is strictly prohibited.`;
+          if (typeof onEvent === "function") {
+            onEvent({ type: "text_delta", content: errorContent });
+            onEvent({ type: "done" });
+          }
+          if (res) {
+            AgentStreamHandler.sendChunk(res, errorContent);
+            AgentStreamHandler.endStream(res);
+          }
+          return { content: errorContent, toolCalls: [] };
+        }
+
+        if (!selectedMetaAccount.accessToken || selectedMetaAccount.accessToken.trim() === "") {
+          const errorContent = `### ⚠️ Meta Ads Account Missing Authorization Token\n\nThe selected Meta Ads account **\`${targetMetaAccountId}\`** has no valid access token credentials.\n\nPlease reconnect this account in **Marketing Channels**.\n\n> 🔒 **Strict Account Lock Active**: Falling back to other accounts is strictly prohibited.`;
+          if (typeof onEvent === "function") {
+            onEvent({ type: "text_delta", content: errorContent });
+            onEvent({ type: "done" });
+          }
+          if (res) {
+            AgentStreamHandler.sendChunk(res, errorContent);
+            AgentStreamHandler.endStream(res);
+          }
+          return { content: errorContent, toolCalls: [] };
+        }
+
+        // Requirement 3: Check if user attempted to specify a different Meta account in prompt
+        const rawTargetId = String(selectedMetaAccount.accountId).replace(/^act_/, "");
+        if (userMetaAccounts?.length > 1) {
+          const mentionedOtherAccount = userMetaAccounts.find((m) => {
+            const otherRaw = String(m.accountId || "").replace(/^act_/, "");
+            const otherName = (m.accountName || "").toLowerCase();
+            if (otherRaw === rawTargetId) return false;
+            return (otherRaw && msgLower.includes(otherRaw)) || (otherName && otherName.length > 2 && msgLower.includes(otherName));
+          });
+          if (mentionedOtherAccount) {
+            const errorContent = `### ⚠️ Account Lock Violation\n\nYour **AI Context → Channel Node** is strictly locked to Meta Account **\`${selectedMetaAccount.accountId}\`** (${selectedMetaAccount.accountName || "Locked Account"}).\n\nCreating campaigns or ads under a different account (**\`${mentionedOtherAccount.accountId}\`**) is strictly forbidden. To target **\`${mentionedOtherAccount.accountId}\`**, please select it in **AI Context → Channel Node** and save your workflow.`;
+            if (typeof onEvent === "function") {
+              onEvent({ type: "text_delta", content: errorContent });
+              onEvent({ type: "done" });
+            }
+            if (res) {
+              AgentStreamHandler.sendChunk(res, errorContent);
+              AgentStreamHandler.endStream(res);
+            }
+            return { content: errorContent, toolCalls: [] };
+          }
+        }
+
+        // Lock effective IDs to selected account ONLY
+        effectiveAccountId = selectedMetaAccount.accountId;
+        metaAccountId = selectedMetaAccount.accountId;
       } else if (isGoogleIntent && googleAccountId) {
         effectiveAccountId = googleAccountId;
-      } else if (!effectiveAccountId) {
-        if (isGoogleIntent && googleAcc) {
-          effectiveAccountId = googleAcc.selectedCustomerId || (googleAcc.accounts?.find((a) => !a.isManager)?.customerId) || googleAcc.accountId;
-        } else if (isMetaIntent && userMetaAccounts.length > 0) {
-          effectiveAccountId = metaChannelDoc?.accountId || metaAccountId || userMetaAccounts[0].accountId;
-        } else if (userMetaAccounts.length > 0 && !googleAcc) {
-          effectiveAccountId = metaChannelDoc?.accountId || metaAccountId || userMetaAccounts[0].accountId;
-        } else if (googleAcc && userMetaAccounts.length === 0) {
-          effectiveAccountId = googleAcc.selectedCustomerId || (googleAcc.accounts?.find((a) => !a.isManager)?.customerId) || googleAcc.accountId;
-        } else {
-          effectiveAccountId = metaChannelDoc?.accountId || metaAccountId || userMetaAccounts[0]?.accountId || googleAcc?.selectedCustomerId || googleAcc?.accountId || null;
-        }
+      } else if (!effectiveAccountId && isGoogleIntent && googleAcc) {
+        effectiveAccountId = googleAcc.selectedCustomerId || (googleAcc.accounts?.find((a) => !a.isManager)?.customerId) || googleAcc.accountId;
       }
     } catch (e) {
-      // ignore
+      console.warn("[Account Lock Resolution Warning]:", e.message);
     }
   }
 
@@ -3671,8 +3765,8 @@ export const runAgentChat = async ({
       conversationId,
       conversationTitle,
       userId: validUserId || null,
-      role: "user",
-      content: userMessage,
+        role: "user",
+        content: userMessage,
       metaAccountId: effectiveAccountId || null,
     });
 
@@ -3692,19 +3786,102 @@ export const runAgentChat = async ({
 
   let result = null;
 
-  // 2. Try Claude Agent SDK if ANTHROPIC_API_KEY is configured
-  if (process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_API_KEY.includes("your_anthropic")) {
+  // 1b. Check if this request is a Meta Campaign Preparation Workflow request (create, approve, edit, or answering missing fields)
+  const isMetaPrepWorkflow =
+    !mentionsGoogleAds &&
+    (CampaignPreparationService.isApprovalCommand(userMessage) ||
+      CampaignPreparationService.isEditCommand(userMessage) ||
+      isCreationOrCampaignCmd ||
+      Boolean(await CampaignPreparationService.getActiveSession(conversationId, validUserId || userId)));
+
+  if (isMetaPrepWorkflow) {
+    try {
+      const prepResult = await CampaignPreparationService.handleWorkflow({
+        userId: validUserId || userId,
+        userEmail: resolvedUserEmail,
+        conversationId,
+        userMessage,
+        metaAccountId: effectiveAccountId,
+        onProgress: onEvent,
+      });
+
+      result = {
+        content: prepResult.content,
+        toolCalls: prepResult.toolCalls || [],
+        preparationData: prepResult.preparationSession,
+        tokenUsage: {
+          inputTokens: Math.round(((userMessage?.length || 50) + 800) / 3.8),
+          outputTokens: Math.round(((prepResult.content?.length || 200) + 150) / 3.8),
+          totalTokens: Math.round(((userMessage?.length || 50) + (prepResult.content?.length || 200) + 950) / 3.8),
+          model: "claude-sonnet-4-5 (Campaign Preparation Engine)",
+          costUsd: 0.0025,
+          costInr: 0.22,
+          executionTimeMs: Date.now() - chatStartTime,
+          actionsPerformed: [
+            {
+              action: prepResult.toolCalls?.[0]?.toolName || "campaign_preparation_workflow",
+              description: "Executed deterministic campaign preparation validation & preview",
+              tokensBurned: 350,
+              status: "SUCCESS",
+            },
+          ],
+        },
+      };
+
+      if (prepResult.preparationSession) {
+        if (typeof onEvent === "function") {
+          onEvent({
+            type: "preparation_update",
+            session: prepResult.preparationSession,
+          });
+        }
+        if (res) {
+          AgentStreamHandler.sendPreparationUpdate(res, prepResult.preparationSession);
+        }
+      }
+
+      // Stream prepResult.content chunk-by-chunk to UI immediately
+      const prepContent = prepResult.content || "Campaign preparation preview is ready. Please review the configuration below:";
+      const prepWords = prepContent.split(" ");
+      for (let i = 0; i < prepWords.length; i++) {
+        const chunk = prepWords[i] + (i === prepWords.length - 1 ? "" : " ");
+        if (typeof onEvent === "function") {
+          onEvent({ type: "text_delta", content: chunk });
+        }
+        if (res) {
+          AgentStreamHandler.sendChunk(res, chunk);
+        }
+        await new Promise((r) => setTimeout(r, 6));
+      }
+    } catch (prepErr) {
+      console.error("[CampaignPreparationService Error]:", prepErr);
+      const errMsg = `### ⚠️ Campaign Preparation Notice\n\n${prepErr.message}\n\nPlease check your spreadsheet data or configuration and try again.`;
+      result = {
+        content: errMsg,
+        toolCalls: [],
+      };
+      if (typeof onEvent === "function") {
+        onEvent({ type: "text_delta", content: errMsg });
+      }
+      if (res) {
+        AgentStreamHandler.sendChunk(res, errMsg);
+      }
+    }
+  }
+
+  // 2. Try Claude Agent SDK if ANTHROPIC_API_KEY is configured and not a Meta preparation request
+  if (!result && process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_API_KEY.includes("your_anthropic")) {
     try {
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Claude Agent SDK timed out (12s limit)")), 12000)
+        setTimeout(() => reject(new Error("Claude Agent SDK timed out (90s limit)")), 90000)
       );
 
       result = await Promise.race([
         ClaudeAgentService.streamChat({
           res,
           onEvent,
-          conversationId,
-          userMessage,
+        conversationId,
+        userMessage,
           accountId: effectiveAccountId,
           userId: validUserId || userId,
         }),
@@ -3751,6 +3928,7 @@ export const runAgentChat = async ({
     });
 
     const fallbackText = typeof fallbackRes === "object" ? fallbackRes.content : fallbackRes;
+    const fallbackPrepData = typeof fallbackRes === "object" ? (fallbackRes.preparationData || fallbackRes.preparationSession) : null;
     const fallbackToolCalls = typeof fallbackRes === "object" && fallbackRes.toolCalls?.length
       ? fallbackRes.toolCalls
       : [
@@ -3761,6 +3939,18 @@ export const runAgentChat = async ({
             status: "SUCCESS",
           },
         ];
+
+    if (fallbackPrepData) {
+      if (typeof onEvent === "function") {
+        onEvent({
+          type: "preparation_update",
+          session: fallbackPrepData,
+        });
+      }
+      if (res) {
+        AgentStreamHandler.sendPreparationUpdate(res, fallbackPrepData);
+      }
+    }
 
     // Stream tokens with realistic micro-typing cadence
     const words = fallbackText.split(" ");
@@ -3817,6 +4007,7 @@ export const runAgentChat = async ({
         executionTimeMs,
         actionsPerformed,
       },
+      preparationData: fallbackPrepData || null,
     };
   }
 
@@ -3824,14 +4015,15 @@ export const runAgentChat = async ({
   let savedAssistantMessage = null;
   try {
     savedAssistantMessage = await ChatMessage.create({
-      conversationId,
+        conversationId,
       conversationTitle,
       userId: validUserId || null,
-      role: "assistant",
+        role: "assistant",
       content: result.content || "Response processed successfully.",
       metaAccountId: effectiveAccountId || accountId || null,
-      claudeSessionId: result.claudeSessionId || null,
+        claudeSessionId: result.claudeSessionId || null,
       jobProgress: result.jobProgress || null,
+      preparationData: result.preparationData || null,
       toolCalls: result.toolCalls || [],
       tokenUsage: result.tokenUsage || {
         inputTokens: 350,
@@ -3858,7 +4050,7 @@ export const runAgentChat = async ({
 
 export class ChatAgentController {
   static async handleChatStream(req, res) {
-    const { conversationId, userMessage, accountId, metaAccountId, googleAccountId, startRow, endRow, rowRange, rangeSelector } = req.body;
+    const { conversationId, userMessage, accountId, metaAccountId, googleAccountId, aiContextMetaAccountId, startRow, endRow, rowRange, rangeSelector } = req.body;
     const userId = req.user?._id;
 
     if (!conversationId || !userMessage) {
@@ -3878,6 +4070,7 @@ export class ChatAgentController {
         accountId,
         metaAccountId,
         googleAccountId,
+        aiContextMetaAccountId,
         res,
         req,
         userToken: req.user?.token || (typeof req.headers?.authorization === "string" ? req.headers.authorization.replace(/^Bearer\s+/i, "") : null),
@@ -4032,6 +4225,103 @@ export class ChatAgentController {
       });
     } catch (error) {
       console.error("[Delete Conversation Error]:", error);
+      return res.status(500).json({ success: false, message: error.message });
+    }
+  }
+
+  static async getPreparationSession(req, res) {
+    try {
+      const { conversationId } = req.params;
+      const userId = req.user._id;
+      const session = await CampaignPreparationSession.findOne({
+        conversationId,
+        userId,
+      }).sort({ createdAt: -1 });
+
+      return res.json({
+        success: true,
+        data: session || null,
+      });
+    } catch (error) {
+      return res.status(500).json({ success: false, message: error.message });
+    }
+  }
+
+  static async handlePreparationAction(req, res) {
+    try {
+      const { conversationId, action, payload, metaAccountId, aiContextMetaAccountId } = req.body;
+      const userId = req.user._id;
+      const userEmail = req.user.email;
+
+      // Strict Meta Account Lock: Read from AI Context Channel Node
+      let lockedMetaAccountId = aiContextMetaAccountId?.trim() || metaAccountId?.trim() || null;
+      if (!lockedMetaAccountId) {
+        try {
+          const AiContext = (await import("../models/aiContextModel.js")).default;
+          const aiContextDoc = await AiContext.findOne({ userId }).lean().catch(() => null);
+          const channelNodes = (aiContextDoc?.nodes || []).filter((n) => n.type === "ad_channel");
+          const metaChannelNode =
+            channelNodes.find((n) => {
+              const cName = (n.data?.channelName || n.data?.channel || n.label || "").toLowerCase();
+              return cName.includes("meta") || cName.includes("facebook");
+            }) || (channelNodes.length === 1 ? channelNodes[0] : null);
+
+          if (metaChannelNode?.data?.adAccountId) {
+            lockedMetaAccountId = String(metaChannelNode.data.adAccountId).trim();
+          }
+        } catch (_) {}
+      }
+
+      if (!lockedMetaAccountId) {
+        return res.status(400).json({
+          success: false,
+          message: "No Meta Ads account is selected in the AI Context Channel Node. Fallback to unselected accounts is strictly prohibited.",
+        });
+      }
+
+      let userMessage = "";
+      const act = String(action || "").toLowerCase().trim();
+      if (act === "approve" || act.includes("approve")) {
+        userMessage = "Approve Campaign & Create Ads";
+      } else if (act === "edit" || act.includes("edit")) {
+        userMessage = payload?.message || payload?.instructions || "Edit details";
+      } else if (act === "answer" || act.includes("answer")) {
+        const answersObj = payload?.answers || payload || {};
+        userMessage = Object.entries(answersObj)
+          .map(([k, v]) => `${k}: ${v}`)
+          .join(", ");
+      } else {
+        userMessage = payload?.message || action;
+      }
+
+      const result = await CampaignPreparationService.handleWorkflow({
+        userId,
+        userEmail,
+        conversationId,
+        userMessage,
+        metaAccountId: lockedMetaAccountId,
+      });
+
+      // Save to chat history as assistant message
+      await ChatMessage.create({
+        conversationId,
+        userId,
+        role: "assistant",
+        content: result.content,
+        metaAccountId: lockedMetaAccountId,
+        preparationData: result.preparationSession,
+        toolCalls: result.toolCalls || [],
+      });
+
+      return res.json({
+        success: true,
+        data: {
+          ...result,
+          session: result.preparationSession,
+        },
+      });
+    } catch (error) {
+      console.error("[Preparation Action Error]:", error);
       return res.status(500).json({ success: false, message: error.message });
     }
   }

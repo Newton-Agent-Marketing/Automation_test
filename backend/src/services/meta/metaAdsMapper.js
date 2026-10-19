@@ -1,5 +1,7 @@
 // src/services/meta/metaAdsMapper.js
 import MediaAssetResolver from "../data/mediaAssetResolver.js";
+import CampaignRouter from "../data/campaignRouter.js";
+import { MetaApiService } from "./metaApiService.js";
 
 export const VALID_META_OBJECTIVES = [
   "OUTCOME_SALES",
@@ -23,11 +25,14 @@ export const VALID_META_CTAS = [
   "DOWNLOAD",
   "APPLY_NOW",
   "BUY_NOW",
+  "INSTALL_APP",
+  "USE_APP",
 ];
 
 export const ALIAS_DICTIONARY = {
   // Campaign Level
   campaign_name: ["campaign_name", "campaignname", "camp_name", "campname", "campaign_title", "camptitle", "campaign_label", "campaign"],
+  campaign_type: ["campaign_type", "camptype", "promotion_type", "type"],
   objective: ["objective", "campaign_objective", "funnel_event", "funnel", "goal"],
   buying_type: ["buying_type", "buying_option", "buying_type_enum"],
   special_ad_categories: ["special_ad_categories", "special_ad_category", "special_category", "ad_categories"],
@@ -35,17 +40,21 @@ export const ALIAS_DICTIONARY = {
   campaign_lifetime_budget: ["campaign_lifetime_budget", "lifetime_budget"],
   spend_cap: ["spend_cap", "campaign_spend_cap"],
   campaign_status: ["campaign_status", "status", "action"],
+  is_skadnetwork_attribution: ["is_skadnetwork_attribution", "skadnetwork", "skan_attribution", "skan", "is_skadnetwork"],
 
   // Ad Set Level
   adset_name: ["adset_name", "ad_set_name", "adset", "ad_set", "adgroup", "group_name", "set_name"],
   adset_daily_budget: ["adset_daily_budget", "daily_budget", "budget_inr", "budget", "spend"],
   bid_amount: ["bid_amount", "bid", "cpc_bid"],
-  optimization_goal: ["optimization_goal", "opt_goal", "optimize_for"],
+  optimization_goal: ["performance_goal", "performance goal", "performancegoal", "optimization_goal", "opt_goal", "optimize_for", "goal"],
   billing_event: ["billing_event", "billing"],
   conversion_location: ["conversion_location", "destination_type", "location_type"],
   target_audience: ["target_audience", "audience", "targeting", "interests", "locations"],
   page_id: ["facebook_page_id", "page_id", "fb_page_id", "promoted_page"],
   pixel_id: ["pixel_id", "meta_pixel_id", "dataset_id"],
+  app_id: ["app_id", "appid", "application_id", "applicationid", "fb_app_id", "fbappid", "meta_app_id", "metaappid"],
+  object_store_url: ["object_store_url", "app_store_url", "store_url", "play_store_url", "appstore_url", "google_play_url", "apple_store_url", "app_url", "store_link"],
+  custom_event_type: ["custom_event_type", "custom_event", "event_type", "in_app_event", "app_event", "in_app_event_type", "event", "conversion_event"],
   schedule_start: ["start_time", "schedule_start", "start_date"],
   schedule_end: ["end_time", "schedule_end", "end_date"],
 
@@ -134,22 +143,42 @@ export class MetaAdsMapper {
    * Map rows from normalized ingestion object into Meta Ads hierarchy & validate
    */
   static mapAndValidate(ingestionData) {
-    const { headers = [], rows = [], spreadsheetName, worksheetName } = ingestionData;
+    let headers = [];
+    let rows = [];
+    let spreadsheetName = "";
+    let worksheetName = "";
+
+    if (Array.isArray(ingestionData)) {
+      rows = ingestionData;
+    } else if (ingestionData && typeof ingestionData === "object") {
+      headers = ingestionData.headers || [];
+      rows = ingestionData.rows || [];
+      spreadsheetName = ingestionData.spreadsheetName || "";
+      worksheetName = ingestionData.worksheetName || "";
+    }
+
+    if (headers.length === 0 && rows.length > 0) {
+      const firstRowObj = rows[0]?.values || rows[0] || {};
+      headers = Object.keys(firstRowObj);
+    }
+
     const ambiguousHeaders = this.detectAmbiguousHeaders(headers);
 
     const mappedRows = [];
     const validationErrors = [];
 
     // Map each row
-    rows.forEach((r) => {
-      const rowVal = r.values || {};
-      const originalRowNumber = r.originalRowNumber;
+    rows.forEach((r, idx) => {
+      const rowVal = r.values || r || {};
+      const originalRowNumber = r.originalRowNumber || (idx + 1);
 
       // Extract Campaign Level
       const campNameMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.campaign_name, ["adset", "ad_name", "budget"]);
+      const campTypeMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.campaign_type);
       const objMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.objective);
       const campBudgetMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.campaign_daily_budget);
       const statusMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.campaign_status);
+      const skanMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.is_skadnetwork_attribution);
 
       // Extract Ad Set Level
       const adsetNameMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.adset_name, ["campaign"]);
@@ -157,6 +186,10 @@ export class MetaAdsMapper {
       const targetAudienceMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.target_audience);
       const optGoalMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.optimization_goal);
       const pageIdMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.page_id);
+      const pixelIdMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.pixel_id);
+      const appIdMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.app_id);
+      const storeUrlMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.object_store_url);
+      const customEventMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.custom_event_type);
 
       // Extract Ad Level
       const adNameMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.ad_name, ["campaign", "adset"]);
@@ -171,25 +204,42 @@ export class MetaAdsMapper {
       const igAccountIdMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.instagram_account_id);
       const creativeOptMatch = this.findFieldValue(rowVal, ALIAS_DICTIONARY.creative_optimization);
 
+      // Determine Campaign Type for this row
+      const rawCampType = (campTypeMatch.value || "").toUpperCase();
+      let rawObjUpper = (objMatch.value || "").toUpperCase();
+      const isAppIndicated =
+        rawCampType === "APP_PROMOTION" ||
+        rawCampType === "APP" ||
+        rawCampType === "MOBILE_APP" ||
+        rawCampType === "APP_INSTALLS" ||
+        rawObjUpper.includes("APP") ||
+        Boolean(storeUrlMatch.value) ||
+        (Boolean(appIdMatch.value) && !pixelIdMatch.value);
+
+      const rowCampaignType = isAppIndicated ? "APP_PROMOTION" : "WEBSITE";
+
       // Validate & Normalize Objective
-      let rawObj = (objMatch.value || "OUTCOME_SALES").toUpperCase();
+      let rawObj = rawObjUpper || (rowCampaignType === "APP_PROMOTION" ? "OUTCOME_APP_PROMOTION" : "OUTCOME_SALES");
       if (!VALID_META_OBJECTIVES.includes(rawObj)) {
-        if (rawObj.includes("SALE") || rawObj.includes("CONVERSION") || rawObj.includes("PURCHASE")) rawObj = "OUTCOME_SALES";
+        if (rawObj.includes("APP")) rawObj = "OUTCOME_APP_PROMOTION";
+        else if (rawObj.includes("SALE") || rawObj.includes("CONVERSION") || rawObj.includes("PURCHASE")) rawObj = "OUTCOME_SALES";
         else if (rawObj.includes("LEAD")) rawObj = "OUTCOME_LEADS";
         else if (rawObj.includes("TRAFFIC") || rawObj.includes("CLICK")) rawObj = "OUTCOME_TRAFFIC";
         else if (rawObj.includes("AWARE")) rawObj = "OUTCOME_AWARENESS";
         else if (rawObj.includes("ENGAGE")) rawObj = "OUTCOME_ENGAGEMENT";
-        else rawObj = "OUTCOME_SALES";
+        else rawObj = rowCampaignType === "APP_PROMOTION" ? "OUTCOME_APP_PROMOTION" : "OUTCOME_SALES";
       }
 
       // Validate & Normalize CTA
-      let rawCta = (ctaMatch.value || "LEARN_MORE").toUpperCase().replace(/\s+/g, "_");
+      let rawCta = (ctaMatch.value || (rowCampaignType === "APP_PROMOTION" ? "DOWNLOAD" : "LEARN_MORE")).toUpperCase().replace(/\s+/g, "_");
       if (!VALID_META_CTAS.includes(rawCta)) {
-        if (rawCta.includes("SHOP")) rawCta = "SHOP_NOW";
+        if (rawCta.includes("DOWN") || rawCta.includes("INSTALL")) rawCta = "DOWNLOAD";
+        else if (rawCta.includes("BOOK")) rawCta = "BOOK_TRAVEL";
+        else if (rawCta.includes("SHOP")) rawCta = "SHOP_NOW";
         else if (rawCta.includes("SIGN")) rawCta = "SIGN_UP";
         else if (rawCta.includes("BUY")) rawCta = "BUY_NOW";
         else if (rawCta.includes("ORDER")) rawCta = "ORDER_NOW";
-        else rawCta = "LEARN_MORE";
+        else rawCta = rowCampaignType === "APP_PROMOTION" ? "DOWNLOAD" : "LEARN_MORE";
       }
 
       // Validate Daily Budget
@@ -207,10 +257,28 @@ export class MetaAdsMapper {
       const adsetName = adsetNameMatch.value || `${campaignName} - Ad Set`;
       const adName = adNameMatch.value || `Ad - Row ${originalRowNumber}`;
 
-      if (!landingUrlMatch.value) {
-        rowErrors.push({ rowNumber: originalRowNumber, field: "landing_page_url", message: "Landing page URL is missing." });
-      } else if (!landingUrlMatch.value.startsWith("http://") && !landingUrlMatch.value.startsWith("https://")) {
-        rowErrors.push({ rowNumber: originalRowNumber, field: "landing_page_url", message: "Landing page URL must start with http:// or https://." });
+      // Destination URL validation
+      const destinationUrl = landingUrlMatch.value || storeUrlMatch.value;
+      if (!destinationUrl) {
+        rowErrors.push({ rowNumber: originalRowNumber, field: "landing_page_url", message: "Landing page URL or App Store URL is missing." });
+      } else if (!destinationUrl.startsWith("http://") && !destinationUrl.startsWith("https://")) {
+        rowErrors.push({ rowNumber: originalRowNumber, field: "landing_page_url", message: "Destination URL must start with http:// or https://." });
+      }
+
+      // App Campaign specific validations
+      if (rowCampaignType === "APP_PROMOTION") {
+        if (!appIdMatch.value) {
+          rowErrors.push({ rowNumber: originalRowNumber, field: "app_id", message: "Meta Application ID (app_id) is required for App Promotion campaigns." });
+        } else if (!CampaignRouter.isMetaAppId(appIdMatch.value)) {
+          rowErrors.push({ rowNumber: originalRowNumber, field: "app_id", message: `Invalid Meta Application ID "${appIdMatch.value}". Must be a numeric Meta App Dashboard ID, not a package name or store URL.` });
+        }
+
+        const effectiveStoreUrl = storeUrlMatch.value || (destinationUrl && CampaignRouter.isAppStoreUrl(destinationUrl) ? destinationUrl : null);
+        if (!effectiveStoreUrl) {
+          rowErrors.push({ rowNumber: originalRowNumber, field: "object_store_url", message: "Valid Google Play Store or Apple App Store URL (object_store_url) is required for App Promotion campaigns." });
+        } else if (!CampaignRouter.isAppStoreUrl(effectiveStoreUrl)) {
+          rowErrors.push({ rowNumber: originalRowNumber, field: "object_store_url", message: `Invalid App Store URL "${effectiveStoreUrl}". Must be a valid Google Play Store (play.google.com) or Apple App Store (apps.apple.com) link.` });
+        }
       }
 
       if (!headlineMatch.value && !primaryTextMatch.value) {
@@ -220,10 +288,13 @@ export class MetaAdsMapper {
       const rowDriveUrls = MediaAssetResolver.extractRowDriveUrls(rowVal);
       const primaryDriveLink = rowDriveUrls.length > 0 ? rowDriveUrls[0] : (driveLinkMatch.value || null);
 
+      const isSkan = skanMatch.value ? ["true", "1", "yes", "enabled"].includes(String(skanMatch.value).toLowerCase()) : false;
+
       const mappedRow = {
         originalRowNumber,
         isValid: rowErrors.length === 0,
         errors: rowErrors,
+        campaignType: rowCampaignType,
         campaign: {
           name: campaignName,
           nameSource: campNameMatch.sourceHeader,
@@ -232,30 +303,42 @@ export class MetaAdsMapper {
           status: (statusMatch.value || "PAUSED").toUpperCase(),
           statusSource: statusMatch.sourceHeader,
           dailyBudget: parsedBudget,
+          campaignType: rowCampaignType,
+          isSkadnetworkAttribution: isSkan,
         },
-        adset: {
-          name: adsetName,
-          nameSource: adsetNameMatch.sourceHeader,
-          dailyBudget: parsedBudget,
-          budgetSource: adsetBudgetMatch.sourceHeader || campBudgetMatch.sourceHeader,
-          targetAudience: targetAudienceMatch.value || "Broad Target",
-          targetAudienceSource: targetAudienceMatch.sourceHeader,
-          optimizationGoal: optGoalMatch.value || "OFFSITE_CONVERSIONS",
-          pageId: pageIdMatch.value || null,
-        },
+        adset: (() => {
+          const rawCustomEvent = customEventMatch.value || null;
+          const normalizedCustomEvent = MetaApiService.normalizeAppCustomEventType(rawCustomEvent);
+
+          return {
+            name: adsetName,
+            nameSource: adsetNameMatch.sourceHeader,
+            dailyBudget: parsedBudget,
+            budgetSource: adsetBudgetMatch.sourceHeader || campBudgetMatch.sourceHeader,
+            targetAudience: targetAudienceMatch.value || "Broad Target",
+            targetAudienceSource: targetAudienceMatch.sourceHeader,
+            optimizationGoal: optGoalMatch.value || (rowCampaignType === "APP_PROMOTION" ? (normalizedCustomEvent ? "OFFSITE_CONVERSIONS" : "APP_INSTALLS") : "OFFSITE_CONVERSIONS"),
+            pageId: pageIdMatch.value || null,
+            pixelId: pixelIdMatch.value || null,
+            appId: appIdMatch.value || null,
+            objectStoreUrl: storeUrlMatch.value || (destinationUrl && CampaignRouter.isAppStoreUrl(destinationUrl) ? destinationUrl : null),
+            customEventType: normalizedCustomEvent || null,
+          };
+        })(),
         ad: {
           name: adName,
           nameSource: adNameMatch.sourceHeader,
           creativeCode: creativeCodeMatch.value || `ROW-${originalRowNumber}`,
           creativeCodeSource: creativeCodeMatch.sourceHeader,
-          headline: headlineMatch.value || "Special Offer",
+          headline: headlineMatch.value || (rowCampaignType === "APP_PROMOTION" ? "Download Now" : "Special Offer"),
           headlineSource: headlineMatch.sourceHeader,
-          primaryText: primaryTextMatch.value || headlineMatch.value || "Discover our amazing products today!",
+          primaryText: primaryTextMatch.value || headlineMatch.value || "Discover our amazing app today!",
           primaryTextSource: primaryTextMatch.sourceHeader,
           description: descMatch.value || "",
           descriptionSource: descMatch.sourceHeader,
-          landingPageUrl: landingUrlMatch.value || "",
-          landingPageUrlSource: landingUrlMatch.sourceHeader,
+          landingPageUrl: destinationUrl || "",
+          landingPage: destinationUrl || "",
+          landingPageUrlSource: landingUrlMatch.sourceHeader || storeUrlMatch.sourceHeader,
           displayLink: displayLinkMatch.value || "",
           callToAction: rawCta,
           callToActionSource: ctaMatch.sourceHeader,
@@ -265,6 +348,8 @@ export class MetaAdsMapper {
           hasMultipleDriveLinks: rowDriveUrls.length > 1,
           instagramAccountId: igAccountIdMatch.value || null,
           creativeOptimization: creativeOptMatch.value || null,
+          appId: appIdMatch.value || null,
+          objectStoreUrl: storeUrlMatch.value || (destinationUrl && CampaignRouter.isAppStoreUrl(destinationUrl) ? destinationUrl : null),
         },
         rawValues: rowVal,
       };
@@ -317,6 +402,13 @@ export class MetaAdsMapper {
     const readyRowsCount = mappedRows.filter((r) => r.isValid).length;
     const correctionRequiredRowsCount = mappedRows.filter((r) => !r.isValid).length;
 
+    const routing = CampaignRouter.routeSheet({
+      headers,
+      rows,
+      sheetName: spreadsheetName,
+      worksheetName,
+    });
+
     return {
       spreadsheetName,
       worksheetName,
@@ -327,6 +419,9 @@ export class MetaAdsMapper {
       mappedRows,
       groupedCampaigns,
       validationErrors,
+      routing,
+      campaignType: routing.campaignType,
+      selectedSkill: routing.selectedSkill,
     };
   }
 }
