@@ -24,8 +24,8 @@ import { channelApi } from "../service/channel.api";
 
 const ALLOWED_CHANNEL_IDS = ["meta", "google"];
 
-const META_REDIRECT_URI = import.meta.env.VITE_META_REDIRECT_URI || "https://amiable-deprive-impulsive.ngrok-free.dev/oauth/callback";
-const GOOGLE_REDIRECT_URI = import.meta.env.VITE_GOOGLE_REDIRECT_URI || "https://amiable-deprive-impulsive.ngrok-free.dev/oauth/callback";
+const META_REDIRECT_URI = import.meta.env.VITE_META_REDIRECT_URI || "https://automation-test-97z6.onrender.com/oauth/callback";
+const GOOGLE_REDIRECT_URI = import.meta.env.VITE_GOOGLE_REDIRECT_URI || "https://automation-test-97z6.onrender.com/oauth/callback";
   
 
 const TABS = [

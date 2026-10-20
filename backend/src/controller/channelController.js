@@ -485,7 +485,7 @@ export class ChannelController {
         });
       }
 
-      const targetRedirect = `${(redirectUri || process.env.META_REDIRECT_URI || "https://amiable-deprive-impulsive.ngrok-free.dev/oauth/callback").trim()}`;
+      const targetRedirect = `${(redirectUri || process.env.META_REDIRECT_URI || "https://automation-test-97z6.onrender.com/oauth/callback").trim()}`;
 
       const graphVersion = process.env.META_GRAPH_VERSION || "v24.0";
       const oauthUrl = `https://www.facebook.com/${graphVersion}/dialog/oauth?` +
