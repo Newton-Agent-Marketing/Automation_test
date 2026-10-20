@@ -10,42 +10,15 @@ import googleOAuth from "./auth/googleOAuth.js";
 // App entry point - OAuth Callback configured for http://localhost:3000/oauth/callback
 const app = express();
 
+import { corsOptions, isOriginAllowed } from "./config/cors.js";
+
 // Middleware
-const allowedOrigins = [
-  "http://localhost:5173",
-  "http://localhost:5174",
-  "http://localhost:5175",
-  "http://127.0.0.1:5173",
-  "http://127.0.0.1:5174",
-  "http://127.0.0.1:5175",
-  process.env.FRONTEND_URL,
-].filter(Boolean);
-
-const isOriginAllowed = (origin) => {
-  if (!origin) return true;
-  return (
-    allowedOrigins.includes(origin) ||
-    /^http:\/\/localhost:\d+$/.test(origin) ||
-    /^http:\/\/127\.0\.0\.1:\d+$/.test(origin)
-  );
-};
-
 app.use((req, res, next) => {
   res.setHeader("ngrok-skip-browser-warning", "true");
   next();
 });
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      if (isOriginAllowed(origin)) {
-        return callback(null, true);
-      }
-      return callback(new Error(`Not allowed by CORS: ${origin}`));
-    },
-    credentials: true,
-  })
-);
+app.use(cors(corsOptions));
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(cookieParser());

@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { parseCookie } from "cookie";
 import User from "../models/authModel.js";
 import { runAgentChat } from "../controller/chat.controller.js";
+import { isOriginAllowed } from "../config/cors.js";
 
 let ioInstance = null;
 
@@ -12,12 +13,7 @@ export const initSocket = (httpServer) => {
   const io = new Server(httpServer, {
     cors: {
       origin: (origin, callback) => {
-        if (
-          !origin ||
-          /^http:\/\/localhost:\d+$/.test(origin) ||
-          /^http:\/\/127\.0\.0\.1:\d+$/.test(origin) ||
-          origin === process.env.FRONTEND_URL
-        ) {
+        if (isOriginAllowed(origin)) {
           return callback(null, true);
         }
         return callback(new Error(`Not allowed by CORS: ${origin}`));
