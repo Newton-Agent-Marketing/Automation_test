@@ -161,8 +161,35 @@ app.get(["/", "/channels", "/oauth/callback"], async (req, res) => {
     `);
   }
 
+  if (req.path === "/oauth/callback") {
+    return res.status(200).send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>OAuth Callback Service</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0f172a; color: #f8fafc; text-align: center; }
+          .card { background: #1e293b; padding: 2.5rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); max-width: 440px; }
+          h2 { color: #38bdf8; margin-top: 0; }
+          p { color: #94a3b8; line-height: 1.5; font-size: 0.95rem; }
+          .badge { display: inline-block; padding: 0.35rem 0.8rem; border-radius: 9999px; background: rgba(16, 185, 129, 0.2); color: #10b981; font-weight: 600; font-size: 0.85rem; margin-top: 1rem; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h2>OAuth Callback Endpoint</h2>
+          <p>This endpoint is active and listening for OAuth 2.0 redirects from Meta Ads and Google.</p>
+          <div class="badge">● Status: Active & Ready</div>
+        </div>
+      </body>
+      </html>
+    `);
+  }
+
   const query = new URLSearchParams(req.query).toString();
-  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+  const frontendUrl = (process.env.FRONTEND_URL && !process.env.FRONTEND_URL.includes("vercel.app")) 
+    ? process.env.FRONTEND_URL 
+    : "http://34.131.40.86";
   res.redirect(`${frontendUrl}/channels${query ? `?${query}` : ""}`);
 });
 
