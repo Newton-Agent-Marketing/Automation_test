@@ -237,7 +237,14 @@ export class MetaAdsOrchestrator {
     }
 
     try {
-      // Step 1: Create Campaign (Idempotent - reuse if already succeeded in previous retry)
+      // Step 1: Target Existing Campaign or Create New (Idempotent)
+      if (!metaCampaignId && session.existingCampaignId) {
+        metaCampaignId = session.existingCampaignId;
+        session.creationJob.metaCampaignId = metaCampaignId;
+        await session.save();
+        emit(2, `🎯 Targeting existing Campaign ID "${metaCampaignId}" provided in your prompt.`);
+      }
+
       if (!metaCampaignId) {
         emit(2, `Creating Campaign "${campaignName}" on Meta Graph API...`);
         const campRes = await executeAgentTool("create_meta_campaign", {
@@ -257,10 +264,17 @@ export class MetaAdsOrchestrator {
         await session.save();
         emit(2, `Campaign Created Successfully (ID: ${metaCampaignId})`);
       } else {
-        emit(2, `Reusing already created Campaign (ID: ${metaCampaignId})`);
+        emit(2, `Using Campaign (ID: ${metaCampaignId})`);
       }
 
-      // Step 2: Create Ad Set (Idempotent)
+      // Step 2: Target Existing Ad Set or Create New (Idempotent)
+      if (!metaAdSetId && session.existingAdSetId) {
+        metaAdSetId = session.existingAdSetId;
+        session.creationJob.metaAdSetId = metaAdSetId;
+        await session.save();
+        emit(3, `🎯 Targeting existing Ad Set ID "${metaAdSetId}" under Campaign ${metaCampaignId}.`);
+      }
+
       if (!metaAdSetId) {
         let finalOptGoal = optGoal;
         if (finalOptGoal === "VALUE") {

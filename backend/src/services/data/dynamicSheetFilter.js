@@ -32,6 +32,20 @@ export class DynamicSheetFilter {
   }
 
   /**
+   * Extract existing Campaign ID or AdSet ID from user prompt if provided.
+   * Matches: "Campaign ID: 120249750804450003", "AdSet ID: 120249750804520003", etc.
+   */
+  static parseIdFromMessage(msg, type = "campaign") {
+    if (!msg || typeof msg !== "string") return null;
+    const isCampaign = type === "campaign";
+    const regex = isCampaign
+      ? /(?:campaign|camp)\s*(?:id|_id)?\s*[:=\-–—]?\s*(\d{10,25})/i
+      : /(?:adset|ad_set|ad\s*set|adgroup)\s*(?:id|_id)?\s*[:=\-–—]?\s*(\d{10,25})/i;
+    const match = msg.match(regex);
+    return match ? match[1] : null;
+  }
+
+  /**
    * Robust dynamic extraction for Campaign Name & Ad Set Name from user prompt.
    * Never hardcoded; extracts quoted or unquoted names across varied phrasings.
    */

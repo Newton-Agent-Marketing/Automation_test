@@ -529,12 +529,18 @@ export class CampaignPreparationService {
     // =========================================================================
     emit("Reading source sheet and starting preflight validation...");
 
-    // 1. Extract requested names
+    // 1. Extract requested IDs or Names
+    const promptCampId = DynamicSheetFilter.parseIdFromMessage(msg, "campaign");
+    const promptAdSetId = DynamicSheetFilter.parseIdFromMessage(msg, "adset");
+
     const promptCampName = DynamicSheetFilter.parseNameFromMessage(msg, "campaign");
     const promptAdSetName = DynamicSheetFilter.parseNameFromMessage(msg, "adset");
 
-    const campaignName = promptCampName || session?.campaignName || "NWTS|Image_Test";
-    const adSetName = promptAdSetName || session?.adSetName || "NWTS|test";
+    const existingCampaignId = promptCampId || session?.existingCampaignId || null;
+    const existingAdSetId = promptAdSetId || session?.existingAdSetId || null;
+
+    const campaignName = promptCampName || (existingCampaignId ? `Target Campaign (${existingCampaignId})` : (session?.campaignName || "NWTS|Image_Test"));
+    const adSetName = promptAdSetName || (existingAdSetId ? `Target AdSet (${existingAdSetId})` : (session?.adSetName || "NWTS|test"));
 
     // 2. Read complete dataset from source
     let explicitSheetUrl = null;
@@ -593,6 +599,10 @@ export class CampaignPreparationService {
           status: valResult.isValid ? "READY_FOR_REVIEW" : "NEEDS_USER_INPUT",
           campaignName,
           adSetName,
+          existingCampaignId,
+          existingAdSetId,
+          ...(existingCampaignId ? { "creationJob.metaCampaignId": existingCampaignId } : {}),
+          ...(existingAdSetId ? { "creationJob.metaAdSetId": existingAdSetId } : {}),
           campaignType: valResult.campaignType,
           objective: valResult.objective,
           appId: valResult.appId || null,
