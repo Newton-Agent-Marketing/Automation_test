@@ -382,8 +382,13 @@ export class CampaignValidator {
       let adName = rawAdName;
       if (rawPujaDate && String(rawPujaDate).trim()) {
         const cleanDate = String(rawPujaDate).trim();
-        if (!rawAdName.toLowerCase().includes(cleanDate.toLowerCase())) {
-          adName = `${cleanDate} - ${rawAdName}`;
+        const rawTithi = vals["Puja Tithi"] || vals["puja_tithi"] || vals["Tithi"] || vals["tithi"];
+        const prefix = rawTithi && String(rawTithi).trim() && !cleanDate.includes(String(rawTithi).trim())
+          ? `${cleanDate} ${String(rawTithi).trim()}`
+          : cleanDate;
+
+        if (!rawAdName.startsWith(prefix) && !rawAdName.startsWith(cleanDate)) {
+          adName = `${prefix} - ${rawAdName}`;
         }
       }
 
