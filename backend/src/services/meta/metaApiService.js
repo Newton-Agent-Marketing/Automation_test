@@ -2088,10 +2088,10 @@ export class MetaApiService {
 
   // Normalize Call to Action Enum (BOOK_TRAVEL maps to "Book now" in Meta Ads Manager UI)
   static normalizeCallToAction(cta) {
-    if (!cta) return "BOOK_NOW";
+    if (!cta) return "BOOK_TRAVEL";
     const cleaned = String(cta).trim().toUpperCase().replace(/[\s-]+/g, "_");
     if (cleaned === "BOOK_NOW" || cleaned === "BOOK" || cleaned === "BOOKING" || cleaned === "BOOK_TRAVEL") {
-      
+      return "BOOK_TRAVEL";
     }
     if (cleaned === "SHOP_NOW" || cleaned === "SHOP" || cleaned === "BUY_NOW" || cleaned === "BUY") {
       return "SHOP_NOW";
@@ -2106,7 +2106,7 @@ export class MetaApiService {
       return "DOWNLOAD";
     }
     const validCtas = [
-      "BOOK_NOW", "LEARN_MORE", "SHOP_NOW", "SIGN_UP", "CONTACT_US",
+      "LEARN_MORE", "SHOP_NOW", "SIGN_UP", "CONTACT_US",
       "APPLY_NOW", "GET_OFFER", "ORDER_NOW", "DOWNLOAD", "WATCH_MORE",
       "SUBSCRIBE", "GET_QUOTE", "LISTEN_NOW", "SEND_WHATSAPP_MESSAGE",
       "SEND_MESSAGE", "INSTALL_APP", "USE_APP", "BOOK_TRAVEL"
@@ -3342,7 +3342,7 @@ export class MetaApiService {
     }
 
     const storeLinkCandidate = objectStoreUrl || object_store_url;
-    const effectiveCta = this.normalizeCallToAction(callToAction || (storeLinkCandidate ? "DOWNLOAD" : "BOOK_NOW"));
+    const effectiveCta = this.normalizeCallToAction(callToAction || (storeLinkCandidate ? "DOWNLOAD" : "BOOK_TRAVEL"));
     const candidateDestUrl = linkUrl || destinationUrl || destination || landingPageUrl || landing_page_url || params.landingPageUrl || params.landing_page_url || null;
     const rawDestLink = (candidateDestUrl && candidateDestUrl !== "https://facebook.com") ? candidateDestUrl : (storeLinkCandidate || candidateDestUrl);
     const cleanLinkUrl = this.sanitizeLinkUrl(rawDestLink);

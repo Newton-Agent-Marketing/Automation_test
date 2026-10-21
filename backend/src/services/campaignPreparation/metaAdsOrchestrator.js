@@ -618,7 +618,7 @@ export class MetaAdsOrchestrator {
         try {
           let createdAdRes = null;
 
-          const defaultCta = isAppCamp ? "DOWNLOAD" : "BOOK_NOW";
+          const defaultCta = isAppCamp ? "DOWNLOAD" : "BOOK_TRAVEL";
           const adAppId = appId || adConfig.appId || session.appId || session.userAnswers?.appId || null;
           const adPixelId = adConfig.pixelId || session.pixelId || session.userAnswers?.pixelId || null;
           const adTrackingType = (adPixelId && adAppId) ? "BOTH" : (isAppCamp ? "APP" : (adPixelId ? "WEBSITE" : (adAppId ? "APP" : "WEBSITE")));
