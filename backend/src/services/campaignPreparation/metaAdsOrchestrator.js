@@ -521,6 +521,7 @@ export class MetaAdsOrchestrator {
             } catch (videoDlErr) {
               console.error(`[MetaAdsOrchestrator] Error ingesting video for Row #${rowNo}:`, videoDlErr.message);
               emit(4, `⚠️ Row #${rowNo} Video Ingestion Failed: ${videoDlErr.message}`);
+              existingRes.error = `Video ingestion failed: ${videoDlErr.message}`;
             }
           }
         } else {
@@ -856,8 +857,8 @@ export class MetaAdsOrchestrator {
             imageHash: p.imageHash || null,
             creativeId: null,
             adId: null,
-            status: "SKIPPED",
-            error: null,
+            status: "FAILED",
+            error: "Ad creative was not published to Meta",
           };
           adResults.push(r);
         }

@@ -3202,15 +3202,26 @@ export class MetaApiService {
 
     try {
       const { execSync } = await import("child_process");
-      execSync(`qlmanage -t -s 1200 -o "${scratchDir}" "${videoFilePath}"`, { stdio: "pipe", timeout: 8000 });
-      if (fs.existsSync(expectedThumbPath) && fs.statSync(expectedThumbPath).size > 0) {
-        return expectedThumbPath;
-      }
-      const files = fs.readdirSync(scratchDir);
-      const match = files.find((f) => f.startsWith(baseName) && f.endsWith(".png"));
-      if (match) {
-        return path.join(scratchDir, match);
-      }
+      // Try ffmpeg first (works cross-platform on Linux/macOS)
+      try {
+        execSync(`ffmpeg -y -ss 00:00:01 -i "${videoFilePath}" -vframes 1 "${expectedThumbPath}"`, { stdio: "pipe", timeout: 8000 });
+        if (fs.existsSync(expectedThumbPath) && fs.statSync(expectedThumbPath).size > 0) {
+          return expectedThumbPath;
+        }
+      } catch (_) {}
+
+      // Fallback to macOS qlmanage if available
+      try {
+        execSync(`qlmanage -t -s 1200 -o "${scratchDir}" "${videoFilePath}"`, { stdio: "pipe", timeout: 8000 });
+        if (fs.existsSync(expectedThumbPath) && fs.statSync(expectedThumbPath).size > 0) {
+          return expectedThumbPath;
+        }
+        const files = fs.readdirSync(scratchDir);
+        const match = files.find((f) => f.startsWith(baseName) && f.endsWith(".png"));
+        if (match) {
+          return path.join(scratchDir, match);
+        }
+      } catch (_) {}
     } catch (err) {
       console.warn("[Meta Video Thumbnail Extraction Warning]:", err.message);
     }
@@ -3371,48 +3382,67 @@ export class MetaApiService {
 
     // If no valid image URL from Sheet, generate/extract thumbnail from local video file & upload to Meta /adimages
     if (!effectiveImageUrl && !effectiveImageHash) {
-      if ((!localVideoPath || !fs.existsSync(localVideoPath)) && (videoUrl || driveUrl)) {
+      // Priority 1: Query Meta Graph API for native thumbnails generated during video transcoding
+      if (effectiveVideoId && accessToken && !accessToken.startsWith("EAAB_simulated")) {
         try {
-          const targetUrl = videoUrl || driveUrl;
-          if (targetUrl.includes("drive.google.com") || targetUrl.includes("docs.google.com")) {
-            const { default: driveService } = await import("../../google/driveService.js");
-            const dlInfo = await driveService.downloadCreative(targetUrl);
-            if (dlInfo?.filePath && fs.existsSync(dlInfo.filePath)) {
-              localVideoPath = dlInfo.filePath;
-            }
-          } else if (targetUrl.startsWith("http://") || targetUrl.startsWith("https://")) {
-            const scratchDir = process.env.SCRATCH_DIR || "./scratch";
-            if (!fs.existsSync(scratchDir)) fs.mkdirSync(scratchDir, { recursive: true });
-            const tmpVideoFile = path.join(scratchDir, `vid_thumb_${Date.now()}.mp4`);
-            const writer = fs.createWriteStream(tmpVideoFile);
-            const dlRes = await axios.get(targetUrl, { responseType: "stream", timeout: 60000 });
-            dlRes.data.pipe(writer);
-            await new Promise((resolve, reject) => {
-              writer.on("finish", resolve);
-              writer.on("error", reject);
-            });
-            if (fs.existsSync(tmpVideoFile) && fs.statSync(tmpVideoFile).size > 0) {
-              localVideoPath = tmpVideoFile;
-            }
+          const vMetaRes = await axios.get(`${META_GRAPH_URL}/${effectiveVideoId}`, {
+            params: { fields: "picture,thumbnails", access_token: accessToken },
+            timeout: 10000,
+          });
+          const preferredThumb = vMetaRes.data?.thumbnails?.data?.find((t) => t.is_preferred)?.uri;
+          effectiveImageUrl = preferredThumb || vMetaRes.data?.thumbnails?.data?.[0]?.uri || vMetaRes.data?.picture || null;
+          if (effectiveImageUrl) {
+            console.log(`🎬 [Meta Video Creative]: Auto-resolved native video thumbnail from Meta for video ${effectiveVideoId}.`);
           }
-        } catch (dlVidErr) {
-          console.warn("[Meta Video Creative] Downloading video for thumbnail warning:", dlVidErr.message);
+        } catch (vMetaErr) {
+          console.warn("[Meta Video Creative] Auto-fetching thumbnail from Meta API warning:", vMetaErr.message);
         }
       }
 
-      let thumbnailPath = null;
-      if (localVideoPath && fs.existsSync(localVideoPath)) {
-        thumbnailPath = await this.extractVideoThumbnail(localVideoPath);
-      }
-
-      if (thumbnailPath && fs.existsSync(thumbnailPath)) {
-        try {
-          const imgUploadRes = await this.uploadAdImage(cleanId, accessToken, { filePath: thumbnailPath });
-          if (imgUploadRes?.hash) {
-            effectiveImageHash = imgUploadRes.hash;
+      if (!effectiveImageUrl && !effectiveImageHash) {
+        if ((!localVideoPath || !fs.existsSync(localVideoPath)) && (videoUrl || driveUrl)) {
+          try {
+            const targetUrl = videoUrl || driveUrl;
+            if (targetUrl.includes("drive.google.com") || targetUrl.includes("docs.google.com")) {
+              const { default: driveService } = await import("../../google/driveService.js");
+              const dlInfo = await driveService.downloadCreative(targetUrl);
+              if (dlInfo?.filePath && fs.existsSync(dlInfo.filePath)) {
+                localVideoPath = dlInfo.filePath;
+              }
+            } else if (targetUrl.startsWith("http://") || targetUrl.startsWith("https://")) {
+              const scratchDir = process.env.SCRATCH_DIR || "./scratch";
+              if (!fs.existsSync(scratchDir)) fs.mkdirSync(scratchDir, { recursive: true });
+              const tmpVideoFile = path.join(scratchDir, `vid_thumb_${Date.now()}.mp4`);
+              const writer = fs.createWriteStream(tmpVideoFile);
+              const dlRes = await axios.get(targetUrl, { responseType: "stream", timeout: 60000 });
+              dlRes.data.pipe(writer);
+              await new Promise((resolve, reject) => {
+                writer.on("finish", resolve);
+                writer.on("error", reject);
+              });
+              if (fs.existsSync(tmpVideoFile) && fs.statSync(tmpVideoFile).size > 0) {
+                localVideoPath = tmpVideoFile;
+              }
+            }
+          } catch (dlVidErr) {
+            console.warn("[Meta Video Creative] Downloading video for thumbnail warning:", dlVidErr.message);
           }
-        } catch (imgUpErr) {
-          console.warn("[Meta Video Creative] Uploading thumbnail to Meta /adimages warning:", imgUpErr.message);
+        }
+
+        let thumbnailPath = null;
+        if (localVideoPath && fs.existsSync(localVideoPath)) {
+          thumbnailPath = await this.extractVideoThumbnail(localVideoPath);
+        }
+
+        if (thumbnailPath && fs.existsSync(thumbnailPath)) {
+          try {
+            const imgUploadRes = await this.uploadAdImage(cleanId, accessToken, { filePath: thumbnailPath });
+            if (imgUploadRes?.hash) {
+              effectiveImageHash = imgUploadRes.hash;
+            }
+          } catch (imgUpErr) {
+            console.warn("[Meta Video Creative] Uploading thumbnail to Meta /adimages warning:", imgUpErr.message);
+          }
         }
       }
     }
