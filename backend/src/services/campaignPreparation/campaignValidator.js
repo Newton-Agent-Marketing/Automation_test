@@ -361,9 +361,31 @@ export class CampaignValidator {
       const rowNo = r.rowNumber || i + 2;
       const vals = r.values || {};
 
-      const adName =
+      const rawAdName =
         this.getFieldValue(vals, "adName") ||
         `Ad Row #${rowNo}`;
+
+      const rawPujaDate =
+        this.getFieldValue(vals, "pujaDate") ||
+        vals["Puja Date"] ||
+        vals["puja date"] ||
+        vals["PUJA DATE"] ||
+        vals["Puja_Date"] ||
+        vals["puja_date"] ||
+        vals["Tithi Date"] ||
+        vals["tithi date"] ||
+        vals["Tithi"] ||
+        vals["tithi"] ||
+        vals["Date"] ||
+        vals["date"];
+
+      let adName = rawAdName;
+      if (rawPujaDate && String(rawPujaDate).trim()) {
+        const cleanDate = String(rawPujaDate).trim();
+        if (!rawAdName.toLowerCase().includes(cleanDate.toLowerCase())) {
+          adName = `${cleanDate} - ${rawAdName}`;
+        }
+      }
 
       const pageId =
         userAnswers.pageId ||

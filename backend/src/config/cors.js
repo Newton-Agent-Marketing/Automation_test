@@ -9,6 +9,10 @@ const staticAllowedOrigins = [
   "http://127.0.0.1:3000",
   "http://34.131.40.86",
   "https://34.131.40.86",
+  "http://newtonads.io",
+  "https://newtonads.io",
+  "http://www.newtonads.io",
+  "https://www.newtonads.io",
 ];
 
 export const isOriginAllowed = (origin) => {
@@ -36,6 +40,9 @@ export const isOriginAllowed = (origin) => {
 
   // Allow VM / Server IP 34.131.40.86 with any port
   if (/^https?:\/\/34\.131\.40\.86(:\d+)?$/.test(cleanOrigin)) return true;
+
+  // Allow custom domain newtonads.io and its subdomains
+  if (/^https?:\/\/(.*\.)?newtonads\.io(:\d+)?$/.test(cleanOrigin)) return true;
 
   // Allow Vercel deployments (*.vercel.app)
   if (/^https:\/\/[a-zA-Z0-9_-]+\.vercel\.app$/.test(cleanOrigin)) return true;

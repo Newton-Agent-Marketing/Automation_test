@@ -9,6 +9,7 @@ export class FieldMapper {
     campaignName: ["campaign_name", "campaignname", "camp_name", "campname", "campaign_title", "camptitle", "campaign_label", "campaign", "camp"],
     adSetName: ["adset_name", "adset", "ad_set", "ad_set_name", "adsetname", "adgroup", "ad_group"],
     adName: ["ad_name", "adname", "ad_title", "ad_label", "creative_name", "creativename", "nomenclature", "nomen"],
+    pujaDate: ["puja_date", "pujadate", "puja date", "tithi_date", "tithidate", "tithi date", "event_date", "eventdate", "event date", "date_of_puja", "date"],
     headline: ["headline", "headlines", "ad_headline", "ad_headlines", "adheadline", "creative_headline", "creativeheadline", "headline_1", "headline1", "header", "title", "titles", "ad_title", "adtitle"],
     primaryText: ["primary_text", "primary_texts", "primarytext", "primarytexts", "main_text", "maintext", "ad_text", "adtext", "body_text", "body_texts", "bodytext", "body", "caption", "primary_text_1", "text", "copy", "ad_copy", "adcopy", "primary_copy", "post_text", "message"],
     description: ["ad_description", "ad_descriptions", "addescription", "description", "descriptions", "ad_desc", "addesc", "desc", "descs", "link_description", "linkdescription", "sub_headline", "subheadline", "description_1", "description1"],
