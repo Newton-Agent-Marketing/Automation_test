@@ -260,6 +260,17 @@ export class DynamicSheetFilter {
     // Strip explicit row ranges and row lists (e.g., "for rows 2 to 9", "rows 2, 4, 5, 8", "from row 5 to 15", "upload row 7 only")
     text = text.replace(/(?:\b(?:from|for|on|in|process|upload|retry)?\s*(?:rows?|lines?)\s*#?\d+(?:(?:\s*,\s*|\s+(?:to|–|-|till|through|and|or)\s*)#?\d+)*\b(?:\s*only)?)/gi, " ");
 
+    // Strip explicit IDs (e.g. "Campaign ID: 120249750804450003", "AdSet ID: 120249750804520003")
+    text = text.replace(/(?:campaign|camp)\s*(?:id|_id)?\s*[:=\-–—]?\s*\d{10,25}/gi, " ");
+    text = text.replace(/(?:adset|ad_set|ad\s*set|adgroup)\s*(?:id|_id)?\s*[:=\-–—]?\s*\d{10,25}/gi, " ");
+
+    // Strip conversational instructions blocks like "Instructions: ...", "Rules: ..."
+    text = text.replace(/(?:instructions?|rules?|steps?|notes?)\s*[:=\-–—]?\s*[\s\S]*/i, " ");
+
+    // Strip ad naming instructions (e.g. "Ad Name: Combine the Puja Date and Nomenclature columns...", "combine Puja Date and Nomenclature")
+    text = text.replace(/(?:ad\s*names?|name\s*each\s*ad)?\s*[:=\-–—]?\s*(?:combine|join|use|set)?\s*(?:the\s*)?[^.,\n\r]*(?:columns?|from\s*each\s*row)?\s*as\s*(?:the\s*)?ad\s*names?[^.,\n\r]*/gi, " ");
+    text = text.replace(/\b(?:combine|join|use)\s+(?:the\s+)?[a-zA-Z0-9_\s]+\s+(?:and|\+)\s+[a-zA-Z0-9_\s]+\s+(?:columns?|fields?)\b/gi, " ");
+
     // Strip conversational file/context references (e.g. "I will attached excel sheet in ai context section")
     text = text.replace(/\b(?:and\s+)?(?:also\s+)?(?:i\s*will\s*)?(?:attach|attached)?\s*(?:the\s*)?(?:excel|google\s*sheet|spreadsheet)?\s*(?:sheet\s*)?in\s*(?:the\s*)?(?:ai\s*context|context)(?:\s*section)?\b/gi, " ");
 
