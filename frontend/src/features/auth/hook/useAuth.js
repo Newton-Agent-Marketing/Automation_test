@@ -5,6 +5,8 @@ import {
   logoutUser,
   registerUser,
   updateUserProfile,
+  uploadAvatar,
+  removeAvatar,
 } from "../auth.slice";
 
 export const useAuth = () => {
@@ -19,6 +21,8 @@ export const useAuth = () => {
     logout: () => dispatch(logoutUser()),
     hydrate: () => dispatch(hydrateUser()),
     updateProfile: (payload) => dispatch(updateUserProfile(payload)).unwrap(),
+    uploadAvatar: (formData) => dispatch(uploadAvatar(formData)).unwrap(),
+    removeAvatar: () => dispatch(removeAvatar()).unwrap(),
   };
 };
 

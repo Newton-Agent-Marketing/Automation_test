@@ -88,6 +88,30 @@ export const updateUserProfile = createAsyncThunk(
   }
 );
 
+export const uploadAvatar = createAsyncThunk(
+  "auth/uploadAvatar",
+  async (formData, { rejectWithValue }) => {
+    try {
+      const { data } = await authApi.uploadAvatar(formData);
+      return data.user;
+    } catch (error) {
+      return rejectWithValue(getErrorMessage(error, "Failed to upload profile photo"));
+    }
+  }
+);
+
+export const removeAvatar = createAsyncThunk(
+  "auth/removeAvatar",
+  async (_, { rejectWithValue }) => {
+    try {
+      const { data } = await authApi.removeAvatar();
+      return data.user;
+    } catch (error) {
+      return rejectWithValue(getErrorMessage(error, "Failed to remove profile photo"));
+    }
+  }
+);
+
 const authSlice = createSlice({
   name: "auth",
   initialState,
@@ -142,6 +166,14 @@ const authSlice = createSlice({
         Object.assign(state, { ...initialState, token: null, hydrated: true, status: "unauthenticated" });
       })
       .addCase(updateUserProfile.fulfilled, (state, action) => {
+        state.user = { ...state.user, ...action.payload };
+        state.error = null;
+      })
+      .addCase(uploadAvatar.fulfilled, (state, action) => {
+        state.user = { ...state.user, ...action.payload };
+        state.error = null;
+      })
+      .addCase(removeAvatar.fulfilled, (state, action) => {
         state.user = { ...state.user, ...action.payload };
         state.error = null;
       });

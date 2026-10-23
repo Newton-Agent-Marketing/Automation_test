@@ -1,31 +1,142 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { X, User as UserIcon, Check } from "lucide-react";
+import { X, User as UserIcon, Check, Camera, Loader2 } from "lucide-react";
 import { useAuth } from "../../features/auth/hook/useAuth";
 
 export const ProfileSettingsModal = ({ isOpen, onClose }) => {
-  const { user, updateProfile } = useAuth();
+  const { user, updateProfile, uploadAvatar, removeAvatar } = useAuth();
+  const fileInputRef = useRef(null);
+
   const [saving, setSaving] = useState(false);
   const [successNotice, setSuccessNotice] = useState("");
   const [errorNotice, setErrorNotice] = useState("");
 
-  const [userForm, setUserForm] = useState({
-    name: "",
-    email: "",
-  });
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [avatarPreview, setAvatarPreview] = useState("");
+  const [pendingFile, setPendingFile] = useState(null);
+  const [avatarMarkedForRemoval, setAvatarMarkedForRemoval] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
-      setUserForm({
-        name: user?.name || "",
-        email: user?.email || "",
-      });
+      setName(user?.name || "");
+      setEmail(user?.email || "");
+      setAvatarPreview(user?.avatar || "");
+      setPendingFile(null);
+      setAvatarMarkedForRemoval(false);
       setSuccessNotice("");
       setErrorNotice("");
     }
   }, [isOpen, user]);
 
+  // Clean up object URLs when unmounting or switching previews
+  useEffect(() => {
+    return () => {
+      if (avatarPreview && avatarPreview.startsWith("blob:")) {
+        URL.revokeObjectURL(avatarPreview);
+      }
+    };
+  }, [avatarPreview]);
+
   if (!isOpen) return null;
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setErrorNotice("");
+
+    // 1. File Type Validation
+    const validMimeTypes = [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "image/svg+xml",
+      "image/gif",
+    ];
+    if (!validMimeTypes.includes(file.type)) {
+      setErrorNotice("Invalid format. Please select a PNG, JPG, WebP, or SVG image.");
+      e.target.value = "";
+      return;
+    }
+
+    // 2. File Size Validation (Max 5MB)
+    const MAX_SIZE = 5 * 1024 * 1024;
+    if (file.size > MAX_SIZE) {
+      setErrorNotice("File size exceeds 5MB limit. Please choose a smaller photo or logo.");
+      e.target.value = "";
+      return;
+    }
+
+    // Create instant local preview
+    if (avatarPreview && avatarPreview.startsWith("blob:")) {
+      URL.revokeObjectURL(avatarPreview);
+    }
+    const previewUrl = URL.createObjectURL(file);
+    setAvatarPreview(previewUrl);
+    setPendingFile(file);
+    setAvatarMarkedForRemoval(false);
+
+    e.target.value = "";
+  };
+
+  const handleRemoveAvatar = () => {
+    if (avatarPreview && avatarPreview.startsWith("blob:")) {
+      URL.revokeObjectURL(avatarPreview);
+    }
+    setAvatarPreview("");
+    setPendingFile(null);
+    setAvatarMarkedForRemoval(true);
+    setErrorNotice("");
+  };
+
+  const triggerFileInput = () => {
+    fileInputRef.current?.click();
+  };
+
+  const compressImage = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        if (file.type === "image/svg+xml") {
+          return resolve(e.target.result);
+        }
+        const img = new Image();
+        img.onload = () => {
+          const maxDim = 320;
+          let width = img.width;
+          let height = img.height;
+          if (width > height) {
+            if (width > maxDim) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            }
+          } else {
+            if (height > maxDim) {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, width, height);
+
+          try {
+            resolve(canvas.toDataURL("image/webp", 0.88));
+          } catch {
+            resolve(canvas.toDataURL("image/jpeg", 0.88));
+          }
+        };
+        img.onerror = reject;
+        img.src = e.target.result;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
 
   const handleSave = async (e) => {
     e.preventDefault();
@@ -34,13 +145,33 @@ export const ProfileSettingsModal = ({ isOpen, onClose }) => {
     setSuccessNotice("");
 
     try {
-      await updateProfile(userForm);
-      setSuccessNotice("Profile updated successfully!");
+      let finalAvatar;
+      if (pendingFile) {
+        finalAvatar = await compressImage(pendingFile);
+      } else if (avatarMarkedForRemoval) {
+        finalAvatar = "";
+      }
+
+      const updatePayload = {
+        name: name.trim(),
+        email: email.trim(),
+      };
+      if (finalAvatar !== undefined) {
+        updatePayload.avatar = finalAvatar;
+      }
+
+      await updateProfile(updatePayload);
+
+      setPendingFile(null);
+      setAvatarMarkedForRemoval(false);
+      setSuccessNotice("Account settings updated successfully!");
+
       setTimeout(() => {
         setSuccessNotice("");
-      }, 3000);
+      }, 3500);
     } catch (err) {
-      setErrorNotice(typeof err === "string" ? err : "Failed to update profile");
+      console.error("[ProfileSettingsModal Error]:", err);
+      setErrorNotice(typeof err === "string" ? err : err?.message || "Failed to update profile settings.");
     } finally {
       setSaving(false);
     }
@@ -60,7 +191,7 @@ export const ProfileSettingsModal = ({ isOpen, onClose }) => {
         </div>
 
         <p className="modal-desc">
-          Update your account name and email address.
+          Update your profile photo, full name, and email address.
         </p>
 
         {successNotice && (
@@ -77,14 +208,139 @@ export const ProfileSettingsModal = ({ isOpen, onClose }) => {
         )}
 
         <form onSubmit={handleSave} className="settings-form">
+          {/* Profile Photo / Logo Section (Styled directly as requested) */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 16,
+              padding: "16px",
+              backgroundColor: "#F8FAFC",
+              border: "1px solid #E2E8F0",
+              borderRadius: 12,
+              margin: "6px 0 16px 0",
+            }}
+          >
+            {/* Circular Avatar Preview */}
+            <div
+              onClick={triggerFileInput}
+              style={{
+                position: "relative",
+                width: 68,
+                height: 68,
+                borderRadius: "50%",
+                backgroundColor: avatarPreview ? "#FFFFFF" : "#EFF6FF",
+                border: "2px solid #BFDBFE",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+                cursor: "pointer",
+                overflow: "hidden",
+                boxShadow: "0 2px 8px rgba(37, 99, 235, 0.08)",
+                transition: "all 0.2s ease",
+              }}
+              title="Click to select image or brand logo"
+            >
+              {avatarPreview ? (
+                <img
+                  src={avatarPreview}
+                  alt="Avatar Preview"
+                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                />
+              ) : (
+                <UserIcon size={34} color="#2563EB" strokeWidth={1.75} />
+              )}
+
+              {/* Camera Icon Overlay */}
+              <div
+                style={{
+                  position: "absolute",
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  backgroundColor: "rgba(15, 23, 42, 0.6)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "3px 0",
+                }}
+              >
+                <Camera size={12} color="#FFFFFF" />
+              </div>
+            </div>
+
+            {/* Photo Info & Actions */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 3, flex: 1, minWidth: 0 }}>
+              <span style={{ fontSize: "14px", fontWeight: 700, color: "#1E293B" }}>
+                Profile photo
+              </span>
+              <span style={{ fontSize: "12px", color: "#64748B", lineHeight: 1.4 }}>
+                Add a photo or brand logo to personalize your account.
+              </span>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                <button
+                  type="button"
+                  onClick={triggerFileInput}
+                  disabled={saving}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    padding: 0,
+                    fontSize: "12.5px",
+                    fontWeight: 600,
+                    color: "#2563EB",
+                    cursor: saving ? "not-allowed" : "pointer",
+                    textDecoration: "underline",
+                  }}
+                >
+                  Upload photo
+                </button>
+
+                {avatarPreview && (
+                  <>
+                    <span style={{ color: "#94A3B8", fontSize: "12px" }}>•</span>
+                    <button
+                      type="button"
+                      onClick={handleRemoveAvatar}
+                      disabled={saving}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        padding: 0,
+                        fontSize: "12.5px",
+                        fontWeight: 600,
+                        color: "#EF4444",
+                        cursor: saving ? "not-allowed" : "pointer",
+                        textDecoration: "underline",
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif"
+              onChange={handleFileSelect}
+              style={{ display: "none" }}
+            />
+          </div>
+
           <div className="settings-tab-content">
             <label className="auth-label">
               <span>Full Name</span>
               <input
                 name="name"
-                value={userForm.name}
-                onChange={(e) => setUserForm({ ...userForm, name: e.target.value })}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
                 required
+                disabled={saving}
               />
             </label>
 
@@ -93,18 +349,31 @@ export const ProfileSettingsModal = ({ isOpen, onClose }) => {
               <input
                 name="email"
                 type="email"
-                value={userForm.email}
-                onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 required
+                disabled={saving}
               />
             </label>
           </div>
 
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
-            <button type="button" className="ghost-btn" onClick={onClose}>
+            <button type="button" className="ghost-btn" onClick={onClose} disabled={saving}>
               Cancel
             </button>
-            <button type="submit" className="primary-btn" style={{ width: "auto", padding: "0 22px" }} disabled={saving}>
+            <button
+              type="submit"
+              className="primary-btn"
+              style={{
+                width: "auto",
+                padding: "0 22px",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 7,
+              }}
+              disabled={saving}
+            >
+              {saving && <Loader2 size={15} className="spin" />}
               {saving ? "Saving Changes..." : "Save Changes"}
             </button>
           </div>

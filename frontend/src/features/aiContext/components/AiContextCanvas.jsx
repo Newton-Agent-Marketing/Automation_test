@@ -4,8 +4,8 @@ import { AiContextNode } from "./AiContextNode";
 import { NodePickerDrawer } from "./NodePickerDrawer";
 import { ConnectionAlert } from "./ConnectionAlert";
 
-const NODE_WIDTH = 250;
-const NODE_HEIGHT = 80;
+const NODE_WIDTH = 260;
+const NODE_HEIGHT = 90;
 
 export const AiContextCanvas = ({
   nodes,
@@ -23,6 +23,7 @@ export const AiContextCanvas = ({
   onDismissAlert,
 }) => {
   const containerRef = useRef(null);
+  const rafRef = useRef(null);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
@@ -115,13 +116,22 @@ export const AiContextCanvas = ({
         const dy = (e.clientY - dragNodeState.startY) / zoom;
         const newX = Math.round(dragNodeState.nodeInitialX + dx);
         const newY = Math.round(dragNodeState.nodeInitialY + dy);
-        onMoveNode(dragNodeState.nodeId, newX, newY);
+
+        if (rafRef.current) {
+          cancelAnimationFrame(rafRef.current);
+        }
+        rafRef.current = requestAnimationFrame(() => {
+          onMoveNode(dragNodeState.nodeId, newX, newY);
+        });
       }
     },
     [dragNodeState, zoom, onMoveNode]
   );
 
   const handleMouseUp = useCallback(() => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+    }
     setDragNodeState(null);
     setIsPanning(false);
   }, []);
@@ -142,10 +152,10 @@ export const AiContextCanvas = ({
     if (!sourceNode || !targetNode) return "";
 
     const x1 = (sourceNode.position?.x || 0) + NODE_WIDTH / 2;
-    const y1 = (sourceNode.position?.y || 0) + 72; // bottom mid of source node
+    const y1 = (sourceNode.position?.y || 0) + 90; // bottom center of connector handle
 
     const x2 = (targetNode.position?.x || 0) + NODE_WIDTH / 2;
-    const y2 = (targetNode.position?.y || 0); // top mid of target node
+    const y2 = (targetNode.position?.y || 0); // top center of target node
 
     const dy = Math.max(Math.abs(y2 - y1) * 0.55, 35);
     const cx1 = x1;
@@ -170,9 +180,9 @@ export const AiContextCanvas = ({
         width: "100%",
         height: "100%",
         overflow: "hidden",
-        backgroundColor: "#F8FAFC",
-        backgroundImage: `radial-gradient(#CBD5E1 1.2px, transparent 1.2px)`,
-        backgroundSize: "22px 22px",
+        backgroundColor: "#FAFBFD",
+        backgroundImage: `radial-gradient(#E2E8F0 1.2px, transparent 1.2px)`,
+        backgroundSize: "20px 20px",
         backgroundPosition: `${pan.x}px ${pan.y}px`,
         cursor: isPanning ? "grabbing" : "default",
       }}
@@ -216,7 +226,7 @@ export const AiContextCanvas = ({
               markerHeight="6"
               orient="auto-start-reverse"
             >
-              <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#94A3B8" />
+              <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#0F172A" />
             </marker>
           </defs>
 
@@ -228,9 +238,9 @@ export const AiContextCanvas = ({
                 key={edge.id}
                 d={calculateCurvePath(edge)}
                 fill="none"
-                stroke={isConnectedToSelected ? "#16A34A" : "#94A3B8"}
-                strokeWidth={isConnectedToSelected ? 2.5 : 1.8}
-                strokeDasharray={isConnectedToSelected ? "none" : "none"}
+                stroke={isConnectedToSelected ? "#0081FB" : "#CBD5E1"}
+                strokeWidth={isConnectedToSelected ? 2.2 : 1.6}
+                strokeDasharray="none"
                 style={{ transition: "stroke 0.2s ease, stroke-width 0.2s ease" }}
               />
             );
@@ -238,18 +248,27 @@ export const AiContextCanvas = ({
         </svg>
 
         {/* Nodes Layer */}
-        {nodes.map((node) => (
-          <AiContextNode
-            key={node.id}
-            node={node}
-            isSelected={selectedNodeId === node.id}
-            onSelect={onSelectNode}
-            onOpenPicker={handleOpenPickerWithPos}
-            onOpenDrawer={onOpenDrawer}
-            onMouseDownDrag={handleNodeMouseDownDrag}
-            onDelete={onDeleteNode}
-          />
-        ))}
+        {nodes.map((node) => {
+          const isConnected =
+            node.isRoot ||
+            Boolean(node.previousNodeId || node.previousNodeLabel) ||
+            edges.some((e) => e.target === node.id || e.source === node.id);
+          const isDragging = dragNodeState?.nodeId === node.id;
+          return (
+            <AiContextNode
+              key={node.id}
+              node={node}
+              isConnected={isConnected}
+              isDragging={isDragging}
+              isSelected={selectedNodeId === node.id}
+              onSelect={onSelectNode}
+              onOpenPicker={handleOpenPickerWithPos}
+              onOpenDrawer={onOpenDrawer}
+              onMouseDownDrag={handleNodeMouseDownDrag}
+              onDelete={onDeleteNode}
+            />
+          );
+        })}
 
         {/* Floating Node Picker Menu */}
         {activeAnchorNode && (
@@ -270,12 +289,12 @@ export const AiContextCanvas = ({
           right: 24,
           display: "flex",
           alignItems: "center",
-          gap: 6,
+          gap: 4,
           backgroundColor: "#FFFFFF",
-          padding: "5px 10px",
-          borderRadius: 10,
+          padding: "4px 8px",
+          borderRadius: 12,
           border: "1px solid #E2E8F0",
-          boxShadow: "0 4px 12px rgba(15, 23, 42, 0.08)",
+          boxShadow: "0 4px 16px rgba(15, 23, 42, 0.08)",
           zIndex: 100,
         }}
       >

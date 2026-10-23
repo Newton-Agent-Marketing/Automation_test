@@ -694,7 +694,30 @@ export async function getUserAiContext({ userId }) {
     };
   }
 
-  const context = await AiContext.findOne({ userId }).lean();
+  globalThis.__aiContextCache = globalThis.__aiContextCache || new Map();
+  const userIdStr = String(userId);
+
+  let context = null;
+  try {
+    const mongoose = (await import("mongoose")).default;
+    const isObjId = mongoose.Types.ObjectId.isValid(userId);
+    const filter = isObjId
+      ? { $or: [{ userId: new mongoose.Types.ObjectId(userId) }, { userId: userIdStr }] }
+      : { userId: userIdStr };
+
+    context = await AiContext.findOne(filter).lean();
+    if (context && context.nodes?.length > 0) {
+      globalThis.__aiContextCache.set(userIdStr, context);
+    }
+  } catch (dbErr) {
+    console.warn("[getUserAiContext DB Query Warning]:", dbErr.message);
+    context = globalThis.__aiContextCache.get(userIdStr) || null;
+  }
+
+  if (!context) {
+    context = globalThis.__aiContextCache.get(userIdStr) || null;
+  }
+
   if (!context || !context.nodes || context.nodes.length === 0) {
     return {
       source: "DATABASE",
@@ -756,14 +779,23 @@ export async function getUserAiContext({ userId }) {
       details: {
         name: currentNode.data?.name || currentNode.label,
         description: currentNode.data?.description || "",
+        businessUnitName:
+          currentNode.data?.businessUnitName ||
+          (parentNode?.type === "business_unit" ? (parentNode.label || parentNode.data?.name) : "") ||
+          "",
         channelName: currentNode.data?.channelName || currentNode.data?.channel || "",
         channel: currentNode.data?.channel || currentNode.data?.channelName || "",
         adAccountId: currentNode.data?.adAccountId || "",
         accountName: currentNode.data?.accountName || "",
         funnelEvent: currentNode.data?.funnelEvent || "",
         funnelDescription: currentNode.data?.funnelDescription || "",
+        timeframeType: currentNode.data?.timeframeType || "month",
+        targetMonth: currentNode.data?.targetMonth || "",
+        startDate: currentNode.data?.startDate || "",
+        endDate: currentNode.data?.endDate || "",
+        formattedPeriod: currentNode.data?.formattedPeriod || "",
         metrics: currentNode.data?.metrics || "",
-        kpis: currentNode.data?.kpis || "",
+        metricsList: Array.isArray(currentNode.data?.metricsList) ? currentNode.data.metricsList : [],
         productName: currentNode.data?.productName || "",
         productUrl: currentNode.data?.productUrl || "",
         productPrice: currentNode.data?.productPrice || 0,
@@ -776,6 +808,9 @@ export async function getUserAiContext({ userId }) {
         workbookName: currentNode.data?.workbookName || "",
         worksheetName: currentNode.data?.worksheetName || "",
         excelSyncStatus: currentNode.data?.excelSyncStatus || "NOT_CONNECTED",
+        totalRows: currentNode.data?.totalRows || 0,
+        totalDataRows: currentNode.data?.totalDataRows || 0,
+        sheets: Array.isArray(currentNode.data?.sheets) ? currentNode.data.sheets : [],
         googleDriveConnected: Boolean(currentNode.data?.googleDriveConnected),
         googleDriveEmail: currentNode.data?.googleDriveEmail || "",
         googleDriveFolderId: currentNode.data?.googleDriveFolderId || "",
@@ -811,21 +846,30 @@ export async function getUserAiContext({ userId }) {
         const businessDetails = businessNode?.details || businessNode?.data || {};
         const warehouseDetails = warehouseNode?.details || warehouseNode?.data || {};
 
+        const buName = channelDetails?.businessUnitName || businessDetails?.name || businessNode?.label || "";
         const campaignParams = {
           name:
             briefDetails?.name && briefDetails?.name !== "Marketing Brief"
               ? briefDetails.name
               : productDetails?.productName
               ? `${productDetails.productName} Growth Campaign`
-              : `${businessDetails?.name || "Marketing"} Campaign`,
+              : `${buName || "Marketing"} Campaign`,
+          businessUnit: buName || "Default Business Unit",
+          businessUnitName: buName || "Default Business Unit",
           channel: channelDetails?.channelName || channelDetails?.channel || "Meta Ads",
+          channelName: channelDetails?.channelName || channelDetails?.channel || "Meta Ads",
           accountId: channelDetails?.adAccountId || "",
           accountName: channelDetails?.accountName || "",
           funnelEvent: channelDetails?.funnelEvent || "Purchase",
           funnelDescription: channelDetails?.funnelDescription || "",
+          targetPeriod: briefDetails?.formattedPeriod || briefDetails?.targetMonth || "",
+          timeframeType: briefDetails?.timeframeType || "month",
+          targetMonth: briefDetails?.targetMonth || "",
+          startDate: briefDetails?.startDate || "",
+          briefDescription: briefDetails?.description || briefDetails?.briefDescription || "",
+          strategy: briefDetails?.description || briefDetails?.briefDescription || "",
           metrics: briefDetails?.metrics || "",
-          kpis: briefDetails?.kpis || "",
-          briefDescription: briefDetails?.description || "",
+          metricsList: Array.isArray(briefDetails?.metricsList) ? briefDetails.metricsList : [],
           productName: productDetails?.productName || (productDetails?.products?.[0]?.name) || "",
           productUrl: productDetails?.productUrl || (productDetails?.products?.[0]?.url) || "",
           productPrice: productDetails?.productPrice !== undefined ? productDetails.productPrice : (productDetails?.products?.[0]?.price || ""),
@@ -844,6 +888,7 @@ export async function getUserAiContext({ userId }) {
           googleDriveConnected: Boolean(warehouseDetails?.googleDriveConnected),
           googleDriveEmail: warehouseDetails?.googleDriveEmail || "",
           googleDriveFolderId: warehouseDetails?.googleDriveFolderId || "",
+          sheets: Array.isArray(warehouseDetails?.sheets) ? warehouseDetails.sheets : [],
           sheetRows: warehouseDetails?.sheetRows || [],
           sheetColumns: warehouseDetails?.sheetColumns || [],
           creativeDriveUrl: (() => {
@@ -889,6 +934,123 @@ export async function getUserAiContext({ userId }) {
 
   const finalFlows = flows.length > 0 ? flows : (context.flows && context.flows.length > 0 ? context.flows : []);
 
+  // Build complete Business Unit hierarchy (Multi-Business Unit & Multi-Channel Lineage)
+  const businessUnitsHierarchy = [];
+  
+  function getDescendants(startId) {
+    const reachable = new Set();
+    const queue = [startId];
+    while (queue.length > 0) {
+      const curr = queue.shift();
+      const children = childMap.get(curr) || [];
+      for (const ch of children) {
+        if (!reachable.has(ch)) {
+          reachable.add(ch);
+          queue.push(ch);
+        }
+      }
+    }
+    return reachable;
+  }
+
+  allBusinesses.forEach((buNode) => {
+    const buId = buNode.id;
+    const buName = buNode.label || buNode.data?.name || "Business Unit";
+    const reachableIds = getDescendants(buId);
+
+    const isNodeInBu = (node) => {
+      if (reachableIds.has(node.id)) return true;
+      if (node.data?.businessUnitName && node.data.businessUnitName.toLowerCase() === buName.toLowerCase()) return true;
+      if (node.previousNodeId && reachableIds.has(node.previousNodeId)) return true;
+      return false;
+    };
+
+    const buChannels = allChannels.filter(isNodeInBu);
+    const buBriefs = allBriefs.filter(isNodeInBu);
+    const buProducts = allProducts.filter(isNodeInBu);
+    const buWarehouses = allWarehouses.filter(isNodeInBu);
+
+    businessUnitsHierarchy.push({
+      id: buId,
+      name: buName,
+      description: buNode.data?.description || "",
+      channels: buChannels.map((n) => ({
+        id: n.id,
+        channel: n.data?.channelName || n.data?.channel || n.label,
+        channelName: n.data?.channelName || n.data?.channel || n.label,
+        accountId: n.data?.adAccountId || "",
+        accountName: n.data?.accountName || "",
+        funnelEvent: n.data?.funnelEvent || "Purchase",
+        funnelDescription: n.data?.funnelDescription || "",
+      })),
+      briefs: buBriefs.map((n) => ({
+        id: n.id,
+        name: n.label || n.data?.name,
+        targetPeriod: n.data?.formattedPeriod || n.data?.targetMonth || "",
+        timeframeType: n.data?.timeframeType || "month",
+        metrics: n.data?.metrics || "",
+        metricsList: Array.isArray(n.data?.metricsList) ? n.data.metricsList : [],
+      })),
+      products: buProducts.map((n) => ({
+        id: n.id,
+        name: n.data?.productName || n.label,
+        productName: n.data?.productName || n.label,
+        url: n.data?.productUrl || "",
+        productUrl: n.data?.productUrl || "",
+        price: n.data?.productPrice !== undefined ? n.data.productPrice : 0,
+        productPrice: n.data?.productPrice !== undefined ? n.data.productPrice : 0,
+        catalog: n.data?.products || [],
+        products: n.data?.products || [],
+      })),
+      warehouses: buWarehouses.map((n) => ({
+        id: n.id,
+        name: n.label || n.data?.name,
+        sheetUrl: n.data?.sheetUrl || "",
+        sheets: Array.isArray(n.data?.sheets) ? n.data.sheets : [],
+        dataLabels: n.data?.dataLabels || n.data?.dataLevel || "",
+      })),
+    });
+  });
+
+  // If no explicit Business Unit node was added, assemble unified fallback BU
+  if (businessUnitsHierarchy.length === 0 && (allChannels.length > 0 || allProducts.length > 0 || allWarehouses.length > 0)) {
+    businessUnitsHierarchy.push({
+      id: "default_bu",
+      name: "Default Business Unit",
+      description: "Default workspace business unit",
+      channels: allChannels.map((n) => ({
+        id: n.id,
+        channel: n.data?.channelName || n.data?.channel || n.label,
+        channelName: n.data?.channelName || n.data?.channel || n.label,
+        accountId: n.data?.adAccountId || "",
+        accountName: n.data?.accountName || "",
+        funnelEvent: n.data?.funnelEvent || "Purchase",
+        funnelDescription: n.data?.funnelDescription || "",
+      })),
+      briefs: allBriefs.map((n) => ({
+        id: n.id,
+        name: n.label || n.data?.name,
+        metricsList: Array.isArray(n.data?.metricsList) ? n.data.metricsList : [],
+      })),
+      products: allProducts.map((n) => ({
+        id: n.id,
+        name: n.data?.productName || n.label,
+        productName: n.data?.productName || n.label,
+        url: n.data?.productUrl || "",
+        productUrl: n.data?.productUrl || "",
+        price: n.data?.productPrice !== undefined ? n.data.productPrice : 0,
+        catalog: n.data?.products || [],
+      })),
+      warehouses: allWarehouses.map((n) => ({
+        id: n.id,
+        name: n.label || n.data?.name,
+        sheetUrl: n.data?.sheetUrl || "",
+        sheets: Array.isArray(n.data?.sheets) ? n.data.sheets : [],
+        dataLabels: n.data?.dataLabels || n.data?.dataLevel || "",
+      })),
+    });
+  }
+
   return {
     source: "DATABASE",
     hasContext: nodes.length > 0,
@@ -896,20 +1058,34 @@ export async function getUserAiContext({ userId }) {
     totalNodes: nodes.length,
     totalFlows: finalFlows.length,
     flows: finalFlows,
+    businessUnitsHierarchy,
     businessUnits: nodes.filter((n) => n.type === "business_unit").map((n) => ({
       id: n.id,
       name: n.label || n.data?.name,
       description: n.data?.description || "",
     })),
-    adChannels: nodes.filter((n) => n.type === "ad_channel").map((n) => ({
-      id: n.id,
-      channel: n.data?.channelName || n.data?.channel || n.label,
-      channelName: n.data?.channelName || n.data?.channel || n.label,
-      accountId: n.data?.adAccountId || "",
-      accountName: n.data?.accountName || "",
-      funnelEvent: n.data?.funnelEvent || "Purchase",
-      funnelDescription: n.data?.funnelDescription || "",
-    })),
+    adChannels: nodes.filter((n) => n.type === "ad_channel").map((n) => {
+      let buName = n.data?.businessUnitName;
+      if (!buName && n.previousNodeId) {
+        const pNode = nodes.find((node) => node.id === n.previousNodeId);
+        if (pNode && pNode.type === "business_unit") {
+          buName = pNode.label || pNode.data?.name;
+        }
+      }
+      if (!buName && n.previousNodeLabel && (n.previousNodeType === "business_unit" || !n.previousNodeType)) {
+        buName = n.previousNodeLabel;
+      }
+      return {
+        id: n.id,
+        businessUnitName: buName || "Business Unit",
+        channel: n.data?.channelName || n.data?.channel || n.label,
+        channelName: n.data?.channelName || n.data?.channel || n.label,
+        accountId: n.data?.adAccountId || "",
+        accountName: n.data?.accountName || "",
+        funnelEvent: n.data?.funnelEvent || "Purchase",
+        funnelDescription: n.data?.funnelDescription || "",
+      };
+    }),
     products: nodes.filter((n) => n.type === "product").map((n) => ({
       id: n.id,
       name: n.data?.productName || n.label,
@@ -925,10 +1101,16 @@ export async function getUserAiContext({ userId }) {
     })),
     marketingBriefs: nodes.filter((n) => n.type === "marketing_brief").map((n) => ({
       id: n.id,
-      name: n.label || n.data?.name,
-      metrics: n.data?.metrics || "",
-      kpis: n.data?.kpis || "",
-      description: n.data?.description || "",
+      name: n.label || n.data?.name || "Marketing Brief",
+      description: n.data?.description || n.data?.briefDescription || "",
+      targetPeriod: n.data?.formattedPeriod || n.data?.targetMonth || (n.data?.startDate ? `${n.data.startDate} to ${n.data.endDate}` : ""),
+      timeframeType: n.data?.timeframeType || "month",
+      targetMonth: n.data?.targetMonth || "",
+      startDate: n.data?.startDate || "",
+      endDate: n.data?.endDate || "",
+      businessUnitName: n.data?.businessUnitName || "",
+      metrics: n.data?.metrics || (Array.isArray(n.data?.metricsList) && n.data.metricsList.length > 0 ? n.data.metricsList.map(m => m.metrics).join(" | ") : ""),
+      metricsList: Array.isArray(n.data?.metricsList) ? n.data.metricsList : [],
     })),
     dataWarehouses: nodes.filter((n) => n.type === "data_warehouse").map((n) => ({
       id: n.id,
@@ -951,6 +1133,8 @@ export async function getUserAiContext({ userId }) {
       googleDriveFolderName: n.data?.googleDriveFolderName || "",
       dataLevel: n.data?.dataLevel || n.data?.dataLabels || "",
       dataLabels: n.data?.dataLabels || n.data?.dataLevel || "",
+      sheets: Array.isArray(n.data?.sheets) ? n.data.sheets : [],
+      totalSheets: Array.isArray(n.data?.sheets) ? n.data.sheets.length : (n.data?.sheetUrl ? 1 : 0),
     })),
     rawNodes: nodes.map((n) => ({
       id: n.id,
@@ -963,6 +1147,220 @@ export async function getUserAiContext({ userId }) {
       data: n.data,
     })),
     rawEdges: edges,
+  };
+}
+
+/**
+ * Intelligent AI Context Resolution Helper:
+ * Dynamically resolves:
+ * 1. Target Business Unit (from prompt or hierarchy)
+ * 2. Target Ad Channel (Meta Ads vs Google Ads based on intent and requested channel)
+ * 3. Target Product & landing page URL
+ * 4. Target Sheet from Data Warehouse (matched by sheet name, product name, or dataLabels)
+ */
+export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedChannel = null }) {
+  if (!aiCtx || !aiCtx.hasContext) {
+    return {
+      hasSelection: false,
+      businessUnit: null,
+      channel: null,
+      product: null,
+      brief: null,
+      warehouse: null,
+      selectedSheet: null,
+      availableBusinessUnits: [],
+      availableChannels: [],
+      availableProducts: [],
+      availableSheets: [],
+    };
+  }
+
+  const msgLower = (userMessage || "").toLowerCase();
+  const buList = aiCtx.businessUnitsHierarchy || [];
+
+  // 1. MATCH BUSINESS UNIT
+  let matchedBu = null;
+  if (buList.length === 1) {
+    matchedBu = buList[0];
+  } else if (buList.length > 1) {
+    // 1a. Try matching BU name in message
+    matchedBu = buList.find((bu) => {
+      const buName = (bu.name || "").toLowerCase().trim();
+      return buName && msgLower.includes(buName);
+    });
+
+    // 1b. If still not matched, check if any product inside a BU is mentioned in message
+    if (!matchedBu) {
+      matchedBu = buList.find((bu) =>
+        (bu.products || []).some((p) => {
+          const pName = (p.productName || p.name || "").toLowerCase().trim();
+          if (pName && msgLower.includes(pName)) return true;
+          const words = pName.split(/[\s_-]+/).filter((w) => w.length >= 3 && !["item", "product", "premium"].includes(w));
+          return words.some((w) => msgLower.includes(w));
+        })
+      );
+    }
+
+    // 1c. If still not matched, check if any sheet inside a BU's warehouse is mentioned
+    if (!matchedBu) {
+      matchedBu = buList.find((bu) =>
+        (bu.warehouses || []).some((w) =>
+          (w.sheets || []).some((s) => {
+            const sName = (s.sheetName || s.workbookName || s.name || "").toLowerCase().trim();
+            const sLabel = (s.dataLabels || "").toLowerCase().trim();
+            if ((sName && msgLower.includes(sName)) || (sLabel && msgLower.includes(sLabel))) return true;
+            const words = sName.split(/[\s_-]+/).filter((w) => w.length >= 3 && !["sheet", "sheets", "data", "table"].includes(w));
+            return words.some((w) => msgLower.includes(w));
+          })
+        )
+      );
+    }
+
+    // 1d. Fallback to first BU if not explicitly mentioned
+    if (!matchedBu) {
+      matchedBu = buList[0];
+    }
+  }
+
+  // Fallback to global arrays if matched BU has empty lists
+  const availableChannels = matchedBu?.channels?.length > 0 ? matchedBu.channels : (aiCtx.adChannels || []);
+  const availableProducts = matchedBu?.products?.length > 0 ? matchedBu.products : (aiCtx.products || []);
+  const availableBriefs = matchedBu?.briefs?.length > 0 ? matchedBu.briefs : (aiCtx.marketingBriefs || []);
+  const availableWarehouses = matchedBu?.warehouses?.length > 0 ? matchedBu.warehouses : (aiCtx.dataWarehouses || []);
+
+  // 2. MATCH AD CHANNEL (Meta Ads vs Google Ads)
+  let matchedChannel = null;
+  const wantsMeta =
+    (requestedChannel && requestedChannel.toLowerCase().includes("meta")) ||
+    msgLower.includes("meta") ||
+    msgLower.includes("facebook") ||
+    msgLower.includes("fb") ||
+    msgLower.includes("instagram") ||
+    msgLower.includes("insta") ||
+    msgLower.includes("reels");
+
+  const wantsGoogle =
+    (requestedChannel && requestedChannel.toLowerCase().includes("google")) ||
+    msgLower.includes("google") ||
+    msgLower.includes("adwords") ||
+    msgLower.includes("search") ||
+    msgLower.includes("pmax") ||
+    msgLower.includes("rsa") ||
+    msgLower.includes("youtube");
+
+  if (wantsGoogle && !wantsMeta) {
+    matchedChannel = availableChannels.find((c) => (c.channel || c.channelName || "").toLowerCase().includes("google"));
+  } else if (wantsMeta && !wantsGoogle) {
+    matchedChannel = availableChannels.find((c) => {
+      const ch = (c.channel || c.channelName || "").toLowerCase();
+      return ch.includes("meta") || ch.includes("facebook") || ch.includes("instagram");
+    });
+  }
+
+  // If still not matched, check if caller provided requestedChannel
+  if (!matchedChannel && requestedChannel) {
+    matchedChannel = availableChannels.find((c) =>
+      (c.channel || c.channelName || "").toLowerCase().includes(requestedChannel.toLowerCase())
+    );
+  }
+
+  // If still not matched:
+  if (!matchedChannel) {
+    if (availableChannels.length === 1) {
+      matchedChannel = availableChannels[0];
+    } else if (availableChannels.length > 1) {
+      // Default to Meta channel for social/creative workflows, or first channel
+      const metaChan = availableChannels.find((c) => {
+        const ch = (c.channel || c.channelName || "").toLowerCase();
+        return ch.includes("meta") || ch.includes("facebook") || ch.includes("instagram");
+      });
+      matchedChannel = metaChan || availableChannels[0];
+    }
+  }
+
+  // 3. MATCH PRODUCT
+  let matchedProduct = null;
+  if (availableProducts.length === 1) {
+    matchedProduct = availableProducts[0];
+  } else if (availableProducts.length > 1) {
+    // 3a. Exact match
+    matchedProduct = availableProducts.find((p) => {
+      const pName = (p.productName || p.name || "").toLowerCase().trim();
+      return pName && msgLower.includes(pName);
+    });
+
+    // 3b. Keyword match (e.g. "hoodie", "tshirt", "shoes")
+    if (!matchedProduct) {
+      matchedProduct = availableProducts.find((p) => {
+        const pName = (p.productName || p.name || "").toLowerCase().trim();
+        const words = pName.split(/[\s_-]+/).filter((w) => w.length >= 3 && !["item", "product", "premium"].includes(w));
+        return words.some((w) => msgLower.includes(w));
+      });
+    }
+
+    if (!matchedProduct) {
+      matchedProduct = availableProducts[0];
+    }
+  }
+
+  // 4. MATCH MARKETING BRIEF
+  const matchedBrief = availableBriefs.length > 0 ? availableBriefs[0] : null;
+
+  // 5. MATCH DATA WAREHOUSE & SPECIFIC SHEET
+  const matchedWarehouse = availableWarehouses.length > 0 ? availableWarehouses[0] : null;
+  const allSheets = matchedWarehouse?.sheets || [];
+  let matchedSheet = null;
+
+  if (allSheets.length === 1) {
+    matchedSheet = allSheets[0];
+  } else if (allSheets.length > 1) {
+    // 5a. Match by sheet name in message (exact or keyword)
+    matchedSheet = allSheets.find((s) => {
+      const sName = (s.sheetName || s.workbookName || s.name || "").toLowerCase().trim();
+      if (!sName) return false;
+      if (msgLower.includes(sName)) return true;
+      const words = sName.split(/[\s_-]+/).filter((w) => w.length >= 3 && !["sheet", "sheets", "data", "table"].includes(w));
+      return words.some((w) => msgLower.includes(w));
+    });
+
+    // 5b. Match by matched product name
+    if (!matchedSheet && matchedProduct) {
+      const pName = (matchedProduct.productName || matchedProduct.name || "").toLowerCase().trim();
+      const pWords = pName.split(/[\s_-]+/).filter((w) => w.length >= 3 && !["item", "product", "premium"].includes(w));
+      matchedSheet = allSheets.find((s) => {
+        const sName = (s.sheetName || s.workbookName || s.name || "").toLowerCase().trim();
+        const sLabel = (s.dataLabels || "").toLowerCase().trim();
+        return (pName && (sName.includes(pName) || sLabel.includes(pName))) ||
+          pWords.some((w) => sName.includes(w) || sLabel.includes(w));
+      });
+    }
+
+    // 5c. Match by dataLabels in message (e.g. "retargeting", "cold", "video")
+    if (!matchedSheet) {
+      matchedSheet = allSheets.find((s) => {
+        const sLabel = (s.dataLabels || "").toLowerCase().trim();
+        return sLabel && msgLower.includes(sLabel);
+      });
+    }
+
+    // 5d. Fallback to first sheet
+    if (!matchedSheet) {
+      matchedSheet = allSheets[0];
+    }
+  }
+
+  return {
+    hasSelection: Boolean(matchedBu || matchedChannel || matchedProduct || matchedWarehouse),
+    businessUnit: matchedBu,
+    channel: matchedChannel,
+    product: matchedProduct,
+    brief: matchedBrief,
+    warehouse: matchedWarehouse,
+    selectedSheet: matchedSheet,
+    availableBusinessUnits: buList,
+    availableChannels,
+    availableProducts,
+    availableSheets: allSheets,
   };
 }
 

@@ -77,14 +77,22 @@ export function computeWorkflowFlows(nodes = [], edges = [], defaultName = "Prim
       details: {
         name: currentNode.data?.name || currentNode.label,
         description: currentNode.data?.description || "",
+        businessUnitName:
+          currentNode.data?.businessUnitName ||
+          (parentNode?.type === "business_unit" ? (parentNode.label || parentNode.data?.name) : "") ||
+          "",
         channelName: currentNode.data?.channelName || currentNode.data?.channel || "",
         channel: currentNode.data?.channel || currentNode.data?.channelName || "",
         adAccountId: currentNode.data?.adAccountId || "",
         accountName: currentNode.data?.accountName || "",
         funnelEvent: currentNode.data?.funnelEvent || "",
         funnelDescription: currentNode.data?.funnelDescription || "",
+        timeframeType: currentNode.data?.timeframeType || "month",
+        targetMonth: currentNode.data?.targetMonth || "",
+        startDate: currentNode.data?.startDate || "",
+        endDate: currentNode.data?.endDate || "",
+        formattedPeriod: currentNode.data?.formattedPeriod || "",
         metrics: currentNode.data?.metrics || "",
-        kpis: currentNode.data?.kpis || "",
         productName: currentNode.data?.productName || "",
         productUrl: currentNode.data?.productUrl || "",
         productPrice: currentNode.data?.productPrice || 0,
@@ -129,21 +137,29 @@ export function computeWorkflowFlows(nodes = [], edges = [], defaultName = "Prim
         const businessDetails = businessNode?.details || businessNode?.data || {};
         const warehouseDetails = warehouseNode?.details || warehouseNode?.data || {};
 
+        const buName = channelDetails?.businessUnitName || businessDetails?.name || businessNode?.label || "";
         const campaignParams = {
           name:
             briefDetails?.name && briefDetails?.name !== "Marketing Brief"
               ? briefDetails.name
               : productDetails?.productName
               ? `${productDetails.productName} Growth Campaign`
-              : `${businessDetails?.name || "Marketing"} Campaign`,
+              : `${buName || "Marketing"} Campaign`,
+          businessUnit: buName || "Default Business Unit",
+          businessUnitName: buName || "Default Business Unit",
           channel: channelDetails?.channelName || channelDetails?.channel || "Meta Ads",
+          channelName: channelDetails?.channelName || channelDetails?.channel || "Meta Ads",
           accountId: channelDetails?.adAccountId || "",
           accountName: channelDetails?.accountName || "",
           funnelEvent: channelDetails?.funnelEvent || "Purchase",
           funnelDescription: channelDetails?.funnelDescription || "",
+          targetPeriod: briefDetails?.formattedPeriod || briefDetails?.targetMonth || "",
+          timeframeType: briefDetails?.timeframeType || "month",
+          targetMonth: briefDetails?.targetMonth || "",
+          startDate: briefDetails?.startDate || "",
+          endDate: briefDetails?.endDate || "",
           metrics: briefDetails?.metrics || "",
-          kpis: briefDetails?.kpis || "",
-          briefDescription: briefDetails?.description || "",
+          metricsList: Array.isArray(briefDetails?.metricsList) ? briefDetails.metricsList : [],
           productName: productDetails?.productName || (productDetails?.products?.[0]?.name) || "",
           productUrl: productDetails?.productUrl || (productDetails?.products?.[0]?.url) || "",
           productPrice: productDetails?.productPrice !== undefined ? productDetails.productPrice : (productDetails?.products?.[0]?.price || ""),
@@ -159,6 +175,8 @@ export function computeWorkflowFlows(nodes = [], edges = [], defaultName = "Prim
           workbookName: warehouseDetails?.workbookName || "",
           worksheetName: warehouseDetails?.worksheetName || "",
           excelSyncStatus: warehouseDetails?.excelSyncStatus || "NOT_CONNECTED",
+          sheets: Array.isArray(warehouseDetails?.sheets) ? warehouseDetails.sheets : [],
+          sheetsCount: Array.isArray(warehouseDetails?.sheets) ? warehouseDetails.sheets.length : (warehouseDetails?.sheetUrl ? 1 : 0),
           googleDriveConnected: Boolean(warehouseDetails?.googleDriveConnected),
           googleDriveEmail: warehouseDetails?.googleDriveEmail || "",
           googleDriveFolderId: warehouseDetails?.googleDriveFolderId || "",
@@ -224,6 +242,131 @@ export function sanitizeNode(n, parent = null, userName = "Customer User", defau
     platforms: Array.isArray(p?.platforms) ? p.platforms : ["Web"],
   }));
 
+  const rawMetricsList = Array.isArray(n.data?.metricsList) ? n.data.metricsList : [];
+  let cleanMetricsList = [];
+
+  const unpackConcatenatedMetrics = (text) => {
+    const res = [];
+    const regex = /\[([^\]]+)\]:\s*([^|]+)/g;
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      const period = match[1].trim();
+      const val = match[2].trim();
+      let sDate = "";
+      let eDate = "";
+      if (period.includes(" to ")) {
+        const parts = period.split(" to ");
+        sDate = parts[0]?.trim() || "";
+        eDate = parts[1]?.trim() || "";
+      } else {
+        sDate = period;
+      }
+      res.push({
+        id: `metric_${res.length}_${Date.now()}`,
+        startDate: sDate,
+        endDate: eDate,
+        formattedPeriod: period,
+        metrics: val,
+      });
+    }
+    return res;
+  };
+
+  if (rawMetricsList.length > 0) {
+    rawMetricsList.forEach((m, idx) => {
+      const text = String(m?.metrics || "").trim();
+      if (text.includes(" | [") || (text.startsWith("[") && text.includes("]:"))) {
+        const unpacked = unpackConcatenatedMetrics(text);
+        if (unpacked.length > 0) {
+          cleanMetricsList.push(...unpacked);
+          return;
+        }
+      }
+      if (text || m?.startDate || m?.endDate) {
+        cleanMetricsList.push({
+          id: String(m?.id || `metric_${idx}_${Date.now()}`),
+          startDate: String(m?.startDate || ""),
+          endDate: String(m?.endDate || ""),
+          formattedPeriod: String(
+            m?.formattedPeriod ||
+            (m?.startDate && m?.endDate ? `${m.startDate} to ${m.endDate}` : m?.startDate || m?.endDate || "")
+          ),
+          metrics: text,
+        });
+      }
+    });
+  }
+
+  // If still empty but n.data?.metrics exists
+  if (cleanMetricsList.length === 0 && n.data?.metrics) {
+    const rawMetrics = String(n.data.metrics).trim();
+    if (rawMetrics.includes(" | [") || (rawMetrics.startsWith("[") && rawMetrics.includes("]:"))) {
+      cleanMetricsList = unpackConcatenatedMetrics(rawMetrics);
+    } else if (rawMetrics) {
+      const start = String(n.data.startDate || "");
+      const end = String(n.data.endDate || "");
+      const period = String(
+        n.data.formattedPeriod ||
+        (start && end ? `${start} to ${end}` : start || end || "")
+      );
+      cleanMetricsList = [
+        {
+          id: `metric_0_${Date.now()}`,
+          startDate: start,
+          endDate: end,
+          formattedPeriod: period,
+          metrics: rawMetrics,
+        },
+      ];
+    }
+  }
+
+  const hasExplicitSheets = Array.isArray(n.data?.sheets);
+  const rawSheets = hasExplicitSheets ? n.data.sheets : [];
+  let cleanSheets = rawSheets.slice(0, 10).map((s, idx) => ({
+    id: String(s.id || `sheet_${idx}_${Date.now()}`),
+    sheetUrl: String(s.sheetUrl || "").trim(),
+    excelProvider: String(s.excelProvider || "Google Sheets"),
+    workbookId: String(s.workbookId || ""),
+    workbookName: String(s.workbookName || ""),
+    worksheetId: String(s.worksheetId || ""),
+    worksheetName: String(s.worksheetName || "Sheet1"),
+    excelSyncStatus: String(s.excelSyncStatus || (s.sheetUrl ? "SYNCED" : "NOT_CONNECTED")),
+    lastSyncedAt: s.lastSyncedAt || null,
+    totalRows: Number(s.totalRows) || 0,
+    totalDataRows: Number(s.totalDataRows) || Number(s.totalRows) || 0,
+    totalSheetRows: Number(s.totalSheetRows) || 0,
+    sheetColumns: Array.isArray(s.sheetColumns) ? s.sheetColumns : [],
+    sheetRows: Array.isArray(s.sheetRows) ? s.sheetRows : [],
+    sheetMetadata: typeof s.sheetMetadata === "object" && s.sheetMetadata !== null ? s.sheetMetadata : {},
+    dataLabels: String(s.dataLabels || s.dataLevel || ""),
+    dataLevel: String(s.dataLevel || s.dataLabels || ""),
+  }));
+
+  if (!hasExplicitSheets && cleanSheets.length === 0 && n.data?.sheetUrl) {
+    cleanSheets = [
+      {
+        id: `sheet_0_${Date.now()}`,
+        sheetUrl: String(n.data.sheetUrl).trim(),
+        excelProvider: String(n.data.excelProvider || "Google Sheets"),
+        workbookId: String(n.data.workbookId || ""),
+        workbookName: String(n.data.workbookName || ""),
+        worksheetId: String(n.data.worksheetId || ""),
+        worksheetName: String(n.data.worksheetName || "Sheet1"),
+        excelSyncStatus: String(n.data.excelSyncStatus || "NOT_CONNECTED"),
+        lastSyncedAt: n.data.lastSyncedAt || null,
+        totalRows: Number(n.data.totalRows) || 0,
+        totalDataRows: Number(n.data.totalDataRows) || Number(n.data.totalRows) || 0,
+        totalSheetRows: Number(n.data.totalSheetRows) || 0,
+        sheetColumns: Array.isArray(n.data.sheetColumns) ? n.data.sheetColumns : [],
+        sheetRows: Array.isArray(n.data.sheetRows) ? n.data.sheetRows : [],
+        sheetMetadata: typeof n.data.sheetMetadata === "object" && n.data.sheetMetadata !== null ? n.data.sheetMetadata : {},
+        dataLabels: String(n.data.dataLabels || n.data.dataLevel || ""),
+        dataLevel: String(n.data.dataLevel || n.data.dataLabels || ""),
+      },
+    ];
+  }
+
   const posX = typeof n.position?.x === "number" && !isNaN(n.position.x) ? n.position.x : 100;
   const posY = typeof n.position?.y === "number" && !isNaN(n.position.y) ? n.position.y : 200;
 
@@ -246,30 +389,51 @@ export function sanitizeNode(n, parent = null, userName = "Customer User", defau
       name: String(n.data?.name || nodeLabel),
       description: String(n.data?.description || ""),
       contextTag: String(contextTag),
+      businessUnitName: String(
+        n.data?.businessUnitName ||
+        (parent?.type === "business_unit" ? (parent.label || parent.data?.name) : "") ||
+        (parent?.data?.businessUnitName ? parent.data.businessUnitName : "") ||
+        (n.previousNodeType === "business_unit" ? n.previousNodeLabel : "") ||
+        ""
+      ),
       channelName: String(n.data?.channelName || n.data?.channel || ""),
       channel: String(n.data?.channel || n.data?.channelName || ""),
       adAccountId: String(n.data?.adAccountId || ""),
       accountName: String(n.data?.accountName || ""),
       funnelEvent: String(n.data?.funnelEvent || ""),
       funnelDescription: String(n.data?.funnelDescription || ""),
+      timeframeType: String(n.data?.timeframeType || "month"),
+      targetMonth: String(n.data?.targetMonth || ""),
+      startDate: String(n.data?.startDate || ""),
+      endDate: String(n.data?.endDate || ""),
+      formattedPeriod: String(n.data?.formattedPeriod || ""),
       metrics: String(n.data?.metrics || ""),
-      kpis: String(n.data?.kpis || ""),
+      metricsList: cleanMetricsList,
       productName: String(n.data?.productName || ""),
       productUrl: String(n.data?.productUrl || ""),
       productPrice: n.data?.productPrice !== undefined ? n.data.productPrice : "",
       productPlatforms: Array.isArray(n.data?.productPlatforms) ? n.data.productPlatforms : ["Web"],
       products: cleanProducts,
       catalogCount: Number(n.data?.catalogCount) || cleanProducts.length,
+      sheets: cleanSheets,
       warehouseSource: String(n.data?.warehouseSource || "both"),
-      sheetUrl: String(n.data?.sheetUrl || ""),
-      excelProvider: String(n.data?.excelProvider || "Google Sheets"),
-      workbookId: String(n.data?.workbookId || ""),
-      workbookName: String(n.data?.workbookName || ""),
-      worksheetId: String(n.data?.worksheetId || ""),
-      worksheetName: String(n.data?.worksheetName || ""),
-      excelSyncStatus: String(n.data?.excelSyncStatus || "NOT_CONNECTED"),
-      lastSyncedAt: n.data?.lastSyncedAt || null,
-      totalRows: Number(n.data?.totalRows) || 0,
+      sheetUrl: hasExplicitSheets
+        ? String(cleanSheets.find((s) => s.sheetUrl)?.sheetUrl || "").trim()
+        : String(cleanSheets[0]?.sheetUrl || n.data?.sheetUrl || "").trim(),
+      excelProvider: hasExplicitSheets
+        ? String(cleanSheets.find((s) => s.sheetUrl)?.excelProvider || (cleanSheets[0]?.excelProvider || "Google Sheets"))
+        : String(cleanSheets[0]?.excelProvider || n.data?.excelProvider || "Google Sheets"),
+      workbookId: String(cleanSheets.find((s) => s.sheetUrl)?.workbookId || cleanSheets[0]?.workbookId || ""),
+      workbookName: hasExplicitSheets
+        ? String(cleanSheets.find((s) => s.sheetUrl)?.workbookName || "")
+        : String(cleanSheets[0]?.workbookName || n.data?.workbookName || ""),
+      worksheetId: String(cleanSheets.find((s) => s.sheetUrl)?.worksheetId || cleanSheets[0]?.worksheetId || ""),
+      worksheetName: String(cleanSheets.find((s) => s.sheetUrl)?.worksheetName || cleanSheets[0]?.worksheetName || "Sheet1"),
+      excelSyncStatus: hasExplicitSheets
+        ? String(cleanSheets.find((s) => s.sheetUrl)?.excelSyncStatus || (cleanSheets.length > 0 ? cleanSheets[0].excelSyncStatus : "NOT_CONNECTED"))
+        : String(cleanSheets[0]?.excelSyncStatus || n.data?.excelSyncStatus || "NOT_CONNECTED"),
+      lastSyncedAt: cleanSheets.find((s) => s.sheetUrl)?.lastSyncedAt || cleanSheets[0]?.lastSyncedAt || null,
+      totalRows: cleanSheets.reduce((sum, s) => sum + (Number(s.totalRows) || 0), 0) || (hasExplicitSheets ? 0 : (Number(n.data?.totalRows) || 0)),
       sheetColumns: Array.isArray(n.data?.sheetColumns) ? n.data.sheetColumns : [],
       sheetRows: Array.isArray(n.data?.sheetRows) ? n.data.sheetRows : [],
       sheetMetadata: typeof n.data?.sheetMetadata === "object" && n.data?.sheetMetadata !== null ? n.data.sheetMetadata : {},
@@ -294,6 +458,10 @@ export class AiContextController {
       const userName = user?.name || "Customer User";
 
       let context = await AiContext.findOne({ userId }).lean();
+      if (context && context.nodes?.length > 0) {
+        globalThis.__aiContextCache = globalThis.__aiContextCache || new Map();
+        globalThis.__aiContextCache.set(String(userId), context);
+      }
 
       if (!context || !context.nodes || context.nodes.length === 0) {
         // Initialize default root node with user's registered name
@@ -384,6 +552,11 @@ export class AiContextController {
         },
         { returnDocument: "after", upsert: true, setDefaultsOnInsert: true }
       ).lean();
+
+      if (updated && updated.nodes?.length > 0) {
+        globalThis.__aiContextCache = globalThis.__aiContextCache || new Map();
+        globalThis.__aiContextCache.set(String(userId), updated);
+      }
 
       return res.status(200).json({
         success: true,

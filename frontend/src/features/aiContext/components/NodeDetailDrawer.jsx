@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
 import {
   X,
@@ -19,6 +19,7 @@ import {
   ExternalLink,
   Search,
   Plus,
+  Calendar,
   ListPlus,
   ShoppingBag,
   Tag,
@@ -62,6 +63,7 @@ export const NodeDetailDrawer = ({
   onClose,
 }) => {
   // Common & Lineage fields
+  const prevNodeIdRef = useRef(null);
   const [contextTag, setContextTag] = useState("");
   const [savedBadge, setSavedBadge] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -80,9 +82,67 @@ export const NodeDetailDrawer = ({
   const [loadingChannels, setLoadingChannels] = useState(false);
 
   // Marketing Brief Fields
-  const [briefMetrics, setBriefMetrics] = useState("");
-  const [briefKpis, setBriefKpis] = useState("");
+  const [briefName, setBriefName] = useState("");
   const [briefDescription, setBriefDescription] = useState("");
+  const [briefStartDate, setBriefStartDate] = useState("");
+  const [briefEndDate, setBriefEndDate] = useState("");
+  const [briefMetrics, setBriefMetrics] = useState("");
+  const [metricsList, setMetricsList] = useState([]);
+
+  const unpackConcatenatedMetrics = (text) => {
+    if (!text || typeof text !== "string") return [];
+    const res = [];
+    const regex = /\[([^\]]+)\]:\s*([^|]+)/g;
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      const period = match[1].trim();
+      const val = match[2].trim();
+      let sDate = "";
+      let eDate = "";
+      if (period.includes(" to ")) {
+        const parts = period.split(" to ");
+        sDate = parts[0]?.trim() || "";
+        eDate = parts[1]?.trim() || "";
+      } else {
+        sDate = period;
+      }
+      res.push({
+        id: `m_${Date.now()}_${res.length}`,
+        startDate: sDate,
+        endDate: eDate,
+        formattedPeriod: period,
+        metrics: val,
+      });
+    }
+    return res;
+  };
+
+  const getBriefFormattedPeriod = () => {
+    if (briefStartDate && briefEndDate) {
+      return `${briefStartDate} to ${briefEndDate}`;
+    }
+    return briefStartDate || briefEndDate || "";
+  };
+
+  const handleAddMetricsRange = () => {
+    if (!briefMetrics.trim() && !briefStartDate && !briefEndDate) return;
+    const period = getBriefFormattedPeriod();
+    const newEntry = {
+      id: `m_${Date.now()}_${metricsList.length}`,
+      startDate: briefStartDate,
+      endDate: briefEndDate,
+      formattedPeriod: period,
+      metrics: briefMetrics.trim(),
+    };
+    setMetricsList((prev) => [...prev, newEntry]);
+    setBriefMetrics("");
+    setBriefStartDate("");
+    setBriefEndDate("");
+  };
+
+  const handleRemoveMetricsRange = (id) => {
+    setMetricsList((prev) => prev.filter((item) => item.id !== id));
+  };
 
   // Product Fields & 100+ Catalog state
   const [productName, setProductName] = useState("");
@@ -112,6 +172,223 @@ export const NodeDetailDrawer = ({
   const [dataLabels, setDataLabels] = useState("");
   const [warehousePlatform, setWarehousePlatform] = useState("Excel Sheet & Google Drive");
   
+  // Multi-Sheet Warehouse States (up to 10 sheets)
+  const [sheetsList, setSheetsList] = useState([]);
+
+  const handleAddSheet = () => {
+    if (sheetsList.length >= 10) return;
+    const newSheet = {
+      id: `sheet_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+      sheetUrl: "",
+      excelProvider: "Google Sheets",
+      workbookName: "",
+      worksheetName: "Sheet1",
+      excelSyncStatus: "NOT_CONNECTED",
+      dataLabels: "",
+      totalRows: 0,
+      totalDataRows: 0,
+      totalSheetRows: 0,
+      sheetColumns: [],
+      lastSyncedAt: null,
+      connectMsg: "",
+      connectError: "",
+      isConnecting: false,
+    };
+    setSheetsList((prev) => [...prev, newSheet]);
+  };
+
+  const handleRemoveSheet = async (sheetId) => {
+    // 1. Delete ONLY the exact sheet that the user requested to remove
+    const remainingSheets = sheetsList.filter(
+      (s, idx) => String(s.id) !== String(sheetId) && idx !== sheetId && String(idx) !== String(sheetId)
+    );
+
+    const finalSheets = remainingSheets.length === 0
+      ? [
+          {
+            id: `sheet_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+            sheetUrl: "",
+            excelProvider: "Google Sheets",
+            workbookName: "",
+            worksheetName: "Sheet1",
+            excelSyncStatus: "NOT_CONNECTED",
+            dataLabels: "",
+            totalRows: 0,
+            totalDataRows: 0,
+            totalSheetRows: 0,
+            sheetColumns: [],
+            lastSyncedAt: null,
+            connectMsg: "",
+            connectError: "",
+            isConnecting: false,
+          },
+        ]
+      : remainingSheets;
+
+    // Immediately update drawer state so the user sees only the target sheet deleted
+    setSheetsList(finalSheets);
+
+    // 2. Prepare ALL remaining sheets to persist into Redux & MongoDB (preserve all other cards)
+    const sheetsToPersist = finalSheets.map((s, idx) => ({
+      id: String(s.id || `sheet_${idx}_${Date.now()}`),
+      sheetUrl: (s.sheetUrl || "").trim(),
+      excelProvider: s.excelProvider || "Google Sheets",
+      workbookName: (s.workbookName || "").trim(),
+      worksheetName: (s.worksheetName || "Sheet1").trim(),
+      excelSyncStatus: s.excelSyncStatus || (s.sheetUrl ? "SYNCED" : "NOT_CONNECTED"),
+      totalRows: Number(s.totalRows || 0),
+      totalDataRows: Number(s.totalDataRows || s.totalRows || 0),
+      totalSheetRows: Number(s.totalSheetRows || (s.totalRows ? s.totalRows + 1 : 0)),
+      sheetColumns: Array.isArray(s.sheetColumns) ? s.sheetColumns : [],
+      dataLabels: (s.dataLabels || "").trim(),
+      dataLevel: (s.dataLabels || "").trim(),
+      lastSyncedAt: s.lastSyncedAt || null,
+    }));
+
+    const connectedSheets = sheetsToPersist.filter((s) => Boolean(s.sheetUrl));
+    const primaryConnected = connectedSheets[0] || null;
+    const totalConnected = connectedSheets.length;
+
+    let nodeLabel = "Excel & Drive Warehouse";
+    if (totalConnected > 1) {
+      nodeLabel = `Warehouse (${totalConnected} Sheets)`;
+    } else if (totalConnected === 1 && primaryConnected) {
+      nodeLabel = primaryConnected.workbookName || (primaryConnected.sheetUrl ? "Connected Google Sheet" : "Excel & Drive Warehouse");
+      if (primaryConnected.excelProvider) {
+        nodeLabel = `${nodeLabel} (${primaryConnected.excelProvider})`;
+      }
+    }
+
+    let nodeSubtitle = "Drive: Linked";
+    if (totalConnected > 1) {
+      nodeSubtitle = `📊 ${totalConnected} Sheets Connected`;
+    } else if (totalConnected === 1 && primaryConnected) {
+      nodeSubtitle = primaryConnected.sheetUrl ? `🔗 ${primaryConnected.sheetUrl.slice(0, 38)}...` : `Drive: ${googleDriveEmail ? "Connected" : "Linked"}`;
+    }
+
+    const dataPayload = {
+      ...(node?.data || {}),
+      warehouseSource: "both",
+      sheetUrl: primaryConnected ? primaryConnected.sheetUrl : "",
+      excelProvider: primaryConnected ? primaryConnected.excelProvider : "Google Sheets",
+      workbookName: primaryConnected ? primaryConnected.workbookName : "",
+      worksheetName: primaryConnected ? primaryConnected.worksheetName : "Sheet1",
+      excelSyncStatus: primaryConnected ? primaryConnected.excelSyncStatus : "NOT_CONNECTED",
+      totalRows: primaryConnected ? Number(primaryConnected.totalRows || 0) : 0,
+      totalDataRows: primaryConnected ? Number(primaryConnected.totalDataRows || 0) : 0,
+      dataLevel: primaryConnected ? primaryConnected.dataLabels : "",
+      dataLabels: primaryConnected ? primaryConnected.dataLabels : "",
+      databasePlatform: "Excel Sheet & Google Drive",
+      sheets: sheetsToPersist,
+    };
+
+    try {
+      if (typeof onSave === "function") {
+        await onSave(node.id, {
+          label: nodeLabel,
+          subtitle: nodeSubtitle,
+          contextTag: contextTag?.trim() || node.contextTag || "Primary Marketing Context",
+          data: dataPayload,
+        });
+      }
+    } catch (err) {
+      console.warn("[NodeDetailDrawer] Error auto-saving deleted sheet to DB:", err);
+    }
+  };
+
+  const handleUpdateSheetField = (sheetId, fields) => {
+    setSheetsList((prev) =>
+      prev.map((s) => (s.id === sheetId ? { ...s, ...fields } : s))
+    );
+  };
+
+  const handleSheetUrlChangeForIndex = (sheetId, url) => {
+    let provider = "Google Sheets";
+    let wb = "";
+    let ws = "Sheet1";
+
+    const gMatch = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (gMatch) {
+      provider = "Google Sheets";
+      wb = `Google_Sheet_${gMatch[1].slice(0, 8)}`;
+      const gidMatch = url.match(/gid=(\d+)/);
+      if (gidMatch) ws = `Tab_gid_${gidMatch[1]}`;
+    } else if (url.includes("sharepoint.com") || url.includes("1drv.ms") || url.includes("onedrive.live.com")) {
+      provider = "OneDrive";
+      wb = "OneDrive_Campaign_Workbook.xlsx";
+    } else if (url.includes("office.com") || url.includes("excel.live.com")) {
+      provider = "Microsoft 365";
+      wb = "M365_Campaign_Workbook.xlsx";
+    }
+
+    setSheetsList((prev) =>
+      prev.map((s) => {
+        if (s.id !== sheetId) return s;
+        return {
+          ...s,
+          sheetUrl: url,
+          excelProvider: provider,
+          workbookName: s.workbookName || wb,
+          worksheetName: s.worksheetName || ws,
+          excelSyncStatus: !url.trim() ? "NOT_CONNECTED" : s.excelSyncStatus,
+          connectError: "",
+          connectMsg: "",
+        };
+      })
+    );
+  };
+
+  const handleConnectSheetAtIndex = async (sheetItem) => {
+    if (!sheetItem.sheetUrl?.trim()) {
+      handleUpdateSheetField(sheetItem.id, {
+        connectError: "Please paste a Google Sheet or Excel URL first.",
+      });
+      return;
+    }
+
+    handleUpdateSheetField(sheetItem.id, {
+      isConnecting: true,
+      connectError: "",
+      connectMsg: "",
+    });
+
+    try {
+      const res = await aiContextApi.connectSheet({
+        sheetUrl: sheetItem.sheetUrl.trim(),
+        nodeId: node?.id,
+      });
+
+      if (res.data?.success) {
+        const d = res.data.data || {};
+        handleUpdateSheetField(sheetItem.id, {
+          isConnecting: false,
+          excelSyncStatus: "SYNCED",
+          connectMsg: res.data.message || `Connected! Found ${d.totalDataRows || d.totalRows || 0} data rows.`,
+          workbookName: d.spreadsheetName || sheetItem.workbookName || `Google_Sheet_${(d.sheetId || "").slice(0, 8)}`,
+          worksheetName: d.worksheetName || sheetItem.worksheetName || "Sheet1",
+          totalRows: d.totalRows || 0,
+          totalDataRows: d.totalDataRows || d.totalRows || 0,
+          totalSheetRows: d.totalSheetRows || ((d.totalDataRows || d.totalRows || 0) + 1),
+          sheetColumns: d.columns || [],
+          lastSyncedAt: d.lastSyncedAt || new Date().toISOString(),
+        });
+      } else {
+        handleUpdateSheetField(sheetItem.id, {
+          isConnecting: false,
+          excelSyncStatus: "FAILED",
+          connectError: res.data?.message || "Failed to connect to sheet.",
+        });
+      }
+    } catch (err) {
+      const msg = err.response?.data?.message || err.message || "Failed to connect to sheet.";
+      handleUpdateSheetField(sheetItem.id, {
+        isConnecting: false,
+        excelSyncStatus: "FAILED",
+        connectError: msg,
+      });
+    }
+  };
+
   // Sheet Live Connect States
   const [isConnectingSheet, setIsConnectingSheet] = useState(false);
   const [isSyncingSheet, setIsSyncingSheet] = useState(false);
@@ -565,6 +842,11 @@ export const NodeDetailDrawer = ({
   // Synchronize state from node props
   useEffect(() => {
     if (!node) return;
+    if (prevNodeIdRef.current === node.id) {
+      // Do not wipe out local drawer state while editing the same node
+      return;
+    }
+    prevNodeIdRef.current = node.id;
     setContextTag(node.contextTag || node.data?.contextTag || "Primary Marketing Context");
     setSavedBadge(false);
 
@@ -580,9 +862,54 @@ export const NodeDetailDrawer = ({
     setFunnelDescription(node.data?.funnelDescription || "");
 
     // Marketing Brief
-    setBriefMetrics(node.data?.metrics || "");
-    setBriefKpis(node.data?.kpis || "");
-    setBriefDescription(node.data?.description || "");
+    setBriefName(node.data?.name || node.label || "Marketing Brief");
+    setBriefDescription(node.data?.description || node.data?.briefDescription || "");
+    let resolvedList = [];
+    const rawList = Array.isArray(node.data?.metricsList) ? node.data.metricsList : [];
+    if (rawList.length > 0) {
+      rawList.forEach((item, idx) => {
+        const text = String(item.metrics || "").trim();
+        if (text.includes(" | [") || (text.startsWith("[") && text.includes("]:"))) {
+          const unpacked = unpackConcatenatedMetrics(text);
+          if (unpacked.length > 0) {
+            resolvedList.push(...unpacked);
+            return;
+          }
+        }
+        resolvedList.push({
+          id: String(item.id || `m_${idx}_${Date.now()}`),
+          startDate: String(item.startDate || ""),
+          endDate: String(item.endDate || ""),
+          formattedPeriod: String(
+            item.formattedPeriod ||
+            (item.startDate && item.endDate ? `${item.startDate} to ${item.endDate}` : item.startDate || item.endDate || "")
+          ),
+          metrics: text,
+        });
+      });
+    }
+
+    if (resolvedList.length === 0 && (node.data?.metrics || node.data?.startDate || node.data?.endDate)) {
+      const rawText = String(node.data?.metrics || "").trim();
+      if (rawText.includes(" | [") || (rawText.startsWith("[") && rawText.includes("]:"))) {
+        resolvedList = unpackConcatenatedMetrics(rawText);
+      } else if (rawText || node.data?.startDate || node.data?.endDate) {
+        resolvedList = [
+          {
+            id: `m_${Date.now()}`,
+            startDate: node.data?.startDate || "",
+            endDate: node.data?.endDate || "",
+            formattedPeriod: node.data?.formattedPeriod || (node.data?.startDate && node.data?.endDate ? `${node.data.startDate} to ${node.data.endDate}` : node.data?.startDate || node.data?.endDate || ""),
+            metrics: rawText,
+          },
+        ];
+      }
+    }
+
+    setMetricsList(resolvedList);
+    setBriefMetrics("");
+    setBriefStartDate("");
+    setBriefEndDate("");
 
     // Product
     setProductName(node.data?.productName || node.data?.name || "");
@@ -595,6 +922,93 @@ export const NodeDetailDrawer = ({
     setShowBulkPaste(false);
 
     // Data Warehouse (Excel Sheet = WHAT, Google Drive = MEDIA)
+    const hasExplicitSheets = Array.isArray(node.data?.sheets);
+    const rawSheets = hasExplicitSheets ? node.data.sheets.slice(0, 10) : [];
+
+    if (hasExplicitSheets) {
+      if (rawSheets.length > 0) {
+        setSheetsList(
+          rawSheets.map((s, idx) => ({
+            id: s.id || `sheet_${idx}_${Date.now()}`,
+            sheetUrl: s.sheetUrl || "",
+            excelProvider: s.excelProvider || "Google Sheets",
+            workbookName: s.workbookName || "",
+            worksheetName: s.worksheetName || "Sheet1",
+            excelSyncStatus: s.excelSyncStatus || (s.sheetUrl ? "SYNCED" : "NOT_CONNECTED"),
+            dataLabels: s.dataLabels || s.dataLevel || "",
+            totalRows: s.totalRows || 0,
+            totalDataRows: s.totalDataRows || s.totalRows || 0,
+            totalSheetRows: s.totalSheetRows || (s.totalRows ? s.totalRows + 1 : 0),
+            sheetColumns: s.sheetColumns || [],
+            lastSyncedAt: s.lastSyncedAt || null,
+            connectMsg: "",
+            connectError: "",
+            isConnecting: false,
+          }))
+        );
+      } else {
+        setSheetsList([
+          {
+            id: `sheet_${Date.now()}`,
+            sheetUrl: "",
+            excelProvider: "Google Sheets",
+            workbookName: "",
+            worksheetName: "Sheet1",
+            excelSyncStatus: "NOT_CONNECTED",
+            dataLabels: "",
+            totalRows: 0,
+            totalDataRows: 0,
+            totalSheetRows: 0,
+            sheetColumns: [],
+            lastSyncedAt: null,
+            connectMsg: "",
+            connectError: "",
+            isConnecting: false,
+          },
+        ]);
+      }
+    } else if (node.data?.sheetUrl) {
+      setSheetsList([
+        {
+          id: `sheet_legacy_${Date.now()}`,
+          sheetUrl: node.data.sheetUrl,
+          excelProvider: node.data?.excelProvider || "Google Sheets",
+          workbookName: node.data?.workbookName || "",
+          worksheetName: node.data?.worksheetName || "Sheet1",
+          excelSyncStatus: node.data?.excelSyncStatus || "SYNCED",
+          dataLabels: node.data?.dataLabels || node.data?.dataLevel || "",
+          totalRows: node.data?.totalRows || 0,
+          totalDataRows: node.data?.totalDataRows || node.data?.totalRows || 0,
+          totalSheetRows: node.data?.totalSheetRows || (node.data?.totalRows ? node.data.totalRows + 1 : 0),
+          sheetColumns: node.data?.sheetColumns || [],
+          lastSyncedAt: node.data?.lastSyncedAt || null,
+          connectMsg: "",
+          connectError: "",
+          isConnecting: false,
+        },
+      ]);
+    } else {
+      setSheetsList([
+        {
+          id: `sheet_${Date.now()}`,
+          sheetUrl: "",
+          excelProvider: "Google Sheets",
+          workbookName: "",
+          worksheetName: "Sheet1",
+          excelSyncStatus: "NOT_CONNECTED",
+          dataLabels: "",
+          totalRows: 0,
+          totalDataRows: 0,
+          totalSheetRows: 0,
+          sheetColumns: [],
+          lastSyncedAt: null,
+          connectMsg: "",
+          connectError: "",
+          isConnecting: false,
+        },
+      ]);
+    }
+
     setSheetUrl(node.data?.sheetUrl || "");
     setExcelProvider(node.data?.excelProvider || "Google Sheets");
     setWorkbookName(node.data?.workbookName || node.data?.workbookId || "");
@@ -807,31 +1221,114 @@ export const NodeDetailDrawer = ({
         description: buDescription.trim(),
       };
     } else if (node.type === "ad_channel") {
-      const matchedAccount = matchingAccounts.find(a => String(a.accountId).trim() === String(adAccountId).trim());
-      const accName = matchedAccount?.accountName || matchedAccount?.name;
-      nodeLabel = channelName.trim() || "Ad Channel";
-      nodeSubtitle = adAccountId
-        ? (accName ? `${accName}` : `Account: ${adAccountId}`)
-        : `Funnel: ${funnelEvent}`;
+      const matchedAccount = matchingAccounts.find(a => String(a.accountId).trim() === String(adAccountId).trim())
+        || connectedAccounts.find(a => String(a.accountId).trim() === String(adAccountId).trim());
+      const accName = matchedAccount?.accountName || matchedAccount?.name || "";
+      
+      let parentBuName = node.data?.businessUnitName || "";
+      if (!parentBuName && (node.previousNodeType === "business_unit" || !node.previousNodeType)) {
+        parentBuName = node.previousNodeLabel || "";
+      }
+
+      nodeLabel = accName
+        ? `${channelName.trim() || "Ad Channel"}: ${accName}`
+        : (channelName.trim() || "Ad Channel");
+
+      nodeSubtitle = `🎯 ${funnelEvent.trim() || "Purchase"}${adAccountId ? ` • ${adAccountId}` : ""}`;
+
       dataPayload = {
         ...dataPayload,
-        name: channelName.trim(),
+        name: nodeLabel,
+        businessUnitName: parentBuName,
         channelName: channelName.trim(),
         channel: channelName.trim(),
         adAccountId: adAccountId.trim(),
         accountName: accName || "",
-        funnelEvent: funnelEvent.trim(),
+        funnelEvent: funnelEvent.trim() || "Purchase",
         funnelDescription: funnelDescription.trim(),
       };
     } else if (node.type === "marketing_brief") {
-      nodeLabel = "Marketing Brief";
-      nodeSubtitle = briefKpis ? `KPIs: ${briefKpis.slice(0, 35)}` : (briefMetrics ? `Metrics: ${briefMetrics.slice(0, 35)}` : "Campaign Strategy");
+      let updatedMetricsList = [...metricsList];
+      // If user typed into the inputs but didn't click "Add", include it automatically
+      if (briefMetrics.trim() || briefStartDate || briefEndDate) {
+        const period = getBriefFormattedPeriod();
+        const exists = updatedMetricsList.some(
+          (m) => m.startDate === briefStartDate && m.endDate === briefEndDate && m.metrics === briefMetrics.trim()
+        );
+        if (!exists) {
+          updatedMetricsList.push({
+            id: `m_${Date.now()}_${updatedMetricsList.length}`,
+            startDate: briefStartDate,
+            endDate: briefEndDate,
+            formattedPeriod: period,
+            metrics: briefMetrics.trim(),
+          });
+        }
+      }
+
+      let finalMetricsList = [];
+      updatedMetricsList.forEach((item, idx) => {
+        const text = String(item.metrics || "").trim();
+        if (text.includes(" | [") || (text.startsWith("[") && text.includes("]:"))) {
+          const unpacked = unpackConcatenatedMetrics(text);
+          if (unpacked.length > 0) {
+            finalMetricsList.push(...unpacked);
+            return;
+          }
+        }
+        finalMetricsList.push({
+          ...item,
+          id: item.id || `m_${idx}_${Date.now()}`,
+          formattedPeriod: item.formattedPeriod || (item.startDate && item.endDate ? `${item.startDate} to ${item.endDate}` : item.startDate || item.endDate || ""),
+        });
+      });
+
+      setMetricsList(finalMetricsList);
+      setBriefMetrics("");
+      setBriefStartDate("");
+      setBriefEndDate("");
+
+      nodeLabel = briefName.trim() || "Marketing Brief";
+      const count = finalMetricsList.length;
+      let primarySubtitle = "";
+      if (briefDescription.trim()) {
+        primarySubtitle = briefDescription.trim().slice(0, 45);
+      } else if (count > 1) {
+        primarySubtitle = `📅 ${count} Date Ranges Configured`;
+      } else if (count === 1) {
+        const first = finalMetricsList[0];
+        primarySubtitle = first.formattedPeriod
+          ? `📅 ${first.formattedPeriod}${first.metrics ? ` • ${first.metrics.slice(0, 25)}` : ""}`
+          : (first.metrics ? `Metrics: ${first.metrics.slice(0, 35)}` : (briefName.trim() || "Marketing Brief"));
+      } else {
+        const formattedPeriod = getBriefFormattedPeriod();
+        primarySubtitle = formattedPeriod
+          ? `📅 ${formattedPeriod}${briefMetrics ? ` • ${briefMetrics.slice(0, 25)}` : ""}`
+          : (briefMetrics ? `Metrics: ${briefMetrics.slice(0, 35)}` : "Target audience, hooks & campaign objectives");
+      }
+      nodeSubtitle = primarySubtitle;
+
+      const firstItem = finalMetricsList[0] || {};
+      const consolidatedMetrics = finalMetricsList.length > 0
+        ? finalMetricsList.map((m) => m.formattedPeriod ? `[${m.formattedPeriod}]: ${m.metrics}` : m.metrics).join(" | ")
+        : briefMetrics.trim();
+
+      let parentBuName = node.data?.businessUnitName || "";
+      if (!parentBuName && (node.previousNodeType === "business_unit" || !node.previousNodeType)) {
+        parentBuName = node.previousNodeLabel || "";
+      }
+
       dataPayload = {
         ...dataPayload,
-        name: "Marketing Brief",
-        metrics: briefMetrics.trim(),
-        kpis: briefKpis.trim(),
+        name: briefName.trim() || "Marketing Brief",
         description: briefDescription.trim(),
+        briefDescription: briefDescription.trim(),
+        businessUnitName: parentBuName,
+        startDate: firstItem.startDate || briefStartDate,
+        endDate: firstItem.endDate || briefEndDate,
+        formattedPeriod: firstItem.formattedPeriod || getBriefFormattedPeriod(),
+        metrics: consolidatedMetrics,
+        metricsList: finalMetricsList,
       };
     } else if (node.type === "product") {
       const selectedPlatforms = [];
@@ -851,23 +1348,54 @@ export const NodeDetailDrawer = ({
         catalogCount: totalCount,
       };
     } else if (node.type === "data_warehouse") {
-      const displayTitle = workbookName || (sheetUrl ? "Connected Google Sheet" : "Excel & Drive Warehouse");
-      nodeLabel = `${displayTitle} (${excelProvider})`;
-      nodeSubtitle = sheetUrl ? `🔗 ${sheetUrl.slice(0, 38)}...` : `Sheet: ${worksheetName || "Active"} • Drive: ${googleDriveEmail ? "Connected" : "Linked"}`;
+      const sheetsToSave = sheetsList.slice(0, 10).map((s, idx) => ({
+        id: String(s.id || `sheet_${idx}_${Date.now()}`),
+        sheetUrl: (s.sheetUrl || "").trim(),
+        excelProvider: s.excelProvider || "Google Sheets",
+        workbookName: (s.workbookName || "").trim(),
+        worksheetName: (s.worksheetName || "Sheet1").trim(),
+        excelSyncStatus: s.excelSyncStatus || (s.sheetUrl ? "SYNCED" : "NOT_CONNECTED"),
+        totalRows: Number(s.totalRows || 0),
+        totalDataRows: Number(s.totalDataRows || s.totalRows || 0),
+        totalSheetRows: Number(s.totalSheetRows || (s.totalRows ? s.totalRows + 1 : 0)),
+        sheetColumns: Array.isArray(s.sheetColumns) ? s.sheetColumns : [],
+        dataLabels: (s.dataLabels || "").trim(),
+        dataLevel: (s.dataLabels || "").trim(),
+        lastSyncedAt: s.lastSyncedAt || null,
+      }));
+
+      const connectedSheets = sheetsToSave.filter((s) => Boolean(s.sheetUrl));
+      const primaryConnected = connectedSheets[0] || null;
+      const totalConnected = connectedSheets.length;
+
+      nodeLabel = totalConnected > 1
+        ? `Warehouse (${totalConnected} Sheets)`
+        : (primaryConnected?.workbookName || (primaryConnected?.sheetUrl ? "Connected Google Sheet" : "Excel & Drive Warehouse"));
+      if (primaryConnected?.excelProvider && totalConnected <= 1 && primaryConnected?.sheetUrl) {
+        nodeLabel = `${nodeLabel} (${primaryConnected.excelProvider})`;
+      }
+
+      nodeSubtitle = totalConnected > 1
+        ? `📊 ${totalConnected} Sheets Connected`
+        : (primaryConnected?.sheetUrl ? `🔗 ${primaryConnected.sheetUrl.slice(0, 38)}...` : `Drive: ${googleDriveEmail ? "Connected" : "Linked"}`);
+
       dataPayload = {
         ...dataPayload,
         warehouseSource: "both",
-        sheetUrl: sheetUrl.trim(),
-        excelProvider,
-        workbookName: workbookName.trim(),
-        worksheetName: worksheetName.trim(),
-        excelSyncStatus,
+        sheetUrl: primaryConnected ? primaryConnected.sheetUrl : "",
+        excelProvider: primaryConnected ? primaryConnected.excelProvider : "Google Sheets",
+        workbookName: primaryConnected ? primaryConnected.workbookName : "",
+        worksheetName: primaryConnected ? primaryConnected.worksheetName : "Sheet1",
+        excelSyncStatus: primaryConnected ? primaryConnected.excelSyncStatus : "NOT_CONNECTED",
+        totalRows: primaryConnected ? Number(primaryConnected.totalRows || 0) : 0,
+        totalDataRows: primaryConnected ? Number(primaryConnected.totalDataRows || 0) : 0,
+        dataLevel: primaryConnected ? primaryConnected.dataLabels : (dataLabels || "").trim(),
+        dataLabels: primaryConnected ? primaryConnected.dataLabels : (dataLabels || "").trim(),
+        databasePlatform: "Excel Sheet & Google Drive",
         googleDriveConnected,
         googleDriveEmail: googleDriveEmail.trim(),
         googleDriveFolderName: googleDriveFolder.trim(),
-        dataLevel: dataLabels.trim(),
-        dataLabels: dataLabels.trim(),
-        databasePlatform: "Excel Sheet & Google Drive",
+        sheets: sheetsToSave,
       };
     }
 
@@ -1000,7 +1528,7 @@ export const NodeDetailDrawer = ({
           }}
         >
           <span style={{ color: "#64748B", fontWeight: 600 }}>Lineage:</span>
-          <span style={{ color: node.previousNodeLabel ? "#2563EB" : "#16A34A", fontWeight: 700 }}>
+          <span style={{ color: "#2563EB", fontWeight: 700 }}>
             {node.previousNodeLabel ? `← Connected from ${node.previousNodeLabel}` : "START Root Node"}
           </span>
         </div>
@@ -1076,9 +1604,9 @@ export const NodeDetailDrawer = ({
                         style={{
                           padding: "6px 12px",
                           borderRadius: 7,
-                          border: isSelected ? "1.5px solid #0081FB" : "1px solid #E2E8F0",
+                          border: isSelected ? "1.5px solid #2563EB" : "1px solid #E2E8F0",
                           backgroundColor: isSelected ? "#EFF6FF" : "#F8FAFC",
-                          color: isSelected ? "#0081FB" : "#475569",
+                          color: isSelected ? "#2563EB" : "#475569",
                           fontSize: "12px",
                           fontWeight: 700,
                           cursor: "pointer",
@@ -1087,7 +1615,7 @@ export const NodeDetailDrawer = ({
                           gap: 5,
                         }}
                       >
-                        <CheckCircle2 size={13} color={isSelected ? "#0081FB" : "#94A3B8"} />
+                        <CheckCircle2 size={13} color={isSelected ? "#2563EB" : "#94A3B8"} />
                         <span>{c}</span>
                       </button>
                     );
@@ -1098,9 +1626,9 @@ export const NodeDetailDrawer = ({
                   style={{
                     padding: "8px 12px",
                     borderRadius: 8,
-                    backgroundColor: "#FFFBEB",
-                    border: "1px solid #FDE68A",
-                    color: "#B45309",
+                    backgroundColor: "#F8FAFC",
+                    border: "1px solid #E2E8F0",
+                    color: "#475569",
                     fontSize: "11.5px",
                     display: "flex",
                     alignItems: "center",
@@ -1108,7 +1636,7 @@ export const NodeDetailDrawer = ({
                     marginBottom: 8,
                   }}
                 >
-                  <AlertCircle size={14} />
+                  <AlertCircle size={14} color="#64748B" />
                   <span>No channels connected yet in Channels section.</span>
                 </div>
               )}
@@ -1195,8 +1723,8 @@ export const NodeDetailDrawer = ({
                             justifyContent: "space-between",
                             padding: "8px 10px",
                             borderRadius: 8,
-                            border: isSelected ? "1.5px solid #0081FB" : "1px solid #E2E8F0",
-                            backgroundColor: isSelected ? "#F0F9FF" : "#FFFFFF",
+                            border: isSelected ? "1.5px solid #2563EB" : "1px solid #E2E8F0",
+                            backgroundColor: isSelected ? "#EFF6FF" : "#FFFFFF",
                             color: "#1E293B",
                             fontSize: "12px",
                             textAlign: "left",
@@ -1206,13 +1734,13 @@ export const NodeDetailDrawer = ({
                           }}
                         >
                           <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flex: 1 }}>
-                            <CheckCircle2 size={14} color={isSelected ? "#0081FB" : "#CBD5E1"} style={{ flexShrink: 0 }} />
+                            <CheckCircle2 size={14} color={isSelected ? "#2563EB" : "#CBD5E1"} style={{ flexShrink: 0 }} />
                             <div style={{ minWidth: 0 }}>
                               <span style={{ fontWeight: isSelected ? 700 : 500, display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                 {acc.accountName || acc.name || "Ad Account"}
                               </span>
                               {acc.isManager && (
-                                <span style={{ fontSize: "9.5px", color: "#6366F1", fontWeight: 600 }}>
+                                <span style={{ fontSize: "9.5px", color: "#2563EB", fontWeight: 600 }}>
                                   Manager MCC
                                 </span>
                               )}
@@ -1227,8 +1755,8 @@ export const NodeDetailDrawer = ({
                             <code
                               style={{
                                 fontSize: "11px",
-                                color: isSelected ? "#0081FB" : "#64748B",
-                                backgroundColor: isSelected ? "#E0F2FE" : "#F1F5F9",
+                                color: isSelected ? "#2563EB" : "#64748B",
+                                backgroundColor: isSelected ? "#DBEAFE" : "#F1F5F9",
                                 padding: "2px 6px",
                                 borderRadius: 4,
                                 fontWeight: 600,
@@ -1283,12 +1811,12 @@ export const NodeDetailDrawer = ({
               />
             </div>
 
-            <div style={{ backgroundColor: "#F0F9FF", border: "1px solid #BAE6FD", borderRadius: 10, padding: "12px", display: "flex", flexDirection: "column", gap: 10 }}>
-              <span style={{ fontSize: "11px", fontWeight: 700, color: "#0369A1", textTransform: "uppercase" }}>
+            <div style={{ backgroundColor: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 10, padding: "12px", display: "flex", flexDirection: "column", gap: 10 }}>
+              <span style={{ fontSize: "11px", fontWeight: 700, color: "#0F172A", textTransform: "uppercase", letterSpacing: "0.03em" }}>
                 Funnel Event Settings
               </span>
               <div>
-                <label style={{ display: "block", fontSize: "11.5px", fontWeight: 600, color: "#0C4A6E", marginBottom: 4 }}>
+                <label style={{ display: "block", fontSize: "11.5px", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
                   Funnel Event
                 </label>
                 <input
@@ -1300,15 +1828,16 @@ export const NodeDetailDrawer = ({
                     width: "100%",
                     padding: "8px 10px",
                     borderRadius: 6,
-                    border: "1px solid #7DD3FC",
+                    border: "1px solid #CBD5E1",
                     fontSize: "12px",
                     backgroundColor: "#FFFFFF",
+                    outline: "none",
                   }}
                 />
               </div>
 
               <div>
-                <label style={{ display: "block", fontSize: "11.5px", fontWeight: 600, color: "#0C4A6E", marginBottom: 4 }}>
+                <label style={{ display: "block", fontSize: "11.5px", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
                   Funnel Event Description
                 </label>
                 <textarea
@@ -1320,10 +1849,11 @@ export const NodeDetailDrawer = ({
                     width: "100%",
                     padding: "8px 10px",
                     borderRadius: 6,
-                    border: "1px solid #7DD3FC",
+                    border: "1px solid #CBD5E1",
                     fontSize: "12px",
                     backgroundColor: "#FFFFFF",
                     fontFamily: "inherit",
+                    outline: "none",
                   }}
                 />
               </div>
@@ -1334,6 +1864,118 @@ export const NodeDetailDrawer = ({
         {/* 3. MARKETING BRIEF NODE FORM */}
         {node.type === "marketing_brief" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {/* Brief Name */}
+            <div>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#1E293B", marginBottom: 5 }}>
+                Brief Title / Campaign Objective <span style={{ color: "#EF4444" }}>*</span>
+              </label>
+              <input
+                type="text"
+                value={briefName}
+                onChange={(e) => setBriefName(e.target.value)}
+                placeholder="e.g. Marketing Brief, Festive Season Promo, Retargeting Campaign"
+                style={{
+                  width: "100%",
+                  padding: "9px 12px",
+                  borderRadius: 8,
+                  border: "1px solid #CBD5E1",
+                  fontSize: "12.5px",
+                  outline: "none",
+                  backgroundColor: "#FFFFFF",
+                }}
+              />
+            </div>
+
+            {/* Strategy, Hook & Offer Description */}
+            <div>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#1E293B", marginBottom: 5 }}>
+                Strategy, Hook & Offer Description
+              </label>
+              <textarea
+                rows={3}
+                value={briefDescription}
+                onChange={(e) => setBriefDescription(e.target.value)}
+                placeholder="Describe campaign goals, special discounts/offers, target audience hook, or messaging..."
+                style={{
+                  width: "100%",
+                  padding: "9px 12px",
+                  borderRadius: 8,
+                  border: "1px solid #CBD5E1",
+                  fontSize: "12.5px",
+                  outline: "none",
+                  resize: "vertical",
+                  backgroundColor: "#FFFFFF",
+                  fontFamily: "inherit",
+                }}
+              />
+            </div>
+
+            {/* Date / Month Selection */}
+            <div
+              style={{
+                backgroundColor: "#F8FAFC",
+                border: "1px solid #E2E8F0",
+                borderRadius: 10,
+                padding: "12px",
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <label style={{ fontSize: "12px", fontWeight: 700, color: "#1E293B" }}>
+                  Target Date Range
+                </label>
+                {briefStartDate && briefEndDate && (
+                  <span style={{ fontSize: "11px", color: "#059669", fontWeight: 600 }}>
+                    ✓ {briefStartDate} to {briefEndDate}
+                  </span>
+                )}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <div>
+                  <label style={{ display: "block", fontSize: "11.5px", color: "#64748B", marginBottom: 4 }}>
+                    From Date
+                  </label>
+                  <input
+                    type="date"
+                    value={briefStartDate}
+                    onChange={(e) => setBriefStartDate(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                      border: "1px solid #CBD5E1",
+                      fontSize: "12px",
+                      outline: "none",
+                      backgroundColor: "#FFFFFF",
+                    }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: "block", fontSize: "11.5px", color: "#64748B", marginBottom: 4 }}>
+                    To Date
+                  </label>
+                  <input
+                    type="date"
+                    value={briefEndDate}
+                    onChange={(e) => setBriefEndDate(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                      border: "1px solid #CBD5E1",
+                      fontSize: "12px",
+                      outline: "none",
+                      backgroundColor: "#FFFFFF",
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Metrics Field */}
             <div>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#1E293B", marginBottom: 5 }}>
                 Metrics (In Text)
@@ -1354,50 +1996,165 @@ export const NodeDetailDrawer = ({
                   fontFamily: "inherit",
                 }}
               />
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 6 }}>
+                <button
+                  type="button"
+                  onClick={handleAddMetricsRange}
+                  disabled={!briefMetrics.trim() && !briefStartDate && !briefEndDate}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "6px 12px",
+                    backgroundColor: (!briefMetrics.trim() && !briefStartDate && !briefEndDate) ? "#F1F5F9" : "#0081FB",
+                    color: (!briefMetrics.trim() && !briefStartDate && !briefEndDate) ? "#94A3B8" : "#FFFFFF",
+                    borderRadius: 6,
+                    fontSize: "11.5px",
+                    fontWeight: 600,
+                    border: "none",
+                    cursor: (!briefMetrics.trim() && !briefStartDate && !briefEndDate) ? "not-allowed" : "pointer",
+                    boxShadow: (!briefMetrics.trim() && !briefStartDate && !briefEndDate) ? "none" : "0 2px 5px rgba(0, 129, 251, 0.2)",
+                    transition: "all 0.15s ease",
+                  }}
+                >
+                  <Plus size={13} />
+                  Add Metric Range
+                </button>
+              </div>
             </div>
 
-            <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#1E293B", marginBottom: 5 }}>
-                KPIs (In Text)
-              </label>
-              <textarea
-                rows={3}
-                value={briefKpis}
-                onChange={(e) => setBriefKpis(e.target.value)}
-                placeholder="e.g. Cost Per Acquisition, Conversion Rate, Total Sales Volume, Retention Rate"
-                style={{
-                  width: "100%",
-                  padding: "9px 12px",
-                  borderRadius: 8,
-                  border: "1px solid #CBD5E1",
-                  fontSize: "12.5px",
-                  outline: "none",
-                  backgroundColor: "#FFFFFF",
-                  fontFamily: "inherit",
-                }}
-              />
-            </div>
+            {/* List of Configured Metrics with Date Ranges */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 2 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <label style={{ fontSize: "12px", fontWeight: 700, color: "#1E293B" }}>
+                  Configured Metrics ({metricsList.length})
+                </label>
+              </div>
 
-            <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#1E293B", marginBottom: 5 }}>
-                Strategy & Target Audience Notes
-              </label>
-              <textarea
-                rows={3}
-                value={briefDescription}
-                onChange={(e) => setBriefDescription(e.target.value)}
-                placeholder="Core campaign guidelines, audience target, hooks and value props for AI Agent..."
-                style={{
-                  width: "100%",
-                  padding: "9px 12px",
-                  borderRadius: 8,
-                  border: "1px solid #CBD5E1",
-                  fontSize: "12.5px",
-                  outline: "none",
-                  backgroundColor: "#FFFFFF",
-                  fontFamily: "inherit",
-                }}
-              />
+              {metricsList.length === 0 ? (
+                <div
+                  style={{
+                    padding: "14px 12px",
+                    borderRadius: 8,
+                    border: "1px dashed #CBD5E1",
+                    backgroundColor: "#F8FAFC",
+                    textAlign: "center",
+                    color: "#94A3B8",
+                    fontSize: "11.5px",
+                  }}
+                >
+                  No metrics added yet. Set date range & metrics above and click "Add Metric Range".
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {metricsList.map((item, idx) => (
+                    <div
+                      key={item.id || idx}
+                      style={{
+                        backgroundColor: "#FFFFFF",
+                        border: "1.5px solid #BFDBFE",
+                        borderRadius: 10,
+                        overflow: "hidden",
+                        boxShadow: "0 2px 6px rgba(0, 129, 251, 0.05)",
+                      }}
+                    >
+                      {/* Blue Box Header: Contains the Date Range */}
+                      <div
+                        style={{
+                          backgroundColor: "#EFF6FF",
+                          borderBottom: "1px solid #DBEAFE",
+                          padding: "8px 12px",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 5,
+                              color: "#0081FB",
+                              fontSize: "12px",
+                              fontWeight: 700,
+                            }}
+                          >
+                            <Calendar size={13} color="#0081FB" />
+                            {item.formattedPeriod || (item.startDate && item.endDate ? `${item.startDate} to ${item.endDate}` : item.startDate || item.endDate || "Date Range")}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: "10.5px",
+                              fontWeight: 600,
+                              color: "#60A5FA",
+                              backgroundColor: "#DBEAFE",
+                              padding: "1px 6px",
+                              borderRadius: 10,
+                            }}
+                          >
+                            #{idx + 1}
+                          </span>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveMetricsRange(item.id)}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            cursor: "pointer",
+                            padding: "3px 4px",
+                            color: "#94A3B8",
+                            borderRadius: 4,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            transition: "all 0.15s ease",
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.color = "#EF4444";
+                            e.currentTarget.style.backgroundColor = "#FEE2E2";
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.color = "#94A3B8";
+                            e.currentTarget.style.backgroundColor = "transparent";
+                          }}
+                          title="Remove this date & metric box"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+
+                      {/* Inside Box Body: Metric Value according to this Date */}
+                      <div
+                        style={{
+                          padding: "10px 12px",
+                          backgroundColor: "#FFFFFF",
+                        }}
+                      >
+                        {item.metrics ? (
+                          <div
+                            style={{
+                              fontSize: "12.5px",
+                              color: "#0F172A",
+                              lineHeight: 1.5,
+                              whiteSpace: "pre-wrap",
+                              wordBreak: "break-word",
+                            }}
+                          >
+                            {item.metrics}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: "11.5px", color: "#94A3B8", fontStyle: "italic" }}>
+                            (No metrics value entered)
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1450,8 +2207,8 @@ export const NodeDetailDrawer = ({
             </div>
 
             {/* Target Platform Checkboxes */}
-            <div style={{ backgroundColor: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 10, padding: "12px" }}>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#15803D", marginBottom: 8 }}>
+            <div style={{ backgroundColor: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 10, padding: "12px" }}>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#1E293B", marginBottom: 8 }}>
                 Target Product Platform (Select Checkbox)
               </label>
               <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
@@ -1470,9 +2227,9 @@ export const NodeDetailDrawer = ({
                     type="checkbox"
                     checked={isAppSelected}
                     onChange={(e) => setIsAppSelected(e.target.checked)}
-                    style={{ width: 16, height: 16, accentColor: "#16A34A", cursor: "pointer" }}
+                    style={{ width: 16, height: 16, accentColor: "#2563EB", cursor: "pointer" }}
                   />
-                  <Smartphone size={15} color="#16A34A" />
+                  <Smartphone size={15} color="#2563EB" />
                   <span>App</span>
                 </label>
 
@@ -1491,9 +2248,9 @@ export const NodeDetailDrawer = ({
                     type="checkbox"
                     checked={isWebSelected}
                     onChange={(e) => setIsWebSelected(e.target.checked)}
-                    style={{ width: 16, height: 16, accentColor: "#16A34A", cursor: "pointer" }}
+                    style={{ width: 16, height: 16, accentColor: "#2563EB", cursor: "pointer" }}
                   />
-                  <Globe size={15} color="#16A34A" />
+                  <Globe size={15} color="#2563EB" />
                   <span>Web</span>
                 </label>
               </div>
@@ -1512,172 +2269,62 @@ export const NodeDetailDrawer = ({
               }}
             >
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <ShoppingBag size={16} color="#059669" />
-                  <span style={{ fontSize: "12.5px", fontWeight: 700, color: "#0F172A" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                  <ShoppingBag size={17} color="#0081FB" />
+                  <span style={{ fontSize: "13px", fontWeight: 700, color: "#0F172A" }}>
                     Product Catalog
                   </span>
                   <span
                     style={{
                       fontSize: "11px",
                       fontWeight: 700,
-                      backgroundColor: "#DCFCE7",
-                      color: "#15803D",
+                      backgroundColor: "#EFF6FF",
+                      color: "#0081FB",
+                      border: "1px solid #BFDBFE",
                       padding: "2px 8px",
                       borderRadius: 12,
                     }}
                   >
-                    {productsList.length} Items
+                    {productsList.length} {productsList.length === 1 ? "Product" : "Products"}
                   </span>
-                </div>
-
-                <div style={{ display: "flex", gap: 6 }}>
-                  <button
-                    type="button"
-                    onClick={() => setShowBulkPaste(!showBulkPaste)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 4,
-                      fontSize: "11.5px",
-                      fontWeight: 600,
-                      color: "#2563EB",
-                      background: "#EFF6FF",
-                      border: "1px solid #BFDBFE",
-                      borderRadius: 6,
-                      padding: "4px 8px",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <UploadCloud size={13} />
-                    {showBulkPaste ? "Hide Import" : "Bulk Paste"}
-                  </button>
-
-                  {productsList.length === 0 && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const sampleProds = Array.from({ length: 5 }, (_, i) => ({
-                          id: `prod_sample_${i + 1}`,
-                          name: `Pro Model Alpha ${i + 1}`,
-                          price: `₹${(i + 1) * 999}`,
-                          sku: `SKU-PROD-${100 + i}`,
-                          category: "Electronics",
-                          url: `https://myshop.com/p/${i + 1}`,
-                          platforms: ["Web"],
-                          createdAt: new Date().toISOString(),
-                        }));
-                        setProductsList(sampleProds);
-                      }}
-                      style={{
-                        fontSize: "11px",
-                        fontWeight: 600,
-                        color: "#64748B",
-                        background: "#F1F5F9",
-                        border: "1px solid #E2E8F0",
-                        borderRadius: 6,
-                        padding: "4px 8px",
-                        cursor: "pointer",
-                      }}
-                    >
-                      + Load Sample
-                    </button>
-                  )}
                 </div>
               </div>
-
-              {/* Bulk Paste / CSV Input Section */}
-              {showBulkPaste && (
-                <div
-                  style={{
-                    backgroundColor: "#FFFFFF",
-                    border: "1px solid #CBD5E1",
-                    borderRadius: 8,
-                    padding: "10px",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 8,
-                  }}
-                >
-                  <span style={{ fontSize: "11px", fontWeight: 600, color: "#475569" }}>
-                    Paste multiple products (1 item per line: <em>Name, Price, URL, Category, SKU</em>):
-                  </span>
-                  <textarea
-                    rows={4}
-                    value={bulkText}
-                    onChange={(e) => setBulkText(e.target.value)}
-                    placeholder={"AirPods Pro 2, ₹24900, https://shop.com/airpods, Audio, SKU-001\nMacBook Air M3, ₹114900, https://shop.com/macbook, Laptops, SKU-002"}
-                    style={{
-                      width: "100%",
-                      padding: "8px",
-                      fontSize: "11.5px",
-                      fontFamily: "monospace",
-                      borderRadius: 6,
-                      border: "1px solid #E2E8F0",
-                      outline: "none",
-                    }}
-                  />
-                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
-                    <button
-                      type="button"
-                      onClick={() => setShowBulkPaste(false)}
-                      style={{
-                        padding: "4px 10px",
-                        fontSize: "11px",
-                        color: "#64748B",
-                        background: "none",
-                        border: "none",
-                        cursor: "pointer",
-                      }}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleBulkAddProducts}
-                      style={{
-                        padding: "5px 12px",
-                        fontSize: "11.5px",
-                        fontWeight: 600,
-                        backgroundColor: "#059669",
-                        color: "#FFFFFF",
-                        border: "none",
-                        borderRadius: 6,
-                        cursor: "pointer",
-                      }}
-                    >
-                      Add Pasted Products
-                    </button>
-                  </div>
-                </div>
-              )}
 
               {/* Quick Add Form */}
               <div
                 style={{
                   backgroundColor: "#FFFFFF",
-                  border: "1px solid #E2E8F0",
-                  borderRadius: 8,
-                  padding: "10px",
+                  border: "1.5px solid #E2E8F0",
+                  borderRadius: 10,
+                  padding: "12px",
                   display: "flex",
                   flexDirection: "column",
-                  gap: 8,
+                  gap: 9,
+                  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.03)",
                 }}
               >
-                <span style={{ fontSize: "11px", fontWeight: 700, color: "#334155" }}>
-                  Quick Add Product
-                </span>
-                <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <Tag size={13} color="#0081FB" />
+                  <span style={{ fontSize: "11.5px", fontWeight: 700, color: "#334155" }}>
+                    Add Product to Catalog
+                  </span>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 8 }}>
                   <input
                     type="text"
                     value={newProdName}
                     onChange={(e) => setNewProdName(e.target.value)}
                     placeholder="Product Name *"
                     style={{
-                      padding: "7px 9px",
+                      width: "100%",
+                      minWidth: 0,
+                      boxSizing: "border-box",
+                      padding: "8px 10px",
                       fontSize: "12px",
                       border: "1px solid #CBD5E1",
                       borderRadius: 6,
+                      outline: "none",
                     }}
                   />
                   <input
@@ -1686,24 +2333,32 @@ export const NodeDetailDrawer = ({
                     onChange={(e) => setNewProdPrice(e.target.value)}
                     placeholder="Price (e.g. ₹999)"
                     style={{
-                      padding: "7px 9px",
+                      width: "100%",
+                      minWidth: 0,
+                      boxSizing: "border-box",
+                      padding: "8px 10px",
                       fontSize: "12px",
                       border: "1px solid #CBD5E1",
                       borderRadius: 6,
+                      outline: "none",
                     }}
                   />
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                   <input
                     type="text"
                     value={newProdSku}
                     onChange={(e) => setNewProdSku(e.target.value)}
                     placeholder="SKU Code"
                     style={{
-                      padding: "7px 9px",
+                      width: "100%",
+                      minWidth: 0,
+                      boxSizing: "border-box",
+                      padding: "8px 10px",
                       fontSize: "12px",
                       border: "1px solid #CBD5E1",
                       borderRadius: 6,
+                      outline: "none",
                     }}
                   />
                   <input
@@ -1712,14 +2367,18 @@ export const NodeDetailDrawer = ({
                     onChange={(e) => setNewProdCategory(e.target.value)}
                     placeholder="Category"
                     style={{
-                      padding: "7px 9px",
+                      width: "100%",
+                      minWidth: 0,
+                      boxSizing: "border-box",
+                      padding: "8px 10px",
                       fontSize: "12px",
                       border: "1px solid #CBD5E1",
                       borderRadius: 6,
+                      outline: "none",
                     }}
                   />
                 </div>
-                <div style={{ display: "flex", gap: 6 }}>
+                <div style={{ display: "flex", gap: 8 }}>
                   <input
                     type="url"
                     value={newProdUrl}
@@ -1727,10 +2386,13 @@ export const NodeDetailDrawer = ({
                     placeholder="Product URL (https://...)"
                     style={{
                       flex: 1,
-                      padding: "7px 9px",
+                      minWidth: 0,
+                      boxSizing: "border-box",
+                      padding: "8px 10px",
                       fontSize: "12px",
                       border: "1px solid #CBD5E1",
                       borderRadius: 6,
+                      outline: "none",
                     }}
                   />
                   <button
@@ -1740,15 +2402,17 @@ export const NodeDetailDrawer = ({
                     style={{
                       display: "flex",
                       alignItems: "center",
-                      gap: 4,
-                      padding: "7px 14px",
+                      gap: 5,
+                      padding: "8px 14px",
                       fontSize: "12px",
                       fontWeight: 600,
-                      backgroundColor: newProdName.trim() ? "#059669" : "#94A3B8",
-                      color: "#FFFFFF",
+                      backgroundColor: newProdName.trim() ? "#0081FB" : "#F1F5F9",
+                      color: newProdName.trim() ? "#FFFFFF" : "#94A3B8",
                       border: "none",
                       borderRadius: 6,
                       cursor: newProdName.trim() ? "pointer" : "not-allowed",
+                      boxShadow: newProdName.trim() ? "0 2px 6px rgba(0, 129, 251, 0.25)" : "none",
+                      transition: "all 0.15s ease",
                     }}
                   >
                     <Plus size={14} /> Add
@@ -1756,7 +2420,7 @@ export const NodeDetailDrawer = ({
                 </div>
               </div>
 
-              {/* Search Bar for 100+ Catalog Navigation */}
+              {/* Search Bar for Catalog Navigation */}
               {productsList.length > 3 && (
                 <div style={{ position: "relative" }}>
                   <Search
@@ -1768,7 +2432,7 @@ export const NodeDetailDrawer = ({
                     type="text"
                     value={productSearch}
                     onChange={(e) => setProductSearch(e.target.value)}
-                    placeholder={`Search among ${productsList.length} products (by name, SKU, category)...`}
+                    placeholder={`Search among ${productsList.length} products...`}
                     style={{
                       width: "100%",
                       padding: "7px 10px 7px 32px",
@@ -1776,6 +2440,7 @@ export const NodeDetailDrawer = ({
                       border: "1px solid #CBD5E1",
                       borderRadius: 6,
                       backgroundColor: "#FFFFFF",
+                      outline: "none",
                     }}
                   />
                 </div>
@@ -1785,124 +2450,218 @@ export const NodeDetailDrawer = ({
               {filteredProducts.length > 0 ? (
                 <div
                   style={{
-                    maxHeight: 240,
+                    maxHeight: 280,
                     overflowY: "auto",
                     display: "flex",
                     flexDirection: "column",
-                    gap: 6,
+                    gap: 8,
                     paddingRight: 2,
                   }}
                 >
-                  {filteredProducts.map((p, idx) => (
-                    <div
-                      key={p.id || idx}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        padding: "8px 10px",
-                        backgroundColor: "#FFFFFF",
-                        border: "1px solid #E2E8F0",
-                        borderRadius: 8,
-                        fontSize: "12px",
-                      }}
-                    >
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, overflow: "hidden" }}>
-                          <strong
-                            style={{
-                              color: "#0F172A",
-                              whiteSpace: "nowrap",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                            }}
-                          >
-                            {p.name}
-                          </strong>
-                          {p.price && (
-                            <span
+                  {filteredProducts.map((p, idx) => {
+                    const priceFormatted = p.price !== undefined && p.price !== null && String(p.price).trim() !== ""
+                      ? (String(p.price).trim().startsWith("₹") || String(p.price).trim().startsWith("$") ? String(p.price).trim() : `₹${String(p.price).trim()}`)
+                      : null;
+
+                    return (
+                      <div
+                        key={p.id || idx}
+                        style={{
+                          backgroundColor: "#FFFFFF",
+                          border: "1.5px solid #E2E8F0",
+                          borderRadius: 10,
+                          padding: "10px 12px",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 7,
+                          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.03)",
+                          transition: "all 0.15s ease",
+                        }}
+                      >
+                        {/* Top Line: Icon, Title, Category, Price & Delete */}
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
+                            <div
                               style={{
-                                fontSize: "10.5px",
-                                fontWeight: 700,
-                                color: "#059669",
-                                backgroundColor: "#ECFDF5",
-                                padding: "1px 5px",
-                                borderRadius: 4,
+                                width: 30,
+                                height: 30,
+                                borderRadius: 7,
+                                backgroundColor: "#EFF6FF",
+                                border: "1px solid #DBEAFE",
+                                color: "#0081FB",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                flexShrink: 0,
                               }}
                             >
-                              {p.price}
-                            </span>
-                          )}
-                          {p.category && (
-                            <span
+                              <Package size={15} />
+                            </div>
+
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 0, flexWrap: "wrap" }}>
+                              <strong
+                                style={{
+                                  fontSize: "13px",
+                                  fontWeight: 600,
+                                  color: "#0F172A",
+                                  whiteSpace: "nowrap",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  letterSpacing: "-0.01em",
+                                }}
+                              >
+                                {p.name}
+                              </strong>
+                              {p.category && (
+                                <span
+                                  style={{
+                                    fontSize: "10.5px",
+                                    fontWeight: 600,
+                                    color: "#475569",
+                                    backgroundColor: "#F1F5F9",
+                                    border: "1px solid #E2E8F0",
+                                    padding: "1px 6px",
+                                    borderRadius: 4,
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  {p.category}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            {priceFormatted && (
+                              <span
+                                style={{
+                                  fontSize: "11.5px",
+                                  fontWeight: 700,
+                                  color: "#059669",
+                                  backgroundColor: "#ECFDF5",
+                                  border: "1px solid #A7F3D0",
+                                  padding: "2px 7px",
+                                  borderRadius: 5,
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {priceFormatted}
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteProduct(p.id)}
                               style={{
-                                fontSize: "10px",
-                                color: "#64748B",
-                                backgroundColor: "#F1F5F9",
-                                padding: "1px 5px",
+                                background: "none",
+                                border: "none",
+                                cursor: "pointer",
+                                color: "#94A3B8",
+                                padding: "4px",
                                 borderRadius: 4,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                transition: "all 0.15s ease",
                               }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.color = "#EF4444";
+                                e.currentTarget.style.backgroundColor = "#FEE2E2";
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.color = "#94A3B8";
+                                e.currentTarget.style.backgroundColor = "transparent";
+                              }}
+                              title="Remove product"
                             >
-                              {p.category}
-                            </span>
-                          )}
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
                         </div>
+
+                        {/* Bottom Sub-bar: SKU & URL link */}
                         {(p.sku || p.url) && (
                           <div
                             style={{
-                              fontSize: "10.5px",
-                              color: "#94A3B8",
-                              marginTop: 2,
+                              borderTop: "1px solid #F1F5F9",
+                              paddingTop: 6,
                               display: "flex",
-                              gap: 8,
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              gap: 6,
+                              flexWrap: "wrap",
+                              fontSize: "11px",
                             }}
                           >
-                            {p.sku && <span>SKU: {p.sku}</span>}
-                            {p.url && <span>URL: {p.url}</span>}
+                            {p.sku ? (
+                              <span
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                  color: "#64748B",
+                                  backgroundColor: "#F8FAFC",
+                                  border: "1px solid #E2E8F0",
+                                  padding: "2px 6px",
+                                  borderRadius: 4,
+                                }}
+                              >
+                                <Tag size={10} color="#94A3B8" />
+                                SKU: <strong>{p.sku}</strong>
+                              </span>
+                            ) : <span />}
+
+                            {p.url && (
+                              <a
+                                href={p.url.startsWith("http") ? p.url : `https://${p.url}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                  color: "#0081FB",
+                                  textDecoration: "none",
+                                  backgroundColor: "#EFF6FF",
+                                  border: "1px solid #BFDBFE",
+                                  padding: "2px 8px",
+                                  borderRadius: 4,
+                                  maxWidth: "240px",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                  fontWeight: 500,
+                                }}
+                              >
+                                <ExternalLink size={10} />
+                                {p.url.replace(/^https?:\/\//, "")}
+                              </a>
+                            )}
                           </div>
                         )}
                       </div>
-
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteProduct(p.id)}
-                        style={{
-                          background: "none",
-                          border: "none",
-                          cursor: "pointer",
-                          color: "#94A3B8",
-                          padding: "4px",
-                          borderRadius: 4,
-                          marginLeft: 6,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                        }}
-                        onMouseEnter={(e) => (e.currentTarget.style.color = "#EF4444")}
-                        onMouseLeave={(e) => (e.currentTarget.style.color = "#94A3B8")}
-                        title="Remove product from catalog"
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <div
                   style={{
-                    padding: "14px",
+                    padding: "18px 12px",
                     textAlign: "center",
-                    fontSize: "11.5px",
+                    fontSize: "12px",
                     color: "#94A3B8",
                     backgroundColor: "#FFFFFF",
-                    borderRadius: 8,
-                    border: "1px dashed #CBD5E1",
+                    borderRadius: 10,
+                    border: "1.5px dashed #CBD5E1",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: 6,
                   }}
                 >
-                  {productSearch ? "No matching products found." : "No products added to this context yet."}
+                  <Package size={22} color="#CBD5E1" />
+                  <span>
+                    {productSearch ? "No matching products found." : "No products added to catalog yet. Use the form above to add products."}
+                  </span>
                 </div>
               )}
 
@@ -1912,15 +2671,27 @@ export const NodeDetailDrawer = ({
                     type="button"
                     onClick={() => setProductsList([])}
                     style={{
-                      fontSize: "11px",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      fontSize: "11.5px",
                       color: "#EF4444",
                       background: "none",
                       border: "none",
                       cursor: "pointer",
-                      padding: "2px",
+                      padding: "3px 6px",
+                      borderRadius: 4,
+                      transition: "all 0.15s ease",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = "#FEE2E2";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = "transparent";
                     }}
                   >
-                    Clear All Products ({productsList.length})
+                    <Trash2 size={12} />
+                    Clear Catalog ({productsList.length})
                   </button>
                 </div>
               )}
@@ -1962,7 +2733,7 @@ export const NodeDetailDrawer = ({
                   transition: "all 0.15s ease",
                 }}
               >
-                <FileSpreadsheet size={14} color={warehouseTab === "excel" ? "#16A34A" : "#64748B"} />
+                <FileSpreadsheet size={14} color={warehouseTab === "excel" ? "#2563EB" : "#64748B"} />
                 Excel Sheet
               </button>
 
@@ -1992,395 +2763,428 @@ export const NodeDetailDrawer = ({
               </button>
             </div>
 
-            {/* TAB 1: EXCEL SHEET CONFIGURATION */}
+            {/* TAB 1: EXCEL & GOOGLE SHEETS CONFIGURATION (MULTI-SHEET UP TO 10) */}
             {warehouseTab === "excel" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                {/* Primary Sheet URL Input & Connect Button */}
-                <div>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                    <label style={{ fontSize: "12.5px", fontWeight: 700, color: "#0F172A" }}>
-                      Google Sheet / Cloud Excel Link URL <span style={{ color: "#EF4444" }}>*</span>
-                    </label>
-                    {sheetUrl && (
-                      <a
-                        href={sheetUrl.startsWith("http") ? sheetUrl : `https://${sheetUrl}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{
-                          fontSize: "11px",
-                          color: "#2563EB",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 3,
-                          textDecoration: "none",
-                          fontWeight: 600,
-                        }}
-                      >
-                        Open Sheet <ExternalLink size={11} />
-                      </a>
-                    )}
-                  </div>
-
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <input
-                      type="url"
-                      value={sheetUrl}
-                      onChange={(e) => handleSheetUrlChange(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          handleConnectSheetClick();
-                        }
-                      }}
-                      placeholder="Paste Google Sheet URL (e.g. https://docs.google.com/spreadsheets/d/...)"
+                {/* Header Action Banner: Icon Badge + Sheet Count + Add Sheet Button */}
+                <div
+                  style={{
+                    background: "linear-gradient(135deg, #FFFFFF 0%, #F8FAFC 100%)",
+                    border: "1px solid #E2E8F0",
+                    borderRadius: 12,
+                    padding: "12px 14px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    boxShadow: "0 1px 4px rgba(15, 23, 42, 0.04)",
+                    gap: 12,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                    <div
                       style={{
-                        flex: 1,
-                        padding: "10px 12px",
-                        borderRadius: 8,
-                        border: excelSyncStatus === "CONNECTED" ? "1.5px solid #16A34A" : "1px solid #CBD5E1",
-                        fontSize: "12.5px",
-                        outline: "none",
-                        backgroundColor: "#FFFFFF",
-                        fontFamily: "monospace",
-                      }}
-                    />
-                    <button
-                      type="button"
-                      disabled={isConnectingSheet || isSyncingSheet || !sheetUrl.trim()}
-                      onClick={excelSyncStatus === "CONNECTED" || excelSyncStatus === "SYNCED" ? handleSyncSheetClick : handleConnectSheetClick}
-                      style={{
-                        padding: "10px 16px",
-                        borderRadius: 8,
-                        border: "none",
-                        backgroundColor: (excelSyncStatus === "CONNECTED" || excelSyncStatus === "SYNCED") ? "#16A34A" : "#2563EB",
-                        color: "#FFFFFF",
-                        fontSize: "12.5px",
-                        fontWeight: 700,
-                        cursor: isConnectingSheet || isSyncingSheet || !sheetUrl.trim() ? "not-allowed" : "pointer",
-                        display: "inline-flex",
+                        width: 38,
+                        height: 38,
+                        borderRadius: 10,
+                        background: "linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 100%)",
+                        border: "1px solid #BFDBFE",
+                        display: "flex",
                         alignItems: "center",
-                        gap: 6,
-                        opacity: !sheetUrl.trim() ? 0.6 : 1,
-                        whiteSpace: "nowrap",
-                        boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
-                        transition: "all 0.2s ease",
+                        justifyContent: "center",
+                        color: "#2563EB",
+                        boxShadow: "0 1px 2px rgba(37, 99, 235, 0.12)",
+                        flexShrink: 0,
                       }}
                     >
-                      {isConnectingSheet ? (
-                        <>
-                          <RefreshCw size={14} style={{ animation: "spin 1s linear infinite" }} />
-                          Connecting...
-                        </>
-                      ) : isSyncingSheet ? (
-                        <>
-                          <RefreshCw size={14} style={{ animation: "spin 1s linear infinite" }} />
-                          Syncing...
-                        </>
-                      ) : (excelSyncStatus === "CONNECTED" || excelSyncStatus === "SYNCED") ? (
-                        <>
-                          <RefreshCw size={14} />
-                          Re-Sync Sheet
-                        </>
-                      ) : (
-                        <>
-                          <Link2 size={15} />
-                          Connect Sheet
-                        </>
-                      )}
-                    </button>
+                      <FileSpreadsheet size={18} />
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: "13px", fontWeight: 700, color: "#0F172A", letterSpacing: "-0.2px" }}>
+                          Connected Sheets
+                        </span>
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            fontWeight: 700,
+                            padding: "2px 8px",
+                            borderRadius: 20,
+                            background: sheetsList.length >= 10 ? "#FEF3C7" : "#F1F5F9",
+                            color: sheetsList.length >= 10 ? "#92400E" : "#475569",
+                            border: "1px solid #E2E8F0",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                          }}
+                        >
+                          <span
+                            style={{
+                              width: 5,
+                              height: 5,
+                              borderRadius: "50%",
+                              background: sheetsList.length >= 10 ? "#D97706" : "#2563EB",
+                            }}
+                          />
+                          {sheetsList.length}/10 Active
+                        </span>
+                      </div>
+                      <p style={{ margin: "2px 0 0", fontSize: "11px", color: "#64748B", lineHeight: 1.3 }}>
+                        Connect multi-sheet pipelines with custom data labels for AI.
+                      </p>
+                    </div>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8 }}>
-                    <span style={{ fontSize: "11px", color: "#64748B" }}>
-                      Paste Google Sheet URL link or upload an Excel file (.xlsx, .xls) directly:
-                    </span>
-                    <label
-                      style={{
-                        padding: "5px 10px",
-                        borderRadius: 6,
-                        backgroundColor: "#F1F5F9",
-                        border: "1px solid #CBD5E1",
-                        fontSize: "11.5px",
-                        fontWeight: 600,
-                        color: "#0F172A",
-                        cursor: "pointer",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 5,
-                      }}
-                    >
-                      <UploadCloud size={13} color="#2563EB" />
-                      Upload Excel File
-                      <input
-                        type="file"
-                        accept=".xlsx, .xls"
-                        onChange={handleExcelFileUpload}
-                        style={{ display: "none" }}
-                      />
-                    </label>
-                  </div>
-                </div>
 
-                {/* Data Labels (Sheet Data Description & Purpose for AI Agent) */}
-                <div>
-                  <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#1E293B", marginBottom: 4 }}>
-                    Data Labels (Sheet Data Description & Purpose)
-                  </label>
-                  <span style={{ fontSize: "11px", color: "#64748B", display: "block", marginBottom: 6 }}>
-                    Specify what kind of campaign data is in this sheet so the AI Agent understands its business context and purpose.
-                  </span>
-                  <textarea
-                    rows={3}
-                    value={dataLabels}
-                    onChange={(e) => setDataLabels(e.target.value)}
-                    placeholder="e.g. Meta Ads campaigns & ad sets for Summer Sale 2026, E-commerce Retargeting Creatives, High-intent Lead Gen Ads"
+                  <button
+                    type="button"
+                    disabled={sheetsList.length >= 10}
+                    onClick={handleAddSheet}
                     style={{
-                      width: "100%",
-                      padding: "9px 12px",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 5,
+                      padding: "8px 14px",
                       borderRadius: 8,
-                      border: "1px solid #CBD5E1",
+                      border: "none",
+                      background: sheetsList.length >= 10 ? "#E2E8F0" : "linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%)",
+                      color: sheetsList.length >= 10 ? "#94A3B8" : "#FFFFFF",
                       fontSize: "12px",
-                      outline: "none",
-                      backgroundColor: "#FFFFFF",
-                      fontFamily: "inherit",
-                      lineHeight: 1.45,
-                    }}
-                  />
-                </div>
-
-                {/* Connection Error Message */}
-                {sheetConnectError && (
-                  <div
-                    style={{
-                      backgroundColor: "#FEF2F2",
-                      border: "1px solid #FECACA",
-                      borderRadius: 8,
-                      padding: "10px 12px",
-                      display: "flex",
-                      alignItems: "flex-start",
-                      gap: 8,
-                      color: "#991B1B",
-                      fontSize: "12px",
-                      lineHeight: 1.45,
+                      fontWeight: 700,
+                      cursor: sheetsList.length >= 10 ? "not-allowed" : "pointer",
+                      boxShadow: sheetsList.length >= 10 ? "none" : "0 2px 6px -1px rgba(37, 99, 235, 0.35)",
+                      transition: "all 0.15s ease",
+                      whiteSpace: "nowrap",
+                      flexShrink: 0,
                     }}
                   >
-                    <AlertCircle size={16} color="#DC2626" style={{ marginTop: 2, flexShrink: 0 }} />
-                    <div>
-                      <strong>Connection Failed:</strong> {sheetConnectError}
-                    </div>
-                  </div>
-                )}
+                    <Plus size={14} strokeWidth={2.5} />
+                    {sheetsList.length >= 10 ? "Max Reached" : "Add Sheet"}
+                  </button>
+                </div>
 
-                {/* Connected Success / Sync Card with Live Stats & Sync Now */}
-                {(excelSyncStatus === "CONNECTED" || excelSyncStatus === "SYNCED" || excelSyncStatus === "SYNCING" || excelSyncStatus === "FAILED" || (node.data?.sheetUrl && sheetUrl)) && (
-                  <div
-                    style={{
-                      backgroundColor: excelSyncStatus === "FAILED" ? "#FEF2F2" : "#F0FDF4",
-                      border: excelSyncStatus === "FAILED" ? "1px solid #FECACA" : "1px solid #BBF7D0",
-                      borderRadius: 10,
-                      padding: "14px 16px",
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: 10,
-                    }}
-                  >
-                    {/* Header Row: Connection info + Sync Status + Manual Sync Now Button */}
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        {excelSyncStatus === "FAILED" ? (
-                          <AlertCircle size={18} color="#DC2626" />
-                        ) : isSyncingSheet ? (
-                          <RefreshCw size={18} color="#D97706" style={{ animation: "spin 1s linear infinite" }} />
-                        ) : (
-                          <CheckCircle2 size={18} color="#16A34A" />
-                        )}
-                        <div>
-                          <div style={{ fontWeight: 700, color: excelSyncStatus === "FAILED" ? "#991B1B" : "#166534", fontSize: "13px" }}>
-                            {workbookName || "Google Spreadsheet"}
-                          </div>
-                          <div style={{ fontSize: "11px", color: "#64748B" }}>
-                            Worksheet: <strong>{worksheetName || "Sheet1"}</strong> • Provider: {excelProvider}
-                          </div>
-                        </div>
-                      </div>
+                {/* List of Connected Sheets (up to 10) */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  {sheetsList.map((sheet, index) => {
+                    const isSynced = sheet.excelSyncStatus === "SYNCED" || sheet.excelSyncStatus === "CONNECTED";
+                    const isFailed = sheet.excelSyncStatus === "FAILED";
 
-                      {/* Sync Action Button */}
-                      <button
-                        type="button"
-                        disabled={isSyncingSheet || !sheetUrl.trim()}
-                        onClick={handleSyncSheetClick}
-                        title="Fetch latest rows and updates directly from Google Sheets"
+                    return (
+                      <div
+                        key={sheet.id || index}
                         style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 6,
-                          padding: "6px 12px",
-                          borderRadius: 6,
-                          border: excelSyncStatus === "FAILED" ? "1px solid #FCA5A5" : "1px solid #86EFAC",
-                          backgroundColor: excelSyncStatus === "FAILED" ? "#FEE2E2" : "#FFFFFF",
-                          color: excelSyncStatus === "FAILED" ? "#B91C1C" : "#15803D",
-                          fontSize: "11.5px",
-                          fontWeight: 700,
-                          cursor: isSyncingSheet ? "not-allowed" : "pointer",
-                          boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-                          transition: "all 0.15s ease",
+                          backgroundColor: "#FFFFFF",
+                          border: isSynced ? "1.5px solid #BFDBFE" : isFailed ? "1.5px solid #FECACA" : "1px solid #E2E8F0",
+                          borderRadius: 12,
+                          boxShadow: isSynced
+                            ? "0 4px 14px -3px rgba(37, 99, 235, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04)"
+                            : "0 2px 8px -2px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03)",
+                          overflow: "hidden",
+                          transition: "all 0.2s ease",
                         }}
                       >
-                        <RefreshCw size={12} style={isSyncingSheet ? { animation: "spin 1s linear infinite" } : {}} />
-                        {isSyncingSheet ? "Syncing..." : excelSyncStatus === "FAILED" ? "Retry Sync" : "Sync Now"}
-                      </button>
-                    </div>
-
-                    {/* Live Row Sync Stats Pill Badges */}
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", paddingTop: 2 }}>
-                      <span
-                        title={`Total data rows: ${sheetStats.totalDataRows || sheetStats.totalRows || 0} (Rows 2–${sheetStats.lastRowNumber || (sheetStats.totalSheetRows || 9)})`}
-                        style={{
-                          backgroundColor: "#DCFCE7",
-                          color: "#15803D",
-                          fontSize: "11px",
-                          fontWeight: 700,
-                          padding: "3px 8px",
-                          borderRadius: 6,
-                        }}
-                      >
-                        📊 {sheetStats.totalDataRows || sheetStats.totalRows || node.data?.totalDataRows || node.data?.totalRows || 0} Data Rows (Rows 2–{sheetStats.lastRowNumber || node.data?.lastRowNumber || (sheetStats.totalSheetRows || 9)})
-                      </span>
-
-                      <span
-                        title="Total populated sheet rows in worksheet including Header row 1"
-                        style={{
-                          backgroundColor: "#F1F5F9",
-                          color: "#334155",
-                          fontSize: "11px",
-                          fontWeight: 700,
-                          padding: "3px 8px",
-                          borderRadius: 6,
-                          border: "1px solid #E2E8F0",
-                        }}
-                      >
-                        📋 {sheetStats.totalSheetRows || node.data?.totalSheetRows || ((sheetStats.totalDataRows || sheetStats.totalRows || 0) + 1)} Sheet Rows (Row 1 Header)
-                      </span>
-
-                      <span
-                        title="Rows with valid landing page URL and creative ad copy meeting Meta requirements"
-                        style={{
-                          backgroundColor: "#E0F2FE",
-                          color: "#0369A1",
-                          fontSize: "11px",
-                          fontWeight: 700,
-                          padding: "3px 8px",
-                          borderRadius: 6,
-                        }}
-                      >
-                        ✅ {sheetStats.eligibleAdRowsCount ?? sheetStats.readyRowsCount ?? node.data?.eligibleAdRowsCount ?? node.data?.readyRowsCount ?? 0} Eligible for Ads
-                      </span>
-
-                      {(sheetStats.validationErrorRowsCount > 0 || node.data?.validationErrorRowsCount > 0) && (
-                        <span
-                          title="Rows requiring corrections (e.g., missing landing page URL or missing ad copy)"
+                        {/* Sheet Card Top Bar */}
+                        <div
                           style={{
-                            backgroundColor: "#FEE2E2",
-                            color: "#B91C1C",
-                            fontSize: "11px",
-                            fontWeight: 700,
-                            padding: "3px 8px",
-                            borderRadius: 6,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            flexWrap: "wrap",
+                            gap: 8,
+                            padding: "10px 14px",
+                            background: isSynced
+                              ? "linear-gradient(90deg, #EFF6FF 0%, #FFFFFF 100%)"
+                              : "linear-gradient(90deg, #F8FAFC 0%, #FFFFFF 100%)",
+                            borderBottom: "1px solid #F1F5F9",
                           }}
                         >
-                          ⚠️ {sheetStats.validationErrorRowsCount || node.data?.validationErrorRowsCount || 0} Require Correction
-                        </span>
-                      )}
-
-                      {sheetStats.newRowsCount > 0 && (
-                        <span
-                          style={{
-                            backgroundColor: "#E0E7FF",
-                            color: "#3730A3",
-                            fontSize: "11px",
-                            fontWeight: 700,
-                            padding: "3px 8px",
-                            borderRadius: 6,
-                          }}
-                        >
-                          ✨ +{sheetStats.newRowsCount} New Rows {sheetStats.newRowNumbers?.length > 0 ? `(${sheetStats.newRowNumbers.join(", ")})` : ""}
-                        </span>
-                      )}
-
-                      {sheetStats.updatedRowsCount > 0 && (
-                        <span
-                          style={{
-                            backgroundColor: "#FEF3C7",
-                            color: "#92400E",
-                            fontSize: "11px",
-                            fontWeight: 700,
-                            padding: "3px 8px",
-                            borderRadius: 6,
-                          }}
-                        >
-                          🔄 +{sheetStats.updatedRowsCount} Updated Rows {sheetStats.updatedRowNumbers?.length > 0 ? `(${sheetStats.updatedRowNumbers.join(", ")})` : ""}
-                        </span>
-                      )}
-
-                      {sheetStats.blankRowsCount > 0 && (
-                        <span
-                          style={{
-                            backgroundColor: "#F8FAFC",
-                            color: "#64748B",
-                            fontSize: "11px",
-                            fontWeight: 600,
-                            padding: "3px 8px",
-                            borderRadius: 6,
-                            border: "1px dashed #CBD5E1",
-                          }}
-                        >
-                          ⚪ {sheetStats.blankRowsCount} Blank Skipped
-                        </span>
-                      )}
-
-                      <span style={{ fontSize: "11px", color: "#64748B", marginLeft: "auto" }}>
-                        🕒 Last Synced: {sheetStats.lastSyncedAt ? new Date(sheetStats.lastSyncedAt).toLocaleTimeString() : "Pending"}
-                      </span>
-                    </div>
-
-                    {sheetConnectMsg && (
-                      <div style={{ fontSize: "11.5px", color: excelSyncStatus === "FAILED" ? "#991B1B" : "#15803D", lineHeight: 1.4 }}>
-                        {sheetConnectMsg}
-                      </div>
-                    )}
-
-                    {/* Columns Badges */}
-                    {Array.isArray(sheetStats.columns) && sheetStats.columns.length > 0 && (
-                      <div style={{ borderTop: "1px dashed #BBF7D0", paddingTop: 8, marginTop: 2 }}>
-                        <div style={{ fontSize: "11px", fontWeight: 700, color: "#166534", marginBottom: 5 }}>
-                          Detected Column Schema ({sheetStats.columns.length}):
-                        </div>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                          {sheetStats.columns.slice(0, 10).map((col, idx) => (
-                            <span
-                              key={idx}
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                            <div
                               style={{
-                                backgroundColor: "#FFFFFF",
-                                border: "1px solid #86EFAC",
-                                color: "#166534",
-                                fontSize: "10.5px",
-                                padding: "2px 6px",
-                                borderRadius: 4,
-                                fontFamily: "monospace",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 5,
+                                padding: "3px 9px",
+                                borderRadius: 20,
+                                background: isSynced ? "#EFF6FF" : isFailed ? "#FEE2E2" : "#F1F5F9",
+                                border: isSynced ? "1px solid #BFDBFE" : isFailed ? "1px solid #FCA5A5" : "1px solid #E2E8F0",
+                                fontSize: "11px",
+                                fontWeight: 800,
+                                color: isSynced ? "#1D4ED8" : isFailed ? "#B91C1C" : "#475569",
                               }}
                             >
-                              {col}
-                            </span>
-                          ))}
-                          {sheetStats.columns.length > 10 && (
-                            <span style={{ fontSize: "10.5px", color: "#15803D", padding: "2px 4px" }}>
-                              +{sheetStats.columns.length - 10} more
-                            </span>
+                              <span
+                                style={{
+                                  width: 6,
+                                  height: 6,
+                                  borderRadius: "50%",
+                                  background: isSynced ? "#2563EB" : isFailed ? "#DC2626" : "#94A3B8",
+                                  boxShadow: isSynced ? "0 0 0 2px rgba(37, 99, 235, 0.2)" : "none",
+                                }}
+                              />
+                              Sheet #{index + 1}
+                            </div>
+
+                            {sheet.workbookName ? (
+                              <span style={{ fontSize: "12.5px", fontWeight: 700, color: "#1E293B", letterSpacing: "-0.1px" }}>
+                                {sheet.workbookName}
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: "11.5px", color: "#94A3B8", fontStyle: "italic" }}>
+                                Not connected yet
+                              </span>
+                            )}
+
+                            {isSynced && (
+                              <span
+                                style={{
+                                  fontSize: "11px",
+                                  fontWeight: 700,
+                                  color: "#1E40AF",
+                                  background: "#EFF6FF",
+                                  padding: "2px 8px",
+                                  borderRadius: 12,
+                                  border: "1px solid #DBEAFE",
+                                }}
+                              >
+                                {sheet.totalDataRows || sheet.totalRows || 0} rows synced
+                              </span>
+                            )}
+                          </div>
+
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            {sheet.sheetUrl && (
+                              <a
+                                href={sheet.sheetUrl.startsWith("http") ? sheet.sheetUrl : `https://${sheet.sheetUrl}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                style={{
+                                  fontSize: "11px",
+                                  color: "#2563EB",
+                                  background: "#EFF6FF",
+                                  border: "1px solid #DBEAFE",
+                                  padding: "4px 9px",
+                                  borderRadius: 6,
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                  textDecoration: "none",
+                                  fontWeight: 600,
+                                  transition: "all 0.15s ease",
+                                }}
+                              >
+                                <span>Open</span>
+                                <ExternalLink size={11} />
+                              </a>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveSheet(sheet.id || index)}
+                              title="Delete this sheet"
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                width: 26,
+                                height: 26,
+                                borderRadius: 6,
+                                border: "1px solid #FEE2E2",
+                                background: "#FFF1F2",
+                                color: "#E11D48",
+                                cursor: "pointer",
+                                transition: "all 0.15s ease",
+                                padding: 0,
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.background = "#FFE4E6";
+                                e.currentTarget.style.borderColor = "#FDA4AF";
+                                e.currentTarget.style.color = "#BE123C";
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.background = "#FFF1F2";
+                                e.currentTarget.style.borderColor = "#FEE2E2";
+                                e.currentTarget.style.color = "#E11D48";
+                              }}
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Sheet Card Body */}
+                        <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 11 }}>
+                          {/* URL Input and Connect Sheet Button */}
+                          <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+                            <div style={{ position: "relative", flex: 1 }}>
+                              <div
+                                style={{
+                                  position: "absolute",
+                                  left: 11,
+                                  top: "50%",
+                                  transform: "translateY(-50%)",
+                                  color: isSynced ? "#2563EB" : "#94A3B8",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  pointerEvents: "none",
+                                }}
+                              >
+                                <Link2 size={14} />
+                              </div>
+                              <input
+                                type="url"
+                                value={sheet.sheetUrl || ""}
+                                onChange={(e) => handleSheetUrlChangeForIndex(sheet.id, e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    handleConnectSheetAtIndex(sheet);
+                                  }
+                                }}
+                                placeholder="Paste Google Sheet URL (https://docs.google.com/spreadsheets/d/...)"
+                                style={{
+                                  width: "100%",
+                                  padding: "9px 12px 9px 34px",
+                                  borderRadius: 8,
+                                  border: isSynced ? "1.5px solid #BFDBFE" : "1px solid #CBD5E1",
+                                  fontSize: "12px",
+                                  outline: "none",
+                                  backgroundColor: "#FFFFFF",
+                                  color: "#0F172A",
+                                  transition: "all 0.15s ease",
+                                  boxShadow: "inset 0 1px 2px rgba(0,0,0,0.02)",
+                                }}
+                                onFocus={(e) => {
+                                  e.currentTarget.style.borderColor = "#3B82F6";
+                                  e.currentTarget.style.boxShadow = "0 0 0 3px rgba(59, 130, 246, 0.12)";
+                                }}
+                                onBlur={(e) => {
+                                  e.currentTarget.style.borderColor = isSynced ? "#BFDBFE" : "#CBD5E1";
+                                  e.currentTarget.style.boxShadow = "inset 0 1px 2px rgba(0,0,0,0.02)";
+                                }}
+                              />
+                            </div>
+
+                            <button
+                              type="button"
+                              disabled={sheet.isConnecting || !sheet.sheetUrl?.trim()}
+                              onClick={() => handleConnectSheetAtIndex(sheet)}
+                              style={{
+                                padding: "0 16px",
+                                borderRadius: 8,
+                                border: "none",
+                                background: "linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%)",
+                                color: "#FFFFFF",
+                                fontSize: "12px",
+                                fontWeight: 700,
+                                cursor: sheet.isConnecting || !sheet.sheetUrl?.trim() ? "not-allowed" : "pointer",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 6,
+                                opacity: !sheet.sheetUrl?.trim() ? 0.6 : 1,
+                                whiteSpace: "nowrap",
+                                boxShadow: "0 2px 6px -1px rgba(37, 99, 235, 0.3)",
+                                transition: "all 0.15s ease",
+                                flexShrink: 0,
+                              }}
+                            >
+                              {sheet.isConnecting ? (
+                                <>
+                                  <RefreshCw size={13} style={{ animation: "spin 1s linear infinite" }} />
+                                  Connecting...
+                                </>
+                              ) : isSynced ? (
+                                <>
+                                  <CheckCircle2 size={14} />
+                                  Re-Sync
+                                </>
+                              ) : (
+                                <>
+                                  <Link2 size={14} />
+                                  Connect Sheet
+                                </>
+                              )}
+                            </button>
+                          </div>
+
+                          {/* Error / Success Feedback */}
+                          {sheet.connectError && (
+                            <div
+                              style={{
+                                backgroundColor: "#FEF2F2",
+                                border: "1px solid #FECACA",
+                                borderRadius: 8,
+                                padding: "8px 12px",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 7,
+                                color: "#991B1B",
+                                fontSize: "11.5px",
+                                lineHeight: 1.4,
+                              }}
+                            >
+                              <AlertCircle size={14} color="#DC2626" style={{ flexShrink: 0 }} />
+                              <span>{sheet.connectError}</span>
+                            </div>
                           )}
+                          {sheet.connectMsg && !sheet.connectError && (
+                            <div
+                              style={{
+                                backgroundColor: "#EFF6FF",
+                                border: "1px solid #BFDBFE",
+                                borderRadius: 8,
+                                padding: "7px 12px",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 7,
+                                color: "#1E40AF",
+                                fontSize: "11.5px",
+                                lineHeight: 1.4,
+                              }}
+                            >
+                              <CheckCircle2 size={14} color="#2563EB" style={{ flexShrink: 0 }} />
+                              <span>{sheet.connectMsg}</span>
+                            </div>
+                          )}
+
+                          {/* Sheet Data Label Field */}
+                          <div>
+                            <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, color: "#1E293B", marginBottom: 5 }}>
+                              Data Label
+                            </label>
+                            <textarea
+                              rows={2}
+                              value={sheet.dataLabels || ""}
+                              onChange={(e) => handleUpdateSheetField(sheet.id, { dataLabels: e.target.value })}
+                              placeholder="e.g. Meta Ads campaigns & ad sets for Summer Sale 2026, E-commerce Retargeting Creatives, High-intent Lead Gen Ads"
+                              style={{
+                                width: "100%",
+                                padding: "8px 10px",
+                                borderRadius: 8,
+                                border: "1px solid #CBD5E1",
+                                fontSize: "11.5px",
+                                outline: "none",
+                                backgroundColor: "#FFFFFF",
+                                color: "#0F172A",
+                                fontFamily: "inherit",
+                                lineHeight: 1.4,
+                                resize: "vertical",
+                                transition: "all 0.15s ease",
+                              }}
+                              onFocus={(e) => {
+                                e.currentTarget.style.borderColor = "#3B82F6";
+                                e.currentTarget.style.boxShadow = "0 0 0 3px rgba(59, 130, 246, 0.12)";
+                              }}
+                              onBlur={(e) => {
+                                e.currentTarget.style.borderColor = "#CBD5E1";
+                                e.currentTarget.style.boxShadow = "none";
+                              }}
+                            />
+                          </div>
+
                         </div>
                       </div>
-                    )}
-                  </div>
-                )}
+                    );
+                  })}
+                </div>
               </div>
             )}
 
@@ -2394,8 +3198,8 @@ export const NodeDetailDrawer = ({
                   {/* Connection Status Card */}
                   <div
                     style={{
-                      backgroundColor: isConnected ? "#F0FDF4" : "#F8FAFC",
-                      border: isConnected ? "1.5px solid #86EFAC" : "1px solid #E2E8F0",
+                      backgroundColor: isConnected ? "#EFF6FF" : "#F8FAFC",
+                      border: isConnected ? "1.5px solid #BFDBFE" : "1px solid #E2E8F0",
                       borderRadius: 10,
                       padding: "14px 14px",
                       display: "flex",
@@ -2410,13 +3214,13 @@ export const NodeDetailDrawer = ({
                             width: 32,
                             height: 32,
                             borderRadius: 8,
-                            backgroundColor: isConnected ? "#DCFCE7" : "#E2E8F0",
+                            backgroundColor: isConnected ? "#DBEAFE" : "#E2E8F0",
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "center",
                           }}
                         >
-                          <HardDrive size={18} color={isConnected ? "#16A34A" : "#64748B"} />
+                          <HardDrive size={18} color={isConnected ? "#2563EB" : "#64748B"} />
                         </div>
                         <div>
                           <div style={{ fontSize: "13px", fontWeight: 700, color: "#0F172A" }}>
@@ -2436,8 +3240,8 @@ export const NodeDetailDrawer = ({
                           fontWeight: 700,
                           padding: "3px 8px",
                           borderRadius: 12,
-                          backgroundColor: isConnected ? "#DCFCE7" : "#F1F5F9",
-                          color: isConnected ? "#15803D" : "#64748B",
+                          backgroundColor: isConnected ? "#DBEAFE" : "#F1F5F9",
+                          color: isConnected ? "#1D4ED8" : "#64748B",
                         }}
                       >
                         {isConnected ? "Active OAuth" : "Offline"}
@@ -2449,11 +3253,11 @@ export const NodeDetailDrawer = ({
                       <div
                         style={{
                           fontSize: "12px",
-                          color: "#166534",
+                          color: "#1E40AF",
                           backgroundColor: "#FFFFFF",
                           borderRadius: 8,
                           padding: "10px 12px",
-                          border: "1px solid #BBF7D0",
+                          border: "1px solid #BFDBFE",
                           display: "flex",
                           alignItems: "center",
                           justifyContent: "space-between",
@@ -2465,13 +3269,13 @@ export const NodeDetailDrawer = ({
                               width: 28,
                               height: 28,
                               borderRadius: 6,
-                              backgroundColor: "#DCFCE7",
+                              backgroundColor: "#EFF6FF",
                               display: "flex",
                               alignItems: "center",
                               justifyContent: "center",
                             }}
                           >
-                            <Mail size={15} color="#16A34A" />
+                            <Mail size={15} color="#2563EB" />
                           </div>
                           <div>
                             <span style={{ fontSize: "10.5px", color: "#64748B", display: "block" }}>
@@ -2584,18 +3388,18 @@ export const NodeDetailDrawer = ({
                   {driveConnectMsg && (
                     <div
                       style={{
-                        backgroundColor: "#F0FDF4",
-                        border: "1px solid #BBF7D0",
+                        backgroundColor: "#EFF6FF",
+                        border: "1px solid #BFDBFE",
                         borderRadius: 8,
                         padding: "10px 12px",
                         display: "flex",
                         alignItems: "center",
                         gap: 8,
-                        color: "#166534",
+                        color: "#1E40AF",
                         fontSize: "12px",
                       }}
                     >
-                      <CheckCircle2 size={16} color="#16A34A" />
+                      <CheckCircle2 size={16} color="#2563EB" />
                       <span>{driveConnectMsg}</span>
                     </div>
                   )}
@@ -2615,17 +3419,17 @@ export const NodeDetailDrawer = ({
               padding: "10px 14px",
               borderRadius: 8,
               border: "none",
-              backgroundColor: savedBadge ? "#16A34A" : isSaving ? "#3B82F6" : "#2563EB",
+              backgroundColor: savedBadge ? "#10B981" : isSaving ? "#334155" : "#0F172A",
               color: "#FFFFFF",
               fontSize: "12.5px",
-              fontWeight: 700,
+              fontWeight: 600,
               cursor: isSaving ? "not-allowed" : "pointer",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               gap: 6,
-              boxShadow: "0 2px 6px rgba(37, 99, 235, 0.2)",
-              transition: "background 0.2s ease",
+              boxShadow: "0 1px 3px rgba(15, 23, 42, 0.12)",
+              transition: "all 0.15s ease",
             }}
           >
             {isSaving ? (

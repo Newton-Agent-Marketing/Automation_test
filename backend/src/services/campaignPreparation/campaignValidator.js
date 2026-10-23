@@ -47,6 +47,7 @@ export class CampaignValidator {
     accountDoc = null,
     sourceData = {},
     userAnswers = {},
+    contextNodeData = {},
   } = {}) {
     const { headers = [], rows = [], totalRows = 0, sourceType = "google_sheets", sheetUrl = null } = sourceData;
 
@@ -61,11 +62,24 @@ export class CampaignValidator {
     const detectedAppId = userAnswers.appId || this.getFieldValue(firstRowValues, "appId");
     const detectedStoreUrl = userAnswers.objectStoreUrl || this.getFieldValue(firstRowValues, "objectStoreUrl");
     const detectedPixelId = userAnswers.pixelId || this.getFieldValue(firstRowValues, "pixelId");
-    const detectedLandingUrl = userAnswers.landingPageUrl || this.getFieldValue(firstRowValues, "landingPageUrl");
+    const detectedLandingUrl = userAnswers.landingPageUrl || this.getFieldValue(firstRowValues, "landingPageUrl") || contextNodeData?.productUrl;
 
     // 1. Detect Campaign Type: WEBSITE vs APP_PROMOTION
     const explicitCampType = userAnswers.campaignType || this.getFieldValue(firstRowValues, "campaignType");
-    const explicitObjective = userAnswers.objective || this.getFieldValue(firstRowValues, "objective");
+    let explicitObjective = userAnswers.objective || this.getFieldValue(firstRowValues, "objective");
+
+    if (!explicitObjective && contextNodeData?.funnelEvent) {
+      const fEvent = String(contextNodeData.funnelEvent).toLowerCase();
+      if (fEvent.includes("purchase") || fEvent.includes("sale") || fEvent.includes("ecom")) {
+        explicitObjective = "OUTCOME_SALES";
+      } else if (fEvent.includes("lead")) {
+        explicitObjective = "OUTCOME_LEADS";
+      } else if (fEvent.includes("traffic") || fEvent.includes("click")) {
+        explicitObjective = "OUTCOME_TRAFFIC";
+      } else if (fEvent.includes("app") || fEvent.includes("install")) {
+        explicitObjective = "OUTCOME_APP_PROMOTION";
+      }
+    }
 
     let isAppPromotion = false;
     if (explicitCampType) {
@@ -317,7 +331,7 @@ export class CampaignValidator {
 
     let isBusinessVerified = false;
     const token = accountDoc?.accessToken || accountDoc?.oauthToken;
-    const targetAccId = metaAccountId || accountDoc?.accountId;
+    const targetAccId = metaAccountId || contextNodeData?.adAccountId || accountDoc?.accountId;
     if (targetAccId && token && !isAppPromotion) {
       try {
         const { MetaApiService } = await import("../meta/metaApiService.js");
@@ -355,6 +369,13 @@ export class CampaignValidator {
     const missingMediaRows = [];
     const missingHeadlineRows = [];
     const missingDestinationRows = [];
+
+    console.log("\n📋 [CAMPAIGN PREFLIGHT VALIDATOR ➔ AI CONTEXT NODE FUSION]");
+    console.log(`   Ad Account Target  : ${targetAccId || "(None)"} (Source: ${metaAccountId ? "Parameter" : (contextNodeData?.adAccountId ? "AI Context Ad Channel Node" : "Default")})`);
+    console.log(`   Objective          : ${objective} (Source: ${isAppPromotion ? "App Promotion" : (contextNodeData?.funnelEvent ? `Funnel Event "${contextNodeData.funnelEvent}"` : "Default Sales")})`);
+    console.log(`   Product Landing URL: ${contextNodeData?.productUrl || "(None)"} (From Product Node)`);
+    console.log(`   Product Name       : ${contextNodeData?.productName || "(None)"} (From Product Node)`);
+    console.log(`   Brief Target Goals : ${contextNodeData?.briefName || "(None)"} (From Marketing Brief Node)\n`);
 
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
@@ -395,7 +416,8 @@ export class CampaignValidator {
       const pageId =
         userAnswers.pageId ||
         this.getFieldValue(vals, "pageId") ||
-        accountDoc?.pageId;
+        accountDoc?.pageId ||
+        contextNodeData?.pageId;
 
       if (!pageId || !/^\d{5,20}$/.test(String(pageId).trim())) {
         missingPageRows.push(rowNo);
@@ -410,7 +432,10 @@ export class CampaignValidator {
 
       const primaryText =
         userAnswers.primaryText ||
-        this.getFieldValue(vals, "primaryText");
+        this.getFieldValue(vals, "primaryText") ||
+        contextNodeData?.briefName ||
+        contextNodeData?.productName ||
+        (contextNodeData?.metricsList?.length ? `Special Promotion - ${contextNodeData.metricsList.join(", ")}` : "");
 
       if (!primaryText || String(primaryText).trim().length < 5) {
         missingTextRows.push(rowNo);
@@ -425,7 +450,8 @@ export class CampaignValidator {
 
       const headline =
         userAnswers.headline ||
-        this.getFieldValue(vals, "headline");
+        this.getFieldValue(vals, "headline") ||
+        (contextNodeData?.productName ? `${contextNodeData.productName} - Special Offer` : "");
 
       if (!headline || String(headline).trim().length < 2) {
         missingHeadlineRows.push(rowNo);
@@ -449,7 +475,9 @@ export class CampaignValidator {
       } else {
         destination =
           userAnswers.landingPageUrl ||
-          this.getFieldValue(vals, "landingPageUrl");
+          this.getFieldValue(vals, "landingPageUrl") ||
+          contextNodeData?.productUrl ||
+          contextNodeData?.products?.[0]?.url;
       }
 
       if (!destination || !destination.startsWith("http")) {

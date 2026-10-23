@@ -1,6 +1,7 @@
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import User from "../models/authModel.js";
+import { gcsStorage } from "../services/storage/gcsStorageService.js";
 
 // Helper to generate JWT token
 const generateToken = (user) => {
@@ -70,6 +71,7 @@ export class AuthController {
           name: user.name,
           email: user.email,
           userType: user.userType,
+          avatar: user.avatar || "",
           createdAt: user.createdAt,
         },
       });
@@ -121,6 +123,7 @@ export class AuthController {
           name: user.name,
           email: user.email,
           userType: user.userType,
+          avatar: user.avatar || "",
           createdAt: user.createdAt,
         },
       });
@@ -186,10 +189,50 @@ export class AuthController {
   // 5. Update Current User Profile
   static async updateProfile(req, res) {
     try {
-      const { name, email } = req.body;
+      const { name, email, avatar } = req.body;
       const updateData = {};
-      if (name) updateData.name = name.trim();
-      if (email) updateData.email = email.toLowerCase().trim();
+      if (name !== undefined) updateData.name = name.trim();
+      if (email !== undefined) updateData.email = email.toLowerCase().trim();
+
+      if (avatar !== undefined) {
+        if (avatar && avatar.startsWith("data:image/")) {
+          if (gcsStorage.isConfigured()) {
+            try {
+              const matches = avatar.match(/^data:([^;]+);base64,(.+)$/);
+              if (matches) {
+                const mimeType = matches[1];
+                const buffer = Buffer.from(matches[2], "base64");
+                const ext = mimeType === "image/svg+xml" ? "svg" : mimeType.split("/")[1] || "webp";
+                const destination = `avatars/user-${req.user._id}-${Date.now()}.${ext}`;
+
+                await gcsStorage.uploadBuffer({ buffer, destination, contentType: mimeType });
+
+                const currentUser = await User.findById(req.user._id);
+                if (currentUser?.avatarStoragePath && currentUser.avatarStoragePath !== destination) {
+                  await gcsStorage.deleteFile(currentUser.avatarStoragePath);
+                }
+
+                updateData.avatarStoragePath = destination;
+                updateData.avatar = `/api/auth/profile-photo/${req.user._id}?v=${Date.now()}`;
+              }
+            } catch (gcsErr) {
+              console.warn("[GCS Upload in updateProfile Warning]:", gcsErr.message);
+              updateData.avatar = avatar;
+            }
+          } else {
+            updateData.avatar = avatar;
+          }
+        } else if (avatar === "") {
+          const currentUser = await User.findById(req.user._id);
+          if (currentUser?.avatarStoragePath && gcsStorage.isConfigured()) {
+            await gcsStorage.deleteFile(currentUser.avatarStoragePath);
+          }
+          updateData.avatar = "";
+          updateData.avatarStoragePath = "";
+        } else {
+          updateData.avatar = avatar;
+        }
+      }
 
       const user = await User.findByIdAndUpdate(
         req.user._id,
@@ -209,6 +252,153 @@ export class AuthController {
         message: "Failed to update profile",
         error: error.message,
       });
+    }
+  }
+
+  // 6. Upload Profile Avatar to Google Cloud Storage (Private Bucket)
+  static async uploadAvatar(req, res) {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: "No image file provided",
+        });
+      }
+
+      const userId = req.user._id;
+      const currentUser = await User.findById(userId);
+      if (!currentUser) {
+        return res.status(404).json({ success: false, message: "User not found" });
+      }
+
+      const ext = req.file.mimetype === "image/svg+xml" ? "svg" : req.file.mimetype.split("/")[1] || "webp";
+      const destination = `avatars/user-${userId}-${Date.now()}.${ext}`;
+      let finalAvatarUrl = "";
+      let finalStoragePath = "";
+
+      if (gcsStorage.isConfigured()) {
+        // Upload to private GCS bucket
+        await gcsStorage.uploadBuffer({
+          buffer: req.file.buffer,
+          destination,
+          contentType: req.file.mimetype,
+        });
+
+        // Clean up previous GCS avatar file if exists
+        if (currentUser.avatarStoragePath && currentUser.avatarStoragePath !== destination) {
+          await gcsStorage.deleteFile(currentUser.avatarStoragePath);
+        }
+
+        finalStoragePath = destination;
+        finalAvatarUrl = `/api/auth/profile-photo/${userId}?v=${Date.now()}`;
+      } else {
+        // Fallback for local development if GCS credentials are not set in .env yet
+        const base64Data = req.file.buffer.toString("base64");
+        finalAvatarUrl = `data:${req.file.mimetype};base64,${base64Data}`;
+        finalStoragePath = "";
+        console.warn("[GCS Warning] GCS is not configured in .env; saved image in database fallback.");
+      }
+
+      const updatedUser = await User.findByIdAndUpdate(
+        userId,
+        {
+          $set: {
+            avatar: finalAvatarUrl,
+            avatarStoragePath: finalStoragePath,
+          },
+        },
+        { returnDocument: "after" }
+      ).select("-password");
+
+      return res.status(200).json({
+        success: true,
+        message: "Profile photo uploaded successfully",
+        user: updatedUser,
+        avatar: finalAvatarUrl,
+      });
+    } catch (error) {
+      console.error("[Auth UploadAvatar Error]:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to upload profile photo to storage",
+        error: error.message,
+      });
+    }
+  }
+
+  // 7. Remove Profile Avatar
+  static async removeAvatar(req, res) {
+    try {
+      const userId = req.user._id;
+      const currentUser = await User.findById(userId);
+      if (!currentUser) {
+        return res.status(404).json({ success: false, message: "User not found" });
+      }
+
+      if (currentUser.avatarStoragePath && gcsStorage.isConfigured()) {
+        await gcsStorage.deleteFile(currentUser.avatarStoragePath);
+      }
+
+      const updatedUser = await User.findByIdAndUpdate(
+        userId,
+        {
+          $set: {
+            avatar: "",
+            avatarStoragePath: "",
+          },
+        },
+        { returnDocument: "after" }
+      ).select("-password");
+
+      return res.status(200).json({
+        success: true,
+        message: "Profile photo removed successfully",
+        user: updatedUser,
+      });
+    } catch (error) {
+      console.error("[Auth RemoveAvatar Error]:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to remove profile photo",
+        error: error.message,
+      });
+    }
+  }
+
+  // 8. Stream Profile Photo from Private GCS Bucket
+  static async getProfilePhoto(req, res) {
+    try {
+      const { userId } = req.params;
+      const user = await User.findById(userId).select("avatar avatarStoragePath");
+      if (!user) {
+        return res.status(404).send("User not found");
+      }
+
+      if (user.avatarStoragePath && gcsStorage.isConfigured()) {
+        const fileData = await gcsStorage.getFileStream(user.avatarStoragePath);
+        if (fileData) {
+          res.setHeader("Content-Type", fileData.contentType);
+          res.setHeader("Cache-Control", "private, max-age=86400, stale-while-revalidate=604800");
+          return fileData.stream.pipe(res);
+        }
+      }
+
+      // If stored as base64 data url
+      if (user.avatar && user.avatar.startsWith("data:")) {
+        const matches = user.avatar.match(/^data:([^;]+);base64,(.+)$/);
+        if (matches) {
+          const contentType = matches[1];
+          const buffer = Buffer.from(matches[2], "base64");
+          res.setHeader("Content-Type", contentType);
+          res.setHeader("Cache-Control", "private, max-age=86400");
+          return res.send(buffer);
+        }
+      }
+
+      return res.status(404).send("Profile photo not found");
+    } catch (error) {
+      console.error("[Auth GetProfilePhoto Error]:", error);
+      return res.status(500).send("Failed to stream profile photo");
     }
   }
 }

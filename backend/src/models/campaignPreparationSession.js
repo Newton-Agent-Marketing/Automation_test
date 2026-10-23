@@ -112,6 +112,10 @@ const campaignPreparationSessionSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.Mixed,
       default: null,
     },
+    contextNodeData: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
     validationReport: {
       summaryTable: [
         {

@@ -1,6 +1,10 @@
 import axios from "axios";
 
-export const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+export const API_URL =
+  typeof window !== "undefined" &&
+  (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+    ? "http://localhost:3000"
+    : (import.meta.env.VITE_API_URL || "http://localhost:3000");
 
 const api = axios.create({
   baseURL: API_URL,
@@ -16,6 +20,9 @@ api.interceptors.request.use(
     const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
+    }
+    if (config.data instanceof FormData) {
+      delete config.headers["Content-Type"];
     }
     return config;
   },

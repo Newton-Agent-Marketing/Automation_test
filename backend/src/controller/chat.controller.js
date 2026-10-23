@@ -118,14 +118,28 @@ const generateFallbackMarketingResponse = async ({
     });
   }
 
-  const brandName = "your brand";
-  const audience = "target audience";
+  let activeAiCtx = null;
+  try {
+    activeAiCtx = await executeAgentTool("get_user_ai_context", { userId }).catch(() => null);
+  } catch (_) {}
+
+  const brandName =
+    activeAiCtx?.businessUnits?.[0]?.name ||
+    activeAiCtx?.products?.[0]?.productName ||
+    activeAiCtx?.products?.[0]?.name ||
+    "your brand";
+  const audience =
+    activeAiCtx?.marketingBriefs?.[0]?.name ||
+    activeAiCtx?.businessUnits?.[0]?.description ||
+    "target audience";
+  const ctxChannels = (activeAiCtx?.adChannels || []).map((c) => c.channel || c.channelName).filter(Boolean);
   const uniqueChannels = Array.from(
-    new Set(
-      (connectedChannels || [])
+    new Set([
+      ...ctxChannels,
+      ...(connectedChannels || [])
         .map((c) => (c.channelName || c.name || "").trim())
-        .filter(Boolean)
-    )
+        .filter(Boolean),
+    ])
   );
   const channelsList = uniqueChannels.length > 0
     ? uniqueChannels.join(", ")
@@ -267,18 +281,9 @@ const generateFallbackMarketingResponse = async ({
     const sheetAudience = getSheetVal(["audience", "target_audience", "targeting", "interests"]);
     const sheetObjective = getSheetVal(["objective", "funnel_event", "funnel"]);
 
-    const primaryChannel = aiCtx?.adChannels?.[0];
-    const primaryProduct = aiCtx?.products?.[0];
-    const primaryBrief = aiCtx?.marketingBriefs?.[0];
-    const primaryBusiness = aiCtx?.businessUnits?.[0];
-    const primaryFlow = aiCtx?.flows?.[0];
-    const flowParams = primaryFlow?.campaignLaunchParameters || {};
-
-    const targetChannelName = (primaryChannel?.channel || primaryChannel?.channelName || flowParams.channel || "").toLowerCase();
-    
     // Explicit channel detection based on user message and actual connected accounts
     const mentionsMeta = lower.includes("meta") || lower.includes("facebook") || lower.includes("fb") || lower.includes("instagram") || lower.includes("insta");
-    const mentionsGoogle = lower.includes("google") || lower.includes("adwords");
+    const mentionsGoogle = lower.includes("google") || lower.includes("adwords") || lower.includes("search") || lower.includes("pmax");
 
     // Verify actual valid integrations
     const hasActiveMeta = Boolean(metaAcc && (metaAcc.accessToken || metaAcc.accountId) && metaAcc.isActive !== false);
@@ -289,15 +294,40 @@ const generateFallbackMarketingResponse = async ({
       isGoogle = true;
     } else if (mentionsMeta && !mentionsGoogle) {
       isGoogle = false;
-    } else if (targetChannelName.includes("meta") || targetChannelName.includes("facebook") || targetChannelName.includes("instagram")) {
-      isGoogle = false;
-    } else if (hasActiveMeta && !hasActiveGoogle) {
-      isGoogle = false;
     } else if (hasActiveGoogle && !hasActiveMeta) {
       isGoogle = true;
-    } else if (targetChannelName.includes("google") && hasActiveGoogle) {
-      isGoogle = true;
     } else {
+      isGoogle = false;
+    }
+
+    // Dynamic resolution of Business Unit, Channel (Meta vs Google), Product, and Sheet from AI Context hierarchy
+    let ctxSelection = null;
+    try {
+      const { resolveAiContextSelection } = await import("../services/agent/queryDbMetrics.js");
+      if (typeof resolveAiContextSelection === "function") {
+        ctxSelection = resolveAiContextSelection({
+          aiCtx,
+          userMessage,
+          requestedChannel: isGoogle ? "Google Ads" : "Meta Ads",
+        });
+      }
+    } catch (e) {
+      // fallback
+    }
+
+    const primaryBusiness = ctxSelection?.businessUnit || aiCtx?.businessUnitsHierarchy?.[0] || aiCtx?.businessUnits?.[0];
+    const primaryChannel = ctxSelection?.channel || aiCtx?.adChannels?.[0];
+    const primaryProduct = ctxSelection?.product || aiCtx?.products?.[0];
+    const primaryBrief = ctxSelection?.brief || aiCtx?.marketingBriefs?.[0];
+    const primaryWarehouse = ctxSelection?.warehouse || aiCtx?.dataWarehouses?.[0];
+    const selectedSheet = ctxSelection?.selectedSheet || primaryWarehouse?.sheets?.[0];
+    const primaryFlow = aiCtx?.flows?.[0];
+    const flowParams = primaryFlow?.campaignLaunchParameters || {};
+
+    const targetChannelName = (primaryChannel?.channel || primaryChannel?.channelName || flowParams.channel || "").toLowerCase();
+    if (targetChannelName.includes("google") && !mentionsMeta) {
+      isGoogle = true;
+    } else if ((targetChannelName.includes("meta") || targetChannelName.includes("facebook") || targetChannelName.includes("instagram")) && !mentionsGoogle) {
       isGoogle = false;
     }
 
@@ -333,7 +363,7 @@ const generateFallbackMarketingResponse = async ({
         googleAcc?.accountId;
     } else {
       // META ADS ACCOUNT RESOLUTION & STRICT MULTI-USER VALIDATION
-      const explicitMetaCandidate = metaAccountId || accountId || flowParams?.accountId;
+      const explicitMetaCandidate = selectedChannelAccountId || flowParams?.accountId || metaAccountId || accountId;
 
       // Filter out Google Customer IDs (contains hyphens or matches user's Google Accounts)
       const isGoogleId = Boolean(
@@ -691,7 +721,10 @@ I have built and configured your Google Ads search campaign using your **AI Cont
         }
 
         for (const wh of (ctx?.dataWarehouses || [])) {
-          const rows = wh.sheetRows || wh.rows || [];
+          const sheetRowsFromMulti = Array.isArray(wh.sheets)
+            ? wh.sheets.flatMap((s) => s.sheetRows || [])
+            : [];
+          const rows = [...(wh.sheetRows || wh.rows || []), ...sheetRowsFromMulti];
           for (const row of rows) {
             if (typeof row === "object" && row !== null) {
               for (const [k, v] of Object.entries(row)) {
@@ -2764,7 +2797,18 @@ ${lastAdSet ? `- **Ad Set Verified in Meta**: \`${lastAdSet.name}\` (ID: \`${las
       } else {
         const dws = (aiCtx?.dataWarehouses || []);
         if (dws.length > 0) {
-          rowsContent = `#### 📊 Connected Data Warehouses & Sheets\n` + dws.map((d, i) => `- **${d.name || `Sheet #${i + 1}`}**: ${d.sheetUrl ? `[Google Sheet Link](${d.sheetUrl})` : d.platform || "Connected Excel"} (Status: \`CONNECTED\`)\n\n> ℹ️ *Sheet URL is registered. To view live data rows, please set Sheet sharing to **"Anyone with the link can view"** or connect your Google Account in Channels.*`).join("\n");
+          const list = [];
+          for (const d of dws) {
+            if (Array.isArray(d.sheets) && d.sheets.length > 0) {
+              list.push(`- **${d.name || "Data Warehouse"}** (${d.sheets.length} Sheets Connected):`);
+              d.sheets.forEach((s, idx) => {
+                list.push(`  * **Sheet #${idx + 1}**: [${s.workbookName || "Google Sheet"}](${s.sheetUrl || "#"}) (Status: \`${s.excelSyncStatus || "CONNECTED"}\`${s.totalRows ? `, ${s.totalRows} rows` : ""}) • Data Label: *${s.dataLabels || "No label specified"}*`);
+              });
+            } else {
+              list.push(`- **${d.name || "Data Warehouse"}**: ${d.sheetUrl ? `[Google Sheet Link](${d.sheetUrl})` : d.platform || "Connected Excel"} (Status: \`CONNECTED\`) • Data Label: *${d.dataLabels || "Aggregated"}*`);
+            }
+          }
+          rowsContent = `#### 📊 Connected Data Warehouses & Sheets\n` + list.join("\n") + `\n\n> ℹ️ *Sheet URL is registered. To view live data rows, please set Sheet sharing to **"Anyone with the link can view"** or connect your Google Account in Channels.*`;
         } else {
           rowsContent = `> ℹ️ *No active Google Sheet or Excel rows were found in your AI Context Canvas. You can attach a sheet URL or upload an Excel file under the **AI Context ➔ Data Warehouse** node.*`;
         }
@@ -2863,21 +2907,24 @@ ${campaignRows.join("\n")}
   }
 
   // 2. If user is asking to VIEW or EXPLAIN AI Context / Workflow
-  if (
-    lower.includes("ai context") ||
-    lower.includes("context flow") ||
+  const isContextQuery =
+    lower === "what is my context" ||
+    lower === "context" ||
+    lower.includes("context") ||
+    lower.includes("workflow") ||
+    lower.includes("connection flow") ||
     lower.includes("marketing flow") ||
     lower.includes("business unit") ||
-    lower.includes("workflow") ||
-    lower.includes("flow of connection") ||
-    lower.includes("connection flow") ||
-    lower.includes("node") ||
-    lower.includes("data warehouse") ||
+    lower.includes("marketing brief") ||
     lower.includes("product catalog") ||
-    lower.includes("marketing brief")
-  ) {
+    lower.includes("data warehouse") ||
+    lower.includes("nodes detail") ||
+    lower.includes("nodes data") ||
+    (lower.includes("node") && (lower.includes("data") || lower.includes("detail") || lower.includes("kya") || lower.includes("show") || lower.includes("batao") || lower.includes("list")));
+
+  if (isContextQuery) {
     try {
-      const aiCtx = await executeAgentTool("get_user_ai_context", { userId });
+      const aiCtx = (activeAiCtx && activeAiCtx.hasContext) ? activeAiCtx : await executeAgentTool("get_user_ai_context", { userId });
       if (aiCtx && aiCtx.hasContext) {
         const flows = aiCtx.flows || [];
         const flowList = flows.length > 0
@@ -2885,10 +2932,54 @@ ${campaignRows.join("\n")}
           : "| Flow #1 | Default | Direct Context | 1 |";
 
         const bus = (aiCtx.businessUnits || []).map((b) => `- **${b.name}**: ${b.description || "Active Business Unit"}`).join("\n") || "- *No Business Unit configured*";
-        const channels = (aiCtx.adChannels || []).map((c) => `- **${c.channel}**: ${c.accountId ? `Account \`${c.accountId}\`` : "Default"} (${c.funnelEvent || "Purchase"})`).join("\n") || "- *No Ad Channel nodes attached*";
-        const prods = (aiCtx.products || []).map((p) => `- **${p.name}**${p.price ? ` (₹${p.price})` : ""}${p.catalogCount > 0 ? ` • **${p.catalogCount} items** in catalog` : ""}`).join("\n") || "- *No Product nodes attached*";
-        const briefs = (aiCtx.marketingBriefs || []).map((b) => `- **${b.name}**: Target KPIs \`${b.kpis || "ROAS"}\` • ${b.description || "Active strategy"}`).join("\n") || "- *No Marketing Briefs attached*";
-        const dws = (aiCtx.dataWarehouses || []).map((d) => `- **${d.name}**: Platform \`${d.platform}\` • Data: ${d.dataLabels || "Aggregated"}`).join("\n") || "- *No Data Warehouse nodes attached*";
+        
+        const channels = (aiCtx.adChannels || []).map((c) => {
+          const buStr = c.businessUnitName ? `[${c.businessUnitName}] ➔ ` : "";
+          const accStr = c.accountId ? `Account \`${c.accountId}\`${c.accountName ? ` ("${c.accountName}")` : ""}` : "Default Account";
+          const eventStr = c.funnelEvent ? ` (${c.funnelEvent}${c.funnelDescription ? `: "${c.funnelDescription}"` : ""})` : "";
+          return `- **${c.channel || c.channelName || "Ad Channel"}**: ${buStr}${accStr}${eventStr}`;
+        }).join("\n") || "- *No Ad Channel nodes attached*";
+
+        const briefs = (aiCtx.marketingBriefs || []).map((b) => {
+          const buPart = b.businessUnitName ? ` [Business Unit: "${b.businessUnitName}"]` : "";
+          const periodStr = b.targetPeriod ? ` [Period: "${b.targetPeriod}"]` : "";
+          const descStr = b.description ? `\n    * Strategy / Offer: *"${b.description}"*` : "";
+          let metricsDetail = b.metrics ? `\n    * Target Metrics: *"${b.metrics}"*` : "";
+          if (Array.isArray(b.metricsList) && b.metricsList.length > 0) {
+            const listStr = b.metricsList
+              .map((m, i) => `\n    * Date Range #${i + 1} (${m.formattedPeriod || `${m.startDate} to ${m.endDate}`}): *"${m.metrics}"*`)
+              .join("");
+            metricsDetail = `\n    * Configured Date-Range Metrics (${b.metricsList.length} ranges):${listStr}`;
+          } else if (!metricsDetail) {
+            metricsDetail = b.description ? "" : `\n    * Target Metrics: *(Not configured yet)*`;
+          }
+          return `- **${b.name || "Marketing Brief"}**${buPart}${periodStr}:${descStr}${metricsDetail}`;
+        }).join("\n") || "- *No Marketing Brief configured*";
+
+        const prods = (aiCtx.products || []).map((p) => {
+          const catalogList = Array.isArray(p.catalog) && p.catalog.length > 0 ? p.catalog : (Array.isArray(p.products) ? p.products : []);
+          const cat = catalogList.length > 0
+            ? `\n    * Catalog (${catalogList.length} items): ` + catalogList.map(item => `"${item.name || "Item"}"${item.price ? ` (₹${item.price})` : ""}${item.url ? ` [${item.url}]` : ""}`).join(", ")
+            : "";
+          const urlStr = p.url || p.productUrl ? ` • Landing URL: \`${p.url || p.productUrl}\`` : "";
+          const platformsStr = p.platforms && p.platforms.length > 0 ? ` • Platforms: ${p.platforms.join(" & ")}` : "";
+          return `- **${p.name || p.productName || "Product"}**${p.price ? ` (₹${p.price})` : ""}${p.catalogCount > 0 ? ` • **${p.catalogCount} items** in catalog` : ""}${urlStr}${platformsStr}${cat}`;
+        }).join("\n") || "- *No Product nodes attached*";
+
+        const dws = (aiCtx.dataWarehouses || []).map((d) => {
+          if (Array.isArray(d.sheets) && d.sheets.length > 0) {
+            const sheetItems = d.sheets.map((s, idx) => {
+              const rowsStr = s.totalRows || s.totalDataRows ? ` • ${s.totalDataRows || s.totalRows} rows synced` : "";
+              const labelStr = s.dataLabels ? ` • Data Label: *"${s.dataLabels}"*` : "";
+              const urlStr = s.sheetUrl ? ` • [Sheet Link](${s.sheetUrl})` : "";
+              return `\n    * Sheet #${idx + 1}: **${s.workbookName || "Google Sheet"}** (Status: \`${s.excelSyncStatus || "CONNECTED"}\`${rowsStr}${labelStr}${urlStr})`;
+            }).join("");
+            return `- **${d.name || "Data Warehouse"}**: Platform \`${d.platform}\` • **${d.sheets.length} Sheets Connected**:${sheetItems}`;
+          }
+          const singleUrl = d.sheetUrl ? ` • [Sheet Link](${d.sheetUrl})` : "";
+          const singleLabel = d.dataLabels ? ` • Data Label: *"${d.dataLabels}"*` : "";
+          return `- **${d.name || "Data Warehouse"}**: Platform \`${d.platform}\`${singleUrl}${singleLabel}`;
+        }).join("\n") || "- *No Data Warehouse nodes attached*";
 
         return {
           content: `### 🧠 AI Context Workflow & Connection Flow (Live from Database)
@@ -2926,9 +3017,27 @@ ${dws}
             },
           ],
         };
+      } else {
+        return {
+          content: `### 🧠 AI Context Workflow (Live from Database)
+
+No active AI Context nodes or connection flows are currently configured in your workspace.
+
+You can configure your marketing pipeline under the **AI Context** tab by adding:
+1. **Business Unit** (Brand / business entity)
+2. **Ad Channel** (Meta Ads, Google Ads with account linking)
+3. **Marketing Brief** (KPIs, date range targets, ROAS)
+4. **Product Catalog** (Products, landing pages, multi-platform targets)
+5. **Data Warehouse** (Connected Google Sheets & Drive assets with custom data labels)`,
+          toolCalls: [],
+        };
       }
     } catch (err) {
-      // fallback
+      console.warn("[chat.controller.js Context Query Handler Error]:", err);
+      return {
+        content: `### 🧠 AI Context Workflow Notice\n\nI was unable to load your AI Context canvas from the database due to a temporary error: *${err.message}*.\n\nPlease check your database connection or view the **AI Context** canvas tab.`,
+        toolCalls: [],
+      };
     }
   }
 

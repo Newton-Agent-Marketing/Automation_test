@@ -99,7 +99,7 @@ export class MetaAdsOrchestrator {
 
     emit(1, "Verifying Meta Ad Account credentials & permissions...");
 
-    let targetAccountId = session.metaAccountId;
+    let targetAccountId = session.metaAccountId || session.contextNodeData?.adAccountId;
     if (!targetAccountId) {
       throw new Error("No Meta Ad Account selected. Please select a Meta Ads account in AI Context → Channel Node before creating campaigns.");
     }
@@ -247,6 +247,14 @@ export class MetaAdsOrchestrator {
 
       if (!metaCampaignId) {
         emit(2, `Creating Campaign "${campaignName}" on Meta Graph API...`);
+        console.log("\n--------------------------------------------------------------------------------");
+        console.log(`🚀 [META ADS API DISPATCH ➔ LEVEL 1: CREATING CAMPAIGN]`);
+        console.log(`   🎯 Target Account ID : ${targetAccountId}`);
+        console.log(`   🏷️  Campaign Name    : "${campaignName}"`);
+        console.log(`   🎯 Objective        : ${objective} (Derived from Ad Channel Funnel: "${session.contextNodeData?.funnelEvent || "Purchase"}")`);
+        console.log(`   💰 Daily Budget     : ₹${parsedBudget}`);
+        console.log("--------------------------------------------------------------------------------");
+
         const campRes = await executeAgentTool("create_meta_campaign", {
           name: campaignName,
           objective,
@@ -262,8 +270,10 @@ export class MetaAdsOrchestrator {
         }
         session.creationJob.metaCampaignId = metaCampaignId;
         await session.save();
+        console.log(`✅ [META ADS API] Level 1 Campaign Created Successfully! ID: ${metaCampaignId}`);
         emit(2, `Campaign Created Successfully (ID: ${metaCampaignId})`);
       } else {
+        console.log(`ℹ️ [META ADS API] Reusing existing Campaign (ID: ${metaCampaignId})`);
         emit(2, `Using Campaign (ID: ${metaCampaignId})`);
       }
 
@@ -288,6 +298,15 @@ export class MetaAdsOrchestrator {
         }
 
         emit(3, `Creating Ad Set "${adSetName}" under Campaign ${metaCampaignId}...`);
+        console.log("\n--------------------------------------------------------------------------------");
+        console.log(`🎯 [META ADS API DISPATCH ➔ LEVEL 2: CREATING AD SET]`);
+        console.log(`   🎯 Target Account ID : ${targetAccountId}`);
+        console.log(`   🏷️  Ad Set Name      : "${adSetName}"`);
+        console.log(`   🔗 Parent Campaign  : ${metaCampaignId}`);
+        console.log(`   ⚡ Optimization Goal: ${finalOptGoal}`);
+        console.log(`   💳 Billing Event    : ${billingEv}`);
+        console.log("--------------------------------------------------------------------------------");
+
         const adSetRes = await executeAgentTool("create_meta_ad_set", {
           campaignId: metaCampaignId,
           name: adSetName,
@@ -312,8 +331,10 @@ export class MetaAdsOrchestrator {
         }
         session.creationJob.metaAdSetId = metaAdSetId;
         await session.save();
+        console.log(`✅ [META ADS API] Level 2 Ad Set Created Successfully! ID: ${metaAdSetId}`);
         emit(3, `Ad Set Created Successfully (ID: ${metaAdSetId})`);
       } else {
+        console.log(`ℹ️ [META ADS API] Reusing existing Ad Set (ID: ${metaAdSetId})`);
         emit(3, `Reusing already created Ad Set (ID: ${metaAdSetId})`);
       }
 
@@ -637,10 +658,46 @@ export class MetaAdsOrchestrator {
 
           const adDisplayLink = adConfig.displayLink || adConfig.display_link || session.preview?.adDetails?.[i]?.displayLink || session.preview?.adDetails?.[0]?.displayLink || session.userAnswers?.displayLink || null;
 
-          const candidateDest = adConfig.destination || adConfig.landingPageUrl || adConfig.linkUrl || session.preview?.adDetails?.[i]?.destination || session.userAnswers?.landingPageUrl || null;
+          const candidateDest =
+            adConfig.destination ||
+            adConfig.landingPageUrl ||
+            adConfig.linkUrl ||
+            session.preview?.adDetails?.[i]?.destination ||
+            session.userAnswers?.landingPageUrl ||
+            session.contextNodeData?.productUrl ||
+            session.contextNodeData?.products?.[0]?.url ||
+            null;
           const adDestUrl = (isAppCamp && adStoreUrl)
             ? (/play\.google\.com|apps\.apple\.com|itunes\.apple\.com/i.test(candidateDest || "") ? candidateDest : adStoreUrl)
             : candidateDest;
+
+          const adHeadline =
+            adConfig.headline ||
+            session.preview?.adDetails?.[i]?.headline ||
+            session.userAnswers?.headline ||
+            (session.contextNodeData?.productName ? `${session.contextNodeData.productName} - Special Offer` : null);
+
+          const adPrimaryText =
+            adConfig.primaryText ||
+            session.preview?.adDetails?.[i]?.primaryText ||
+            session.userAnswers?.primaryText ||
+            session.contextNodeData?.briefName ||
+            session.contextNodeData?.productName ||
+            null;
+
+          console.log(`\n--------------------------------------------------------------------------------`);
+          console.log(`🎨 [META ADS API DISPATCH ➔ LEVEL 3: AD CREATIVE (Row #${rowNo})]:`);
+          console.log(`   🎯 Target Account ID : ${targetAccountId}`);
+          console.log(`   🔗 Ad Set ID        : ${metaAdSetId}`);
+          console.log(`   🏷️  Ad Name          : "${adConfig.adName}"`);
+          console.log(`   🎬 Format           : ${isVideo ? "Video Ad" : "Image Ad"}`);
+          console.log(`   📂 Media Creative   : ${adConfig.creative} (Source: Warehouse Sheet)`);
+          console.log(`   ✍️  Headline         : "${adHeadline}" (Source: ${adConfig.headline ? "Sheet Row" : "Product Node [" + (session.contextNodeData?.productName || "") + "]"})`);
+          console.log(`   📄 Primary Text     : "${adPrimaryText ? adPrimaryText.slice(0, 60) + "..." : "(Empty)"}" (Source: ${adConfig.primaryText ? "Sheet Row" : "Marketing Brief / Product Node"})`);
+          console.log(`   🌐 Destination URL  : "${adDestUrl}" (Source: ${adConfig.destination || adConfig.landingPageUrl ? "Sheet Row" : "Product Node [productUrl: " + (session.contextNodeData?.productUrl || "") + "]"})`);
+          console.log(`   🔘 CTA Button       : "${adConfig.cta || defaultCta}"`);
+          console.log(`   📄 Facebook Page ID : "${adPageId}"`);
+          console.log("--------------------------------------------------------------------------------");
 
           if (isVideo) {
             createdAdRes = await executeAgentTool("create_meta_video_ad", {
@@ -649,8 +706,8 @@ export class MetaAdsOrchestrator {
               videoId: rowVideoId,
               videoFilePath: adConfig.videoFilePath,
               videoUrl: adConfig.creative,
-              headline: adConfig.headline,
-              primaryText: adConfig.primaryText,
+              headline: adHeadline,
+              primaryText: adPrimaryText,
               description: adConfig.description,
               destinationUrl: adDestUrl,
               linkUrl: adDestUrl,
@@ -676,8 +733,8 @@ export class MetaAdsOrchestrator {
             createdAdRes = await executeAgentTool("create_meta_ad", {
               adSetId: metaAdSetId,
               name: adConfig.adName,
-              headline: adConfig.headline,
-              primaryText: adConfig.primaryText,
+              headline: adHeadline,
+              primaryText: adPrimaryText,
               description: adConfig.description,
               linkUrl: adDestUrl,
               destinationUrl: adDestUrl,

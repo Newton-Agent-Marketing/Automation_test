@@ -235,6 +235,100 @@ export class CampaignPreparationService {
     let session = await this.getActiveSession(conversationId, userId);
     const msg = (userMessage || "").trim();
 
+    // 0. Extract lineage flow and context node data from AI Context
+    let contextNodeData = session?.contextNodeData || {};
+    try {
+      const { executeAgentTool, resolveAiContextSelection } = await import("../agent/queryDbMetrics.js");
+      const aiCtx = await executeAgentTool("get_user_ai_context", { userId });
+      if (aiCtx) {
+        // Multi-Unit, Multi-Channel & Multi-Sheet dynamic resolution
+        const selection = typeof resolveAiContextSelection === "function"
+          ? resolveAiContextSelection({ aiCtx, userMessage: msg, requestedChannel: "Meta Ads" })
+          : null;
+
+        const resolvedBu = selection?.businessUnit || aiCtx.businessUnitsHierarchy?.[0] || {};
+        const resolvedChannel = selection?.channel || aiCtx.adChannels?.[0] || {};
+        const resolvedProduct = selection?.product || aiCtx.products?.[0] || {};
+        const resolvedBrief = selection?.brief || aiCtx.marketingBriefs?.[0] || {};
+        const resolvedWarehouse = selection?.warehouse || aiCtx.dataWarehouses?.[0] || {};
+        const resolvedSheet = selection?.selectedSheet || resolvedWarehouse?.sheets?.[0] || null;
+
+        const primaryFlow = aiCtx.flows?.[0];
+        const flowParams = primaryFlow?.campaignLaunchParameters || {};
+
+        contextNodeData = {
+          adAccountId: resolvedChannel.accountId || flowParams.accountId || null,
+          accountName: resolvedChannel.accountName || flowParams.accountName || null,
+          channel: resolvedChannel.channel || resolvedChannel.channelName || flowParams.channel || "Meta Ads",
+          funnelEvent: resolvedChannel.funnelEvent || resolvedBrief.funnelEvent || flowParams.funnelEvent || "Purchase",
+          funnelDescription: resolvedChannel.funnelDescription || "",
+          productName: resolvedProduct.productName || resolvedProduct.name || flowParams.productName || null,
+          productUrl: resolvedProduct.productUrl || resolvedProduct.url || flowParams.productUrl || null,
+          productPrice: resolvedProduct.productPrice !== undefined ? resolvedProduct.productPrice : flowParams.productPrice,
+          products: resolvedProduct.products || resolvedProduct.catalog || flowParams.products || [],
+          briefName: resolvedBrief.briefName || resolvedBrief.name || flowParams.briefName || null,
+          metricsList: resolvedBrief.metricsList || flowParams.metricsList || [],
+          sheetUrl: resolvedSheet?.sheetUrl || resolvedWarehouse.sheetUrl || flowParams.sheetUrl || null,
+          sheets: resolvedWarehouse.sheets || flowParams.sheets || [],
+          selectedSheet: resolvedSheet,
+          businessUnitName: resolvedBu.name || resolvedChannel.businessUnitName || flowParams.businessUnitName || null,
+          rawFlowSummary: primaryFlow?.flowSummary || null,
+        };
+      }
+    } catch (ctxErr) {
+      console.warn("[CampaignPreparation Context Resolution Warning]:", ctxErr.message);
+    }
+
+    const effectiveMetaAccountId = contextNodeData.adAccountId || metaAccountId || session?.metaAccountId;
+
+    let effectiveAccountDoc = accountDoc;
+    if (!effectiveAccountDoc && effectiveMetaAccountId) {
+      try {
+        const cleanId = String(effectiveMetaAccountId).replace(/^act_/, "");
+        const MetaAccount = (await import("../../models/metaAccount.js")).default;
+        effectiveAccountDoc = await MetaAccount.findOne({
+          userId,
+          $or: [{ accountId: effectiveMetaAccountId }, { accountId: `act_${cleanId}` }, { accountId: cleanId }],
+        }).lean();
+      } catch (accErr) {
+        console.warn("[CampaignPreparation AccountDoc Warning]:", accErr.message);
+      }
+    }
+
+    // =========================================================================
+    // CONSOLE INSPECTION: DISPLAY EXACT AI CONTEXT NODE DATA ROUTED TO META ADS
+    // =========================================================================
+    console.log("\n================================================================================");
+    console.log("🌐 [AI CONTEXT ➔ META ADS DATA INSPECTION]");
+    console.log("================================================================================");
+    console.log("🏢 1. Business Unit Node    :", contextNodeData.businessUnitName || "(Default Business Unit)");
+    console.log("📢 2. Ad Channel Node       :", {
+      channel: contextNodeData.channel,
+      targetAdAccountId: contextNodeData.adAccountId ? `act_${String(contextNodeData.adAccountId).replace(/^act_/, "")}` : "(None)",
+      accountName: contextNodeData.accountName || "(Unlabeled)",
+      funnelEvent: contextNodeData.funnelEvent,
+      funnelDescription: contextNodeData.funnelDescription || "(None)",
+    });
+    console.log("📝 3. Marketing Brief Node  :", {
+      briefName: contextNodeData.briefName || "(None)",
+      targetMetrics: contextNodeData.metricsList?.length ? contextNodeData.metricsList : "(None)",
+    });
+    console.log("📦 4. Product Catalog Node  :", {
+      productName: contextNodeData.productName || "(None)",
+      landingPageUrl: contextNodeData.productUrl || "(None)",
+      price: contextNodeData.productPrice,
+      catalogCount: contextNodeData.products?.length || 0,
+    });
+    console.log("📊 5. Data Warehouse Node   :", {
+      activeSheet: contextNodeData.selectedSheet?.sheetName || "(Primary Sheet)",
+      sheetUrl: contextNodeData.selectedSheet?.sheetUrl || contextNodeData.sheetUrl || "(None)",
+      activeDataLabels: contextNodeData.selectedSheet?.dataLabels || "(None)",
+      totalSheetsCount: contextNodeData.sheets?.length || (contextNodeData.sheetUrl ? 1 : 0),
+    });
+    console.log("--------------------------------------------------------------------------------");
+    console.log(`🔒 STRICT TARGET META AD ACCOUNT: ${effectiveMetaAccountId || "(None)"}`);
+    console.log("================================================================================\n");
+
     // =========================================================================
     // CASE A: USER APPROVAL ACTION ("Approve Campaign & Create Ads" or Retry)
     // =========================================================================
@@ -257,10 +351,11 @@ export class CampaignPreparationService {
           const valResult = await CampaignValidator.validate({
             campaignName: session.campaignName,
             adSetName: session.adSetName,
-            metaAccountId: metaAccountId || session.metaAccountId,
-            accountDoc,
+            metaAccountId: effectiveMetaAccountId,
+            accountDoc: effectiveAccountDoc,
             sourceData: latestSource,
             userAnswers: session.userAnswers || {},
+            contextNodeData,
           });
           session.source.dataFingerprint = latestSource.dataFingerprint;
           const newPreview = PreviewBuilder.buildPreview({
@@ -277,6 +372,8 @@ export class CampaignPreparationService {
 
       // Take final immutable snapshot
       session.status = "APPROVED";
+      session.contextNodeData = contextNodeData;
+      if (effectiveMetaAccountId) session.metaAccountId = effectiveMetaAccountId;
       session.approval = {
         status: "APPROVED",
         approvedAt: new Date(),
@@ -367,10 +464,11 @@ export class CampaignPreparationService {
       const valResult = await CampaignValidator.validate({
         campaignName: parsedEdits.campaignName || session.campaignName,
         adSetName: parsedEdits.adSetName || session.adSetName,
-        metaAccountId: metaAccountId || session.metaAccountId,
-        accountDoc,
+        metaAccountId: effectiveMetaAccountId,
+        accountDoc: effectiveAccountDoc,
         sourceData,
         userAnswers: parsedEdits,
+        contextNodeData,
       });
 
       session.validationReport = {
@@ -385,6 +483,8 @@ export class CampaignPreparationService {
       session.missingFields = valResult.missingFields;
       session.campaignType = valResult.campaignType;
       session.objective = valResult.objective;
+      session.contextNodeData = contextNodeData;
+      if (effectiveMetaAccountId) session.metaAccountId = effectiveMetaAccountId;
       session.userAnswers = { ...(session.userAnswers || {}), ...parsedEdits };
       session.source.dataFingerprint = sourceData.dataFingerprint;
 
@@ -462,10 +562,11 @@ export class CampaignPreparationService {
         const valResult = await CampaignValidator.validate({
           campaignName: session.campaignName,
           adSetName: session.adSetName,
-          metaAccountId: metaAccountId || session.metaAccountId,
-          accountDoc,
+          metaAccountId: effectiveMetaAccountId,
+          accountDoc: effectiveAccountDoc,
           sourceData,
           userAnswers: parsedAnswers,
+          contextNodeData,
         });
 
         session.source.dataFingerprint = sourceData.dataFingerprint;
@@ -481,6 +582,8 @@ export class CampaignPreparationService {
         session.missingFields = valResult.missingFields;
         session.campaignType = valResult.campaignType;
         session.objective = valResult.objective;
+        session.contextNodeData = contextNodeData;
+        if (effectiveMetaAccountId) session.metaAccountId = effectiveMetaAccountId;
         session.userAnswers = { ...(session.userAnswers || {}), ...parsedAnswers };
 
         let replyMd = "";
@@ -539,13 +642,21 @@ export class CampaignPreparationService {
     const existingCampaignId = promptCampId || session?.existingCampaignId || null;
     const existingAdSetId = promptAdSetId || session?.existingAdSetId || null;
 
-    const campaignName = promptCampName || (existingCampaignId ? `Target Campaign (${existingCampaignId})` : (session?.campaignName || "NWTS|Image_Test"));
-    const adSetName = promptAdSetName || (existingAdSetId ? `Target AdSet (${existingAdSetId})` : (session?.adSetName || "NWTS|test"));
+    const campaignName = promptCampName || (existingCampaignId ? `Target Campaign (${existingCampaignId})` : (session?.campaignName || (contextNodeData?.productName ? `${contextNodeData.productName}|Campaign` : "NWTS|Image_Test")));
+    const adSetName = promptAdSetName || (existingAdSetId ? `Target AdSet (${existingAdSetId})` : (session?.adSetName || (contextNodeData?.funnelEvent ? `${contextNodeData.funnelEvent}|AdSet` : "NWTS|test")));
 
     // 2. Read complete dataset from source
     let explicitSheetUrl = null;
     const urlMatch = msg.match(/https?:\/\/docs\.google\.com\/spreadsheets\/d\/[a-zA-Z0-9-_]+/i);
-    if (urlMatch) explicitSheetUrl = urlMatch[0];
+    if (urlMatch) {
+      explicitSheetUrl = urlMatch[0];
+    } else if (contextNodeData?.selectedSheet?.sheetUrl) {
+      explicitSheetUrl = contextNodeData.selectedSheet.sheetUrl;
+    } else if (contextNodeData?.sheetUrl) {
+      explicitSheetUrl = contextNodeData.sheetUrl;
+    } else if (contextNodeData?.sheets?.length > 0 && contextNodeData.sheets[0]?.sheetUrl) {
+      explicitSheetUrl = contextNodeData.sheets[0].sheetUrl;
+    }
 
     const rawSourceData = await SourceSheetReader.readSource({
       userId,
@@ -581,9 +692,10 @@ export class CampaignPreparationService {
     const valResult = await CampaignValidator.validate({
       campaignName,
       adSetName,
-      metaAccountId,
-      accountDoc,
+      metaAccountId: effectiveMetaAccountId,
+      accountDoc: effectiveAccountDoc,
       sourceData,
+      contextNodeData,
     });
 
     // 4. Create or update preparation session in MongoDB
@@ -595,7 +707,8 @@ export class CampaignPreparationService {
           sessionId,
           conversationId,
           userId,
-          metaAccountId: metaAccountId || accountDoc?.accountId || null,
+          metaAccountId: effectiveMetaAccountId || effectiveAccountDoc?.accountId || null,
+          contextNodeData,
           status: valResult.isValid ? "READY_FOR_REVIEW" : "NEEDS_USER_INPUT",
           campaignName,
           adSetName,

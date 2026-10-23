@@ -16,10 +16,14 @@ import {
   ArrowLeft,
   Trash2,
   Plus,
+  Link2,
+  HelpCircle,
+  Loader2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useChannel } from "../hook/channel";
 import { BrandIcon } from "../components/BrandIcon";
+import { LogoMark } from "../../../app/LogoMark";
 import { channelApi } from "../service/channel.api";
 
 const ALLOWED_CHANNEL_IDS = ["meta", "google"];
@@ -354,7 +358,7 @@ const Channel = () => {
   const onInitiateMetaMcpOAuth = async (event) => {
     if (event) event.preventDefault();
     setNotice("");
-    setOauthStepStatus("Generating Meta OAuth 2.0 authorization dialog...");
+    setOauthStepStatus("Redirecting to Meta...");
 
     try {
       console.log("[Meta OAuth Init Redirect URI]:", META_REDIRECT_URI);
@@ -370,7 +374,7 @@ const Channel = () => {
       }
 
       console.log("[Meta OAuth Full Auth URL]:", authUrl);
-      setOauthStepStatus(`Opening Meta login window with redirect_uri: ${META_REDIRECT_URI}...`);
+      setOauthStepStatus("Redirecting to Meta...");
 
       // Step 2: Open Meta authorization dialog in a popup window
       const popupWidth = 620;
@@ -385,7 +389,7 @@ const Channel = () => {
       );
 
       if (!authPopup || authPopup.closed || typeof authPopup.closed === "undefined") {
-        setOauthStepStatus("Redirecting to Meta authorization page...");
+        setOauthStepStatus("Redirecting to Meta...");
         window.location.href = authUrl;
         return;
       }
@@ -546,7 +550,7 @@ const Channel = () => {
   const onInitiateGoogleMcpOAuth = async (event) => {
     if (event) event.preventDefault();
     setNotice("");
-    setOauthStepStatus("Generating Google Ads OAuth 2.0 authorization dialog...");
+    setOauthStepStatus("Redirecting to Google...");
 
     try {
       const oauthData = await getGoogleOAuthUrl({
@@ -559,7 +563,7 @@ const Channel = () => {
         throw new Error("Unable to obtain Google OAuth URL.");
       }
 
-      setOauthStepStatus("Opening Google authorization window...");
+      setOauthStepStatus("Redirecting to Google...");
 
       const popupWidth = 620;
       const popupHeight = 720;
@@ -573,7 +577,7 @@ const Channel = () => {
       );
 
       if (!authPopup || authPopup.closed || typeof authPopup.closed === "undefined") {
-        setOauthStepStatus("Redirecting to Google authorization page...");
+        setOauthStepStatus("Redirecting to Google...");
         window.location.href = authUrl;
         return;
       }
@@ -779,23 +783,8 @@ const Channel = () => {
                       <Clock size={10} style={{ display: "inline-block", marginRight: 4 }} />
                       Coming Soon
                     </span>
-                  ) : !connected ? (
-                    <span className="coming-soon-badge">Available</span>
                   ) : (
-                    <span
-                      className="coming-soon-badge active"
-                      style={{
-                        color: "#16A34A",
-                        backgroundColor: "#DCFCE7",
-                        fontWeight: 600,
-                        border: "1px solid #BBF7D0",
-                      }}
-                    >
-                      <Check size={11} style={{ display: "inline-block", marginRight: 3 }} />
-                      {channelAccounts.length > 1
-                        ? `${channelAccounts.length} Accounts Connected`
-                        : "Connected"}
-                    </span>
+                    <span className="coming-soon-badge">Available</span>
                   )}
 
                   {/* Transparent Glassmorphism Overlay for Inactive / Coming Soon Platforms */}
@@ -815,87 +804,6 @@ const Channel = () => {
                       <p className="channel-desc">{item.blurb}</p>
                     </div>
                   </div>
-
-                  {/* Connected Accounts List */}
-                  {connected && channelAccounts.length > 0 && (
-                    <div
-                      style={{
-                        margin: "8px 0",
-                        padding: "8px 10px",
-                        background: "#F8FAFC",
-                        borderRadius: "6px",
-                        border: "1px solid #E2E8F0",
-                      }}
-                    >
-                      <span
-                        style={{
-                          fontSize: "11px",
-                          fontWeight: 600,
-                          color: "#64748B",
-                          display: "block",
-                          marginBottom: 4,
-                        }}
-                      >
-                        Connected Accounts ({channelAccounts.length}):
-                      </span>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 90, overflowY: "auto" }}>
-                        {channelAccounts.map((acc) => (
-                          <div
-                            key={acc.accountId}
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                              fontSize: "11.5px",
-                              color: "#1E293B",
-                            }}
-                          >
-                            <div
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 5,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                              }}
-                            >
-                              <span
-                                style={{
-                                  width: 6,
-                                  height: 6,
-                                  borderRadius: "50%",
-                                  backgroundColor: "#16A34A",
-                                  flexShrink: 0,
-                                }}
-                              />
-                              <strong style={{ fontWeight: 500 }}>{acc.accountName || acc.accountId}</strong>
-                              <span style={{ color: "#94A3B8", fontSize: "10px" }}>({acc.accountId})</span>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onDisconnectChannel(item.id, acc.accountId);
-                              }}
-                              style={{
-                                border: "none",
-                                background: "none",
-                                color: "#EF4444",
-                                fontSize: "10.5px",
-                                cursor: "pointer",
-                                padding: "0 4px",
-                                fontWeight: 600,
-                              }}
-                              title="Disconnect this account"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
 
                   <div className="formats-section">
                     <span className="formats-label">Supported Formats & Tools</span>
@@ -939,7 +847,7 @@ const Channel = () => {
                       <span className={`status-indicator-circle ${!isAvailable ? "coming-soon" : connected ? "connected" : "disconnected"}`} />
                       <span
                         className="status-indicator-text"
-                        style={!isAvailable ? { color: "#94A3B8" } : connected ? { color: "#16A34A", fontWeight: 600 } : {}}
+                        style={!isAvailable ? { color: "#94A3B8" } : connected ? { color: "#059669", fontWeight: 600 } : {}}
                       >
                         {!isAvailable
                           ? "Coming Soon"
@@ -1020,837 +928,360 @@ const Channel = () => {
                   transition={{ duration: 0.2, ease: "easeOut" }}
                   className="modal-dialog-card"
                   onClick={(event) => event.stopPropagation()}
-                  style={{ maxWidth: 520 }}
+                  style={{
+                    maxWidth: 460,
+                    width: "100%",
+                    borderRadius: 20,
+                    padding: "32px 24px 20px",
+                    position: "relative",
+                    textAlign: "center",
+                  }}
                 >
-                  <div className="modal-header">
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <ChannelIcon type={activeModalChannel.iconType} color={activeModalChannel.color} size={30} />
-                      <div>
-                        <h3 style={{ margin: 0, fontSize: "16px" }}>
-                          {modalMode === "manage" && isChannelConnected(activeModalChannel.id)
-                            ? `Manage ${activeModalChannel.name}`
-                            : `Connect ${activeModalChannel.name}`}
-                        </h3>
-                        {isChannelConnected(activeModalChannel.id) && (
-                          <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 2 }}>
-                            <span style={{ width: 6, height: 6, borderRadius: "50%", backgroundColor: "#16A34A" }} />
-                            <span style={{ fontSize: "11px", color: "#16A34A", fontWeight: 600 }}>Active & Connected</span>
-                          </div>
-                        )}
+                  {/* Top Right Close Button */}
+                  <button
+                    className="modal-close-btn"
+                    onClick={closeConnectModal}
+                    style={{
+                      position: "absolute",
+                      top: 16,
+                      right: 16,
+                      width: 30,
+                      height: 30,
+                      background: "#FFFFFF",
+                      border: "1px solid #E2E8F0",
+                      color: "#64748B",
+                      cursor: "pointer",
+                      borderRadius: 8,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      transition: "all 0.15s ease",
+                    }}
+                  >
+                    <X size={16} />
+                  </button>
+
+                  {/* Dual Logos (Website & Channel) Connected */}
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      marginTop: 8,
+                      marginBottom: 24,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 18,
+                        marginBottom: 22,
+                      }}
+                    >
+                      {/* Left: Our Website Logo (Newton) */}
+                      <div
+                        style={{
+                          width: 72,
+                          height: 72,
+                          borderRadius: 18,
+                          backgroundColor: "#FFFFFF",
+                          border: "1px solid #E2E8F0",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          boxShadow: "0 4px 16px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.03)",
+                        }}
+                      >
+                        <LogoMark size={44} />
+                      </div>
+
+                      {/* Center: Link Connection Icon */}
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          color: "#0F172A",
+                        }}
+                      >
+                        <Link2 size={24} strokeWidth={2.4} />
+                      </div>
+
+                      {/* Right: Target Channel Logo */}
+                      <div
+                        style={{
+                          width: 72,
+                          height: 72,
+                          borderRadius: 18,
+                          backgroundColor: "#FFFFFF",
+                          border: "1px solid #E2E8F0",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          boxShadow: "0 4px 16px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.03)",
+                        }}
+                      >
+                        <BrandIcon type={activeModalChannel.iconType} size={44} />
                       </div>
                     </div>
-                    <button className="modal-close-btn" onClick={closeConnectModal}>
-                      <X size={18} />
-                    </button>
+
+                    <h3
+                      style={{
+                        margin: 0,
+                        fontSize: "22px",
+                        fontWeight: 700,
+                        color: "#0F172A",
+                        letterSpacing: "-0.02em",
+                      }}
+                    >
+                      Connect {activeModalChannel.name} to Newton
+                    </h3>
+
+                    <p
+                      style={{
+                        margin: "8px 0 0",
+                        fontSize: "13.5px",
+                        color: "#64748B",
+                        lineHeight: 1.5,
+                        maxWidth: 340,
+                      }}
+                    >
+                      Install directly from Newton Apps module
+                    </p>
+
+                    {isChannelConnected(activeModalChannel.id) && (
+                      <div
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          marginTop: 12,
+                          color: "#10B981",
+                          fontSize: "13px",
+                          fontWeight: 500,
+                        }}
+                      >
+                        <Check size={14} strokeWidth={2.5} />
+                        Connected & Active
+                      </div>
+                    )}
                   </div>
 
-                  {modalMode !== "manage" && (
-                    <p className="modal-desc">
-                      {activeModalChannel.id === "meta"
-                        ? "Connect your Meta Ads account via MCP Server & OAuth to empower the AI Agent with real-time campaign creation & optimization tools."
-                        : activeModalChannel.id === "google"
-                        ? "Connect your Google Ads account to synchronize Search, Display, and Performance Max campaigns with Newton AI Agent."
-                        : `Enter your ${activeModalChannel.name} credentials to connect and synchronize ad campaigns.`}
-                    </p>
-                  )}
-
+                  {/* Feedback / Error Notice */}
                   {notice && (
-                    <div className="form-error-box">
-                      <p className="form-error">{notice}</p>
-                    </div>
-                  )}
-
-                  {oauthStepStatus && (
                     <div
                       style={{
                         padding: "10px 14px",
-                        backgroundColor: "#F0FDF4",
-                        border: "1px solid #BBF7D0",
-                        borderRadius: "8px",
-                        color: "#15803D",
+                        backgroundColor: "#FEF2F2",
+                        border: "1px solid #FECACA",
+                        borderRadius: 8,
+                        color: "#DC2626",
                         fontSize: "12.5px",
-                        marginBottom: 14,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
+                        marginBottom: 16,
+                        textAlign: "left",
                       }}
                     >
-                      <RefreshCw size={14} className="spin" style={{ animation: "spin 1.5s linear infinite" }} />
+                      <p style={{ margin: 0 }}>{notice}</p>
+                    </div>
+                  )}
+
+                  {/* OAuth Step Progress Status (Minimal & Clean matching reference) */}
+                  {oauthStepStatus && (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 10,
+                        padding: "8px 0",
+                        marginBottom: 12,
+                        color: "#334155",
+                        fontSize: "14px",
+                        fontWeight: 450,
+                      }}
+                    >
+                      <Loader2
+                        size={17}
+                        className="spin"
+                        style={{
+                          color: "#94A3B8",
+                          animation: "spin 1s linear infinite",
+                          flexShrink: 0,
+                        }}
+                      />
                       <span>{oauthStepStatus}</span>
                     </div>
                   )}
 
-                  {modalMode === "manage" && isChannelConnected(activeModalChannel.id) ? (
-                    <div style={{ marginTop: 10 }}>
-                      <div
-                        style={{
-                          background: "#F0FDF4",
-                          border: "1px solid #BBF7D0",
-                          borderRadius: 8,
-                          padding: "10px 14px",
-                          marginBottom: 14,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                        }}
-                      >
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <ShieldCheck size={18} color="#16A34A" />
-                          <div>
-                            <strong style={{ fontSize: "12.5px", color: "#166534", display: "block" }}>
-                              Integration Active
-                            </strong>
-                            <span style={{ fontSize: "11px", color: "#15803D" }}>
-                              AI Agent tools & real-time sync active.
-                            </span>
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            setOauthStepStatus(`Resyncing ${activeModalChannel.name} data...`);
-                            try {
-                              await channelApi.resyncChannel(activeModalChannel.id);
-                              await loadStatus();
-                              setNotice("Channel resynced successfully!");
-                            } catch (e) {
-                              setNotice(e?.message || "Resync failed");
-                            } finally {
-                              setOauthStepStatus("");
-                            }
-                          }}
-                          style={{
-                            padding: "6px 10px",
-                            fontSize: "11px",
-                            fontWeight: 600,
-                            borderRadius: 6,
-                            border: "1px solid #86EFAC",
-                            background: "#FFFFFF",
-                            color: "#166534",
-                            cursor: "pointer",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 4,
-                          }}
-                        >
-                          <RefreshCw size={12} />
-                          Resync
-                        </button>
-                      </div>
-
-                      <div style={{ marginBottom: 14 }}>
-                        <span style={{ fontSize: "12px", fontWeight: 600, color: "#475569", display: "block", marginBottom: 8 }}>
-                          Connected Ad Accounts:
-                        </span>                        <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 220, overflowY: "auto" }}>
-                          {(
-                            activeModalChannel.id === "meta"
-                              ? (status?.channels?.metaAds?.accounts || (status?.channels?.metaAds?.activeAccount ? [status.channels.metaAds.activeAccount] : []))
-                              : activeModalChannel.id === "google"
-                              ? (status?.channels?.googleAds?.accounts || (status?.channels?.googleAds?.activeAccount ? [status.channels.googleAds.activeAccount] : []))
-                              : (status?.connectedList?.filter((c) => c.channelId === activeModalChannel.id || c.id === activeModalChannel.id) || [])
-                          ).map((acc) => {
-                            const isGoogleActive =
-                              activeModalChannel.id === "google" &&
-                              (status?.channels?.googleAds?.selectedCustomerId === acc.accountId ||
-                               (!status?.channels?.googleAds?.selectedCustomerId && status?.channels?.googleAds?.activeAccount?.accountId === acc.accountId));
-
-                            const isMetaActive =
-                              activeModalChannel.id === "meta" &&
-                              status?.channels?.metaAds?.activeAccount?.accountId === acc.accountId;
-
-                            const isCurrentActive = isGoogleActive || isMetaActive;
-
-                            return (
-                              <div
-                                key={acc.accountId || acc.id}
-                                style={{
-                                  background: isCurrentActive ? "#F0FDF4" : "#F8FAFC",
-                                  border: isCurrentActive ? "1px solid #86EFAC" : "1px solid #E2E8F0",
-                                  borderRadius: 8,
-                                  padding: "10px 12px",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: "space-between",
-                                  gap: 8,
-                                }}
-                              >
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                                    <span
-                                      style={{
-                                        width: 6,
-                                        height: 6,
-                                        borderRadius: "50%",
-                                        backgroundColor: acc.syncStatus === "FAILED" ? "#EF4444" : acc.syncStatus === "SYNCING" ? "#F59E0B" : "#16A34A",
-                                      }}
-                                    />
-                                    <strong style={{ fontSize: "13px", color: "#0F172A" }}>
-                                      {acc.accountName || acc.name || acc.accountId}
-                                    </strong>
-                                    {acc.isManager ? (
-                                      <span
-                                        style={{
-                                          fontSize: "10px",
-                                          backgroundColor: "#EFF6FF",
-                                          color: "#2563EB",
-                                          border: "1px solid #BFDBFE",
-                                          padding: "1px 5px",
-                                          borderRadius: 4,
-                                          fontWeight: 600,
-                                        }}
-                                      >
-                                        Manager (MCC)
-                                      </span>
-                                    ) : (
-                                      <span
-                                        style={{
-                                          fontSize: "10px",
-                                          backgroundColor: "#F0FDF4",
-                                          color: "#16A34A",
-                                          border: "1px solid #BBF7D0",
-                                          padding: "1px 5px",
-                                          borderRadius: 4,
-                                          fontWeight: 600,
-                                        }}
-                                      >
-                                        Ad Account
-                                      </span>
-                                    )}
-                                    {(isGoogleActive || isMetaActive) && (
-                                      <span
-                                        style={{
-                                          fontSize: "10px",
-                                          backgroundColor: "#DCFCE7",
-                                          color: "#15803D",
-                                          border: "1px solid #86EFAC",
-                                          padding: "1px 6px",
-                                          borderRadius: 4,
-                                          fontWeight: 700,
-                                        }}
-                                      >
-                                        ✓ Active
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div style={{ fontSize: "11px", color: "#64748B", marginTop: 3, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                                    <span>ID: {acc.accountId || acc.id}</span>
-                                    {acc.currency && <span>Currency: {acc.currency}</span>}
-                                    {acc.timezoneName && <span>TZ: {acc.timezoneName}</span>}
-                                    <span style={{ color: acc.syncStatus === "FAILED" ? "#EF4444" : acc.syncStatus === "SYNCING" ? "#D97706" : "#16A34A" }}>
-                                      ● {acc.syncStatus === "FAILED" ? "Sync Warning" : acc.syncStatus === "SYNCING" ? "Syncing..." : "Ready"}
-                                    </span>
-                                  </div>
-                                </div>
-                                <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-                                  {activeModalChannel.id === "meta" && !isMetaActive && (
-                                    <button
-                                      type="button"
-                                      onClick={async () => {
-                                        try {
-                                          setOauthStepStatus(`Selecting ad account ${acc.accountId}...`);
-                                          await selectMetaAccount({ accountId: acc.accountId });
-                                          setNotice(`Active Meta Ad Account set to ${acc.accountName || acc.accountId}`);
-                                        } catch (e) {
-                                          setNotice(e?.message || "Failed to switch active account");
-                                        } finally {
-                                          setOauthStepStatus("");
-                                        }
-                                      }}
-                                      style={{
-                                        border: "1px solid #93C5FD",
-                                        background: "#EFF6FF",
-                                        color: "#1D4ED8",
-                                        borderRadius: 6,
-                                        padding: "4px 8px",
-                                        fontSize: "11px",
-                                        cursor: "pointer",
-                                        fontWeight: 600,
-                                      }}
-                                    >
-                                      Set Active
-                                    </button>
-                                  )}
-                                  {activeModalChannel.id === "google" && !acc.isManager && !isGoogleActive && (
-                                    <button
-                                      type="button"
-                                      onClick={async () => {
-                                        try {
-                                          setOauthStepStatus(`Selecting ad account ${acc.accountId}...`);
-                                          await selectGoogleAccount({ customerId: acc.accountId });
-                                          setNotice(`Active Google Ads account set to ${acc.accountName || acc.accountId}`);
-                                        } catch (e) {
-                                          setNotice(e?.message || "Failed to switch active account");
-                                        } finally {
-                                          setOauthStepStatus("");
-                                        }
-                                      }}
-                                      style={{
-                                        border: "1px solid #93C5FD",
-                                        background: "#EFF6FF",
-                                        color: "#1D4ED8",
-                                        borderRadius: 6,
-                                        padding: "4px 8px",
-                                        fontSize: "11px",
-                                        cursor: "pointer",
-                                        fontWeight: 600,
-                                      }}
-                                    >
-                                      Set Active
-                                    </button>
-                                  )}
-                                  <button
-                                    type="button"
-                                    onClick={async () => {
-                                      await onDisconnectChannel(activeModalChannel.id, acc.accountId || acc.id);
-                                    }}
-                                    style={{
-                                      border: "none",
-                                      background: "#FEE2E2",
-                                      color: "#DC2626",
-                                      borderRadius: 6,
-                                      padding: "5px 8px",
-                                      fontSize: "11px",
-                                      cursor: "pointer",
-                                      fontWeight: 600,
-                                    }}
-                                    title="Disconnect this account"
-                                  >
-                                    Remove
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-                        <button
-                          type="button"
-                          onClick={() => setModalMode("connect")}
-                          style={{
-                            flex: 1,
-                            padding: "9px 12px",
-                            fontSize: "12px",
-                            fontWeight: 600,
-                            borderRadius: 8,
-                            border: "1px solid #CBD5E1",
-                            background: "#FFFFFF",
-                            color: "#0F172A",
-                            cursor: "pointer",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            gap: 6,
-                          }}
-                        >
-                          <Plus size={14} />
-                          Connect Another / Reconnect
-                        </button>
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            await onDisconnectChannel(activeModalChannel.id);
-                            closeConnectModal();
-                          }}
-                          style={{
-                            padding: "9px 14px",
-                            fontSize: "12px",
-                            fontWeight: 600,
-                            borderRadius: 8,
-                            border: "none",
-                            background: "#FEE2E2",
-                            color: "#DC2626",
-                            cursor: "pointer",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 6,
-                          }}
-                        >
-                          <Trash2 size={14} />
-                          Disconnect All
-                        </button>
-                      </div>
+                  {/* Bottom Footer Row: 'How it works ?' on left, 'Cancel' + 'Connect' on right */}
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginTop: 24,
+                      paddingTop: 16,
+                      borderTop: "1px solid #F1F5F9",
+                    }}
+                  >
+                    {/* Left: How it works? */}
+                    <div
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
+                        color: "#64748B",
+                        fontSize: "13px",
+                        fontWeight: 500,
+                        cursor: "pointer",
+                        userSelect: "none",
+                      }}
+                    >
+                      <HelpCircle size={15} strokeWidth={2} />
+                      <span>Connection & permissions</span>
                     </div>
-                  ) : (
-                    <div>
-                      {isChannelConnected(activeModalChannel.id) && (
-                        <button
-                          type="button"
-                          onClick={() => setModalMode("manage")}
-                          style={{
-                            border: "none",
-                            background: "none",
-                            color: "#3B82F6",
-                            fontSize: "11.5px",
-                            fontWeight: 600,
-                            cursor: "pointer",
-                            marginBottom: 12,
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 4,
-                            padding: 0,
-                          }}
-                        >
-                          <ArrowLeft size={13} />
-                          Back to Active Accounts
-                        </button>
-                      )}
+
+                    {/* Right: Cancel & Connect buttons */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <button
+                        type="button"
+                        onClick={closeConnectModal}
+                        style={{
+                          backgroundColor: "#FFFFFF",
+                          color: "#334155",
+                          border: "1px solid #E2E8F0",
+                          padding: "8px 18px",
+                          borderRadius: 8,
+                          fontSize: "13px",
+                          fontWeight: 500,
+                          cursor: "pointer",
+                          transition: "all 0.15s ease",
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#F8FAFC")}
+                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "#FFFFFF")}
+                      >
+                        Cancel
+                      </button>
 
                       {activeModalChannel.id === "meta" ? (
-                    <div>
-                      {/* Meta Connect Mode Switcher */}
-                      <div
-                        style={{
-                          display: "flex",
-                          gap: 8,
-                          marginBottom: 16,
-                          background: "#F1F5F9",
-                          padding: 4,
-                          borderRadius: 8,
-                        }}
-                      >
                         <button
                           type="button"
-                          onClick={() => setMetaConnectMode("mcp_oauth")}
+                          onClick={onInitiateMetaMcpOAuth}
+                          disabled={connecting}
                           style={{
-                            flex: 1,
-                            padding: "7px 12px",
-                            fontSize: "12px",
-                            fontWeight: 600,
-                            borderRadius: 6,
-                            border: "none",
-                            cursor: "pointer",
-                            background: metaConnectMode === "mcp_oauth" ? "#FFFFFF" : "transparent",
-                            color: metaConnectMode === "mcp_oauth" ? "#0F172A" : "#64748B",
-                            boxShadow: metaConnectMode === "mcp_oauth" ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
-                            display: "flex",
+                            backgroundColor: "#000000",
+                            color: "#FFFFFF",
+                            display: "inline-flex",
                             alignItems: "center",
                             justifyContent: "center",
                             gap: 6,
-                          }}
-                        >
-                          <Server size={14} color="#0081FB" />
-                          MCP Server & OAuth (Recommended)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setMetaConnectMode("token")}
-                          style={{
-                            flex: 1,
-                            padding: "7px 12px",
-                            fontSize: "12px",
+                            padding: "8px 20px",
+                            fontSize: "13px",
                             fontWeight: 600,
-                            borderRadius: 6,
+                            borderRadius: 8,
                             border: "none",
-                            cursor: "pointer",
-                            background: metaConnectMode === "token" ? "#FFFFFF" : "transparent",
-                            color: metaConnectMode === "token" ? "#0F172A" : "#64748B",
-                            boxShadow: metaConnectMode === "token" ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                            cursor: connecting ? "not-allowed" : "pointer",
+                            boxShadow: "0 2px 6px rgba(0, 0, 0, 0.18)",
+                            transition: "all 0.15s ease",
                           }}
                         >
-                          Direct Access Token
-                        </button>
-                      </div>
-
-                      {metaConnectMode === "mcp_oauth" ? (
-                        <form onSubmit={onInitiateMetaMcpOAuth} className="modal-form">
-                          <label className="auth-label">
-                            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                              <Server size={14} color="#0081FB" />
-                              Meta Ads MCP Server URL
-                            </span>
-                            <input
-                              type="text"
-                              placeholder="e.g. https://mcp.facebook.com/ads or http://localhost:8000/sse"
-                              value={mcpServerUrl}
-                              onChange={(e) => setMcpServerUrl(e.target.value)}
-                              required
-                            />
-                            <small style={{ color: "#64748B", fontSize: "11px", marginTop: 4 }}>
-                              Enter your Meta MCP Server SSE/HTTP endpoint. Facebook OAuth dialog will launch to verify and fetch all your real ad accounts.
-                            </small>
-                          </label>
-
-                          <div
-                            style={{
-                              background: "#F8FAFC",
-                              border: "1px solid #E2E8F0",
-                              borderRadius: 8,
-                              padding: "12px 14px",
-                              marginTop: 10,
-                              marginBottom: 14,
-                            }}
-                          >
-                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                              <ShieldCheck size={16} color="#16A34A" />
-                              <strong style={{ fontSize: "12.5px", color: "#0F172A" }}>Real Facebook OAuth + MCP Flow:</strong>
-                            </div>
-                            <ol style={{ fontSize: "11.5px", color: "#475569", margin: 0, paddingLeft: 18, lineHeight: 1.5 }}>
-                              <li>Opens Facebook OAuth popup $\rightarrow$ click <strong>"Continue as [Name]"</strong>.</li>
-                              <li>Backend securely exchanges code for long-lived Meta access token.</li>
-                              <li>Automatically fetches all your <strong>real Facebook Ad Accounts</strong> from Meta Graph API.</li>
-                              <li>Enables live campaign creation and insights for the Newton AI Agent.</li>
-                            </ol>
-                          </div>
-
-                          <button
-                            className="primary-btn"
-                            type="submit"
-                            disabled={connecting}
-                            style={{
-                              backgroundColor: "#0081FB",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              gap: 8,
-                              width: "100%",
-                              padding: "11px 16px",
-                              fontSize: "13px",
-                              fontWeight: 600,
-                            }}
-                          >
-                            {connecting ? (
-                              <>
-                                <RefreshCw size={15} className="spin" style={{ animation: "spin 1.5s linear infinite" }} />
-                                Opening Facebook Authorization...
-                              </>
-                            ) : (
-                              <>
-                                <Sparkles size={15} />
-                                Authorize with Facebook & Connect MCP
-                              </>
-                            )}
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={onConnectMcpDirectOnly}
-                            disabled={connecting}
-                            style={{
-                              marginTop: 10,
-                              background: "none",
-                              border: "1px solid #CBD5E1",
-                              borderRadius: 8,
-                              padding: "8px 12px",
-                              fontSize: "12px",
-                              color: "#475569",
-                              cursor: "pointer",
-                              width: "100%",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              gap: 6,
-                            }}
-                          >
-                            <Server size={13} color="#64748B" />
-                            Or connect MCP server directly (without Facebook popup)
-                          </button>
-                        </form>
-                      ) : (
-                        <div>
-                          <form onSubmit={onFetchMetaAccounts} className="modal-form">
-                            <label className="auth-label">
-                              <span>Meta User Access Token</span>
-                              <input
-                                type="text"
-                                placeholder="EAAB..."
-                                value={accessToken}
-                                onChange={(event) => setAccessToken(event.target.value)}
-                                required
-                              />
-                            </label>
-                            <button className="primary-btn" type="submit" disabled={loading}>
-                              {loading ? "Verifying Token..." : "Fetch Ad Accounts"}
-                            </button>
-                          </form>
-
-                          {accounts.length > 0 && (
-                            <div className="modal-accounts-section" style={{ marginTop: 14 }}>
-                              <label className="auth-label">
-                                <span>Select Ad Account</span>
-                                <select
-                                  value={selectedAccount}
-                                  onChange={(event) => setSelectedAccount(event.target.value)}
-                                  className="filter-control"
-                                >
-                                  {accounts.map((account) => (
-                                    <option key={account.id} value={account.fullAccountId || account.id}>
-                                      {account.name} ({account.currency})
-                                    </option>
-                                  ))}
-                                </select>
-                              </label>
-                              <button
-                                className="primary-btn"
-                                onClick={onConnectMetaDirect}
-                                disabled={connecting}
-                                style={{ marginTop: 12, backgroundColor: "#16A34A" }}
-                              >
-                                {connecting ? "Connecting..." : "Confirm & Connect Account"}
-                              </button>
-                            </div>
+                          {connecting ? (
+                            <>
+                              <RefreshCw size={13} className="spin" style={{ animation: "spin 1.5s linear infinite" }} />
+                              Connecting...
+                            </>
+                          ) : (
+                            "Connect"
                           )}
-                        </div>
-                      )}
-                    </div>
-                  ) : activeModalChannel.id === "google" ? (
-                    <div>
-                      {/* Google Connect Mode Switcher */}
-                      <div
-                        style={{
-                          display: "flex",
-                          gap: 8,
-                          marginBottom: 16,
-                          background: "#F1F5F9",
-                          padding: 4,
-                          borderRadius: 8,
-                        }}
-                      >
+                        </button>
+                      ) : activeModalChannel.id === "google" ? (
                         <button
                           type="button"
-                          onClick={() => setMetaConnectMode("mcp_oauth")}
+                          onClick={onInitiateGoogleMcpOAuth}
+                          disabled={connecting}
                           style={{
-                            flex: 1,
-                            padding: "7px 12px",
-                            fontSize: "12px",
-                            fontWeight: 600,
-                            borderRadius: 6,
-                            border: "none",
-                            cursor: "pointer",
-                            background: metaConnectMode === "mcp_oauth" ? "#FFFFFF" : "transparent",
-                            color: metaConnectMode === "mcp_oauth" ? "#0F172A" : "#64748B",
-                            boxShadow: metaConnectMode === "mcp_oauth" ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
-                            display: "flex",
+                            backgroundColor: "#000000",
+                            color: "#FFFFFF",
+                            display: "inline-flex",
                             alignItems: "center",
                             justifyContent: "center",
                             gap: 6,
+                            padding: "8px 20px",
+                            fontSize: "13px",
+                            fontWeight: 600,
+                            borderRadius: 8,
+                            border: "none",
+                            cursor: connecting ? "not-allowed" : "pointer",
+                            boxShadow: "0 2px 6px rgba(0, 0, 0, 0.18)",
+                            transition: "all 0.15s ease",
                           }}
                         >
-                          <Server size={14} color="#4285F4" />
-                          MCP Server & OAuth (Recommended)
+                          {connecting ? (
+                            <>
+                              <RefreshCw size={13} className="spin" style={{ animation: "spin 1.5s linear infinite" }} />
+                              Connecting...
+                            </>
+                          ) : (
+                            "Connect"
+                          )}
                         </button>
+                      ) : (
                         <button
                           type="button"
-                          onClick={() => setMetaConnectMode("token")}
+                          onClick={onConnectGenericSubmit}
+                          disabled={connecting}
                           style={{
-                            flex: 1,
-                            padding: "7px 12px",
-                            fontSize: "12px",
+                            backgroundColor: "#000000",
+                            color: "#FFFFFF",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: 6,
+                            padding: "8px 20px",
+                            fontSize: "13px",
                             fontWeight: 600,
-                            borderRadius: 6,
+                            borderRadius: 8,
                             border: "none",
-                            cursor: "pointer",
-                            background: metaConnectMode === "token" ? "#FFFFFF" : "transparent",
-                            color: metaConnectMode === "token" ? "#0F172A" : "#64748B",
-                            boxShadow: metaConnectMode === "token" ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                            cursor: connecting ? "not-allowed" : "pointer",
+                            boxShadow: "0 2px 6px rgba(0, 0, 0, 0.18)",
+                            transition: "all 0.15s ease",
                           }}
                         >
-                          Direct Access / Dev Token
+                          {connecting ? "Connecting..." : "Connect"}
                         </button>
-                      </div>
-
-                      {metaConnectMode === "mcp_oauth" ? (
-                        <form onSubmit={onInitiateGoogleMcpOAuth} className="modal-form">
-                          <label className="auth-label">
-                            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                              <Server size={14} color="#4285F4" />
-                              Google Ads MCP Server URL
-                            </span>
-                            <input
-                              type="text"
-                              placeholder="e.g. http://localhost:8000/sse or built-in"
-                              value={mcpServerUrl}
-                              onChange={(e) => setMcpServerUrl(e.target.value)}
-                              required
-                            />
-                            <small style={{ color: "#64748B", fontSize: "11px", marginTop: 4 }}>
-                              Enter your Google Ads MCP Server endpoint. Google OAuth will automatically launch if needed.
-                            </small>
-                          </label>
-
-                          <div
-                            style={{
-                              background: "#F8FAFC",
-                              border: "1px solid #E2E8F0",
-                              borderRadius: 8,
-                              padding: "12px 14px",
-                              marginTop: 10,
-                              marginBottom: 14,
-                            }}
-                          >
-                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                              <ShieldCheck size={16} color="#16A34A" />
-                              <strong style={{ fontSize: "12.5px", color: "#0F172A" }}>Google Ads OAuth 2.0 Flow:</strong>
-                            </div>
-                            <ol style={{ fontSize: "11.5px", color: "#475569", margin: 0, paddingLeft: 18, lineHeight: 1.5 }}>
-                              <li>Connects to Google MCP Server & verifies credentials.</li>
-                              <li>Authorizes Google Ads campaign management & insights access.</li>
-                              <li>Links customer ad accounts and enables live Google MCP tools.</li>
-                            </ol>
-                          </div>
-
-                          <button
-                            className="primary-btn"
-                            type="submit"
-                            disabled={connecting}
-                            style={{
-                              backgroundColor: "#4285F4",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              gap: 8,
-                            }}
-                          >
-                            {connecting ? (
-                              <>
-                                <RefreshCw size={15} className="spin" style={{ animation: "spin 1.5s linear infinite" }} />
-                                Opening Google Authorization...
-                              </>
-                            ) : (
-                              <>
-                                <Sparkles size={15} />
-                                Authorize via Google OAuth & Connect
-                              </>
-                            )}
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={onConnectGoogleMcpDirectOnly}
-                            disabled={connecting}
-                            style={{
-                              marginTop: 10,
-                              background: "none",
-                              border: "1px solid #CBD5E1",
-                              borderRadius: 8,
-                              padding: "8px 12px",
-                              fontSize: "12px",
-                              color: "#475569",
-                              cursor: "pointer",
-                              width: "100%",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              gap: 6,
-                            }}
-                          >
-                            <Server size={13} color="#64748B" />
-                            Or link MCP server directly (skip OAuth)
-                          </button>
-                        </form>
-                      ) : (
-                        <div>
-                          <form onSubmit={onFetchGoogleAccountsList} className="modal-form">
-                            <label className="auth-label">
-                              <span>Google Access Token / Bearer Token</span>
-                              <input
-                                type="text"
-                                placeholder="ya29.a0..."
-                                value={accessToken}
-                                onChange={(event) => setAccessToken(event.target.value)}
-                                required
-                              />
-                            </label>
-
-                            <label className="auth-label">
-                              <span>Developer Token (Optional)</span>
-                              <input
-                                type="text"
-                                placeholder="Google Ads Developer Token"
-                                value={developerToken}
-                                onChange={(event) => setDeveloperToken(event.target.value)}
-                              />
-                            </label>
-
-                            <button className="primary-btn" type="submit" disabled={loading}>
-                              {loading ? "Verifying Token..." : "Fetch Google Ad Accounts"}
-                            </button>
-                          </form>
-
-                          {accounts.length > 0 && (
-                            <div className="modal-accounts-section" style={{ marginTop: 14 }}>
-                              <label className="auth-label">
-                                <span>Select Google Ad Account</span>
-                                <select
-                                  value={selectedAccount}
-                                  onChange={(event) => setSelectedAccount(event.target.value)}
-                                  className="filter-control"
-                                >
-                                  {accounts.map((account) => (
-                                    <option key={account.id} value={account.fullAccountId || account.id}>
-                                      {account.name} ({account.currency})
-                                    </option>
-                                  ))}
-                                </select>
-                              </label>
-                              <button
-                                className="primary-btn"
-                                onClick={onConnectGoogleDirect}
-                                disabled={connecting}
-                                style={{ marginTop: 12, backgroundColor: "#16A34A" }}
-                              >
-                                {connecting ? "Connecting..." : "Confirm & Connect Google Account"}
-                              </button>
-                            </div>
-                          )}
-                        </div>
                       )}
                     </div>
-                  ) : (
-                    <form onSubmit={onConnectGeneric} className="modal-form">
-                      <label className="auth-label">
-                        <span>Account / Profile Name</span>
-                        <input
-                          type="text"
-                          placeholder="e.g. Acme Marketing"
-                          value={genericForm.accountName}
-                          onChange={(e) => setGenericForm({ ...genericForm, accountName: e.target.value })}
-                          required
-                        />
-                      </label>
+                  </div>
 
-                      <div className="form-grid">
-                        <label className="auth-label">
-                          <span>Account / Client ID</span>
-                          <input
-                            type="text"
-                            placeholder="e.g. 123-456-7890"
-                            value={genericForm.accountId}
-                            onChange={(e) => setGenericForm({ ...genericForm, accountId: e.target.value })}
-                          />
-                        </label>
-
-                        <label className="auth-label">
-                          <span>Currency</span>
-                          <select
-                            value={genericForm.currency}
-                            onChange={(e) => setGenericForm({ ...genericForm, currency: e.target.value })}
-                            className="auth-select"
-                          >
-                            <option value="INR">INR (₹)</option>
-                            <option value="USD">USD ($)</option>
-                            <option value="EUR">EUR (€)</option>
-                            <option value="GBP">GBP (£)</option>
-                          </select>
-                        </label>
-                      </div>
-
-                      <label className="auth-label">
-                        <span>API Key / Access Token</span>
-                        <input
-                          type="password"
-                          placeholder="Enter API key or Token"
-                          value={genericForm.apiKey}
-                          onChange={(e) => setGenericForm({ ...genericForm, apiKey: e.target.value })}
-                        />
-                      </label>
-
-                      <button className="primary-btn" type="submit" disabled={connecting}>
-                        {connecting ? "Connecting..." : `Connect ${activeModalChannel.name}`}
+                  {/* Disconnect Option if currently connected */}
+                  {isChannelConnected(activeModalChannel.id) && (
+                    <div style={{ marginTop: 12, textAlign: "right" }}>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await onDisconnectChannel(activeModalChannel.id);
+                          closeConnectModal();
+                        }}
+                        style={{
+                          background: "transparent",
+                          border: "none",
+                          color: "#EF4444",
+                          fontSize: "12px",
+                          fontWeight: 500,
+                          cursor: "pointer",
+                          padding: "4px 8px",
+                          borderRadius: 6,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 5,
+                        }}
+                      >
+                        <Trash2 size={13} />
+                        Disconnect {activeModalChannel.name}
                       </button>
-                    </form>
-                  )}
                     </div>
                   )}
                 </motion.div>

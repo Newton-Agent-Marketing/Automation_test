@@ -106,13 +106,17 @@ export class SourceSheetReader {
       const primaryNode = warehouseNodes[0];
 
       if (primaryNode) {
-        const nodeSheetUrl = primaryNode.data?.sheetUrl;
+        const multiSheets = Array.isArray(primaryNode.data?.sheets) ? primaryNode.data.sheets.filter((s) => s.sheetUrl) : [];
+        const primaryConnectedSheet = multiSheets[0] || null;
+
+        const nodeSheetUrl = primaryNode.data?.sheetUrl || primaryConnectedSheet?.sheetUrl;
         spreadsheetName =
+          primaryConnectedSheet?.workbookName ||
           primaryNode.data?.workbookName ||
           primaryNode.data?.fileName ||
           primaryNode.data?.sheetName ||
           "Connected Spreadsheet";
-        targetWorksheet = primaryNode.data?.worksheetName || "Sheet1";
+        targetWorksheet = primaryConnectedSheet?.worksheetName || primaryNode.data?.worksheetName || "Sheet1";
 
         if (nodeSheetUrl) {
           sourceType = "google_sheets";

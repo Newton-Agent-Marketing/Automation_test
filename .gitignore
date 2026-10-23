@@ -4,3 +4,8 @@ backend/.tokens/
 frontend/dist/
 frontend/node_modules/
 backend/node_modules/
+backend/gcs-key.json
+*.key.json
+service-account*.json
+.env.local
+

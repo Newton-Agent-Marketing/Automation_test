@@ -12,6 +12,7 @@ import {
 import { useAiContext } from "../hook/useAiContext";
 import { AiContextCanvas } from "../components/AiContextCanvas";
 import { NodeDetailDrawer } from "../components/NodeDetailDrawer";
+import { motion, AnimatePresence } from "framer-motion";
 
 export const AiContext = () => {
   const {
@@ -49,6 +50,24 @@ export const AiContext = () => {
       window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, []);
+
+  // Auto-dismiss success notification banner after 3 seconds
+  useEffect(() => {
+    if (!successMessage) return;
+    const timer = setTimeout(() => {
+      dismissMessages();
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [successMessage, dismissMessages]);
+
+  // Auto-dismiss error notification banner after 5 seconds
+  useEffect(() => {
+    if (!error) return;
+    const timer = setTimeout(() => {
+      dismissMessages();
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [error, dismissMessages]);
 
   const activeDrawerNode = nodes.find((n) => n.id === drawerNodeId);
 
@@ -123,15 +142,16 @@ export const AiContext = () => {
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div
             style={{
-              width: 38,
-              height: 38,
-              borderRadius: 10,
-              backgroundColor: "#EEF2FF",
-              color: "#4F46E5",
+              width: 40,
+              height: 40,
+              borderRadius: 12,
+              backgroundColor: "#FFFFFF",
+              color: "#0F172A",
+              border: "1px solid #E2E8F0",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              boxShadow: "0 2px 6px rgba(79, 70, 229, 0.12)",
+              boxShadow: "0 2px 6px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)",
             }}
           >
             <Network size={20} />
@@ -139,8 +159,8 @@ export const AiContext = () => {
           <div>
             <h1
               style={{
-                fontSize: "19px",
-                fontWeight: 800,
+                fontSize: "18px",
+                fontWeight: 700,
                 color: "#0F172A",
                 margin: 0,
                 letterSpacing: "-0.02em",
@@ -150,7 +170,7 @@ export const AiContext = () => {
             </h1>
             <p
               style={{
-                fontSize: "12px",
+                fontSize: "12.5px",
                 color: "#64748B",
                 margin: 0,
                 marginTop: 2,
@@ -173,19 +193,27 @@ export const AiContext = () => {
               gap: 6,
               padding: "7px 14px",
               borderRadius: 8,
-              border: "1.5px solid #6366F1",
-              backgroundColor: "#EEF2FF",
-              color: "#4F46E5",
+              border: "1px solid #E2E8F0",
+              backgroundColor: "#FFFFFF",
+              color: "#0F172A",
               fontSize: "12px",
-              fontWeight: 700,
+              fontWeight: 600,
               cursor: "pointer",
-              boxShadow: "0 1px 3px rgba(99, 102, 241, 0.12)",
+              boxShadow: "0 1px 2px rgba(0, 0, 0, 0.04)",
               transition: "all 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = "#F8FAFC";
+              e.currentTarget.style.borderColor = "#CBD5E1";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = "#FFFFFF";
+              e.currentTarget.style.borderColor = "#E2E8F0";
             }}
             title="Add a new Start Context node with your registered account"
           >
             <Plus size={14} strokeWidth={2.5} />
-            + New Context Flow
+            New Context Flow
           </button>
 
           <button
@@ -196,14 +224,23 @@ export const AiContext = () => {
               display: "flex",
               alignItems: "center",
               gap: 6,
-              padding: "7px 12px",
+              padding: "7px 13px",
               borderRadius: 8,
               border: "1px solid #E2E8F0",
               backgroundColor: "#FFFFFF",
               color: "#64748B",
               fontSize: "12px",
-              fontWeight: 600,
+              fontWeight: 500,
               cursor: "pointer",
+              transition: "all 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = "#F8FAFC";
+              e.currentTarget.style.color = "#0F172A";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = "#FFFFFF";
+              e.currentTarget.style.color = "#64748B";
             }}
           >
             <RotateCcw size={14} />
@@ -221,18 +258,25 @@ export const AiContext = () => {
               padding: "7px 16px",
               borderRadius: 8,
               border: "none",
-              backgroundColor: "#16A34A",
+              backgroundColor: "#0F172A",
               color: "#FFFFFF",
               fontSize: "12.5px",
-              fontWeight: 700,
+              fontWeight: 600,
               cursor: "pointer",
-              boxShadow: "0 2px 6px rgba(22, 163, 74, 0.25)",
+              boxShadow: "0 1px 3px rgba(15, 23, 42, 0.12)",
+              transition: "all 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = "#1E293B";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = "#0F172A";
             }}
           >
             {saving ? (
               <>
                 <RefreshCw size={14} className="spin" style={{ animation: "spin 1s linear infinite" }} />
-                Saving to Database...
+                Saving...
               </>
             ) : (
               <>
@@ -245,32 +289,39 @@ export const AiContext = () => {
       </header>
 
       {/* Info / Success / Error Banners */}
-      {(successMessage || error) && (
-        <div
-          style={{
-            padding: "8px 14px",
-            borderRadius: 8,
-            marginBottom: 10,
-            fontSize: "12px",
-            fontWeight: 500,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            backgroundColor: error ? "#FEF2F2" : "#F0FDF4",
-            color: error ? "#991B1B" : "#166534",
-            border: `1px solid ${error ? "#FECACA" : "#BBF7D0"}`,
-          }}
-        >
-          <span>{error || successMessage}</span>
-          <button
-            type="button"
-            onClick={dismissMessages}
-            style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: "11px" }}
+      <AnimatePresence>
+        {(successMessage || error) && (
+          <motion.div
+            initial={{ opacity: 0, y: -8, height: 0 }}
+            animate={{ opacity: 1, y: 0, height: "auto" }}
+            exit={{ opacity: 0, y: -8, height: 0 }}
+            transition={{ duration: 0.25, ease: "easeOut" }}
+            style={{
+              padding: "8px 14px",
+              borderRadius: 8,
+              marginBottom: 10,
+              fontSize: "12px",
+              fontWeight: 500,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              backgroundColor: error ? "#FEF2F2" : "#EFF6FF",
+              color: error ? "#991B1B" : "#1D4ED8",
+              border: `1px solid ${error ? "#FECACA" : "#BFDBFE"}`,
+              overflow: "hidden",
+            }}
           >
-            ✕
-          </button>
-        </div>
-      )}
+            <span>{error || successMessage}</span>
+            <button
+              type="button"
+              onClick={dismissMessages}
+              style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: "11px" }}
+            >
+              ✕
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Main Canvas Box */}
       <div

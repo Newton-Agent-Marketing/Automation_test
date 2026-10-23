@@ -144,8 +144,11 @@ Hierarchy: Direct / Single Account (No Manager MCC)`;
         const bus = (aiCtx.businessUnits || []).map((b) => `  - **${b.name || "Business Unit"}**: ${b.description || "Active Unit"}`).join("\n") || "  - None configured";
         
         const channels = (aiCtx.adChannels || []).map((c) => {
-          const accStr = c.accountId ? ` [Ad Account ID: \`${c.accountId}\`${c.accountName ? ` - "${c.accountName}"` : ""}]` : " [Account: Auto-detect / Connected]";
-          return `  - **${c.channel || c.channelName || "Ad Channel"}**${accStr} | Funnel Event: "${c.funnelEvent || "Purchase"}"${c.funnelDescription ? ` (${c.funnelDescription})` : ""}`;
+          const buStr = c.businessUnitName ? ` [Business Unit: "${c.businessUnitName}"] ➔ ` : "";
+          const accStr = c.accountId
+            ? ` [Ad Account: "${c.accountName || "Account"}" (ID: \`${c.accountId}\`)]`
+            : " [Account: Auto-detect / Connected]";
+          return `  - ${buStr}**${c.channel || c.channelName || "Ad Channel"}**${accStr} | Funnel Event: "${c.funnelEvent || "Purchase"}"${c.funnelDescription ? ` (Desc: "${c.funnelDescription}")` : ""}`;
         }).join("\n") || "  - None configured";
 
         const prods = (aiCtx.products || []).map((p) => {
@@ -156,24 +159,51 @@ Hierarchy: Direct / Single Account (No Manager MCC)`;
         }).join("\n") || "  - None configured";
 
         const briefs = (aiCtx.marketingBriefs || []).map((b) => {
-          return `  - **${b.name || "Marketing Brief"}**: Target KPIs: "${b.kpis || "ROAS / Sales"}" | Tracked Metrics: "${b.metrics || "Conversions"}" | Strategy & Angles: "${b.description || "High converting direct response"}"`;
+          const buPart = b.businessUnitName ? ` [Business Unit: "${b.businessUnitName}"]` : "";
+          const periodStr = b.targetPeriod ? ` [Target Period: "${b.targetPeriod}"]` : "";
+          const descStr = b.description ? ` | Strategy/Offer: "${b.description}"` : "";
+          let metricsDetail = b.metrics ? `Tracked Metrics & Targets: "${b.metrics}"` : "Tracked Metrics: Not specified";
+          if (Array.isArray(b.metricsList) && b.metricsList.length > 0) {
+            const listStr = b.metricsList
+              .map((m, i) => `\n    * Date Range #${i + 1} (${m.formattedPeriod || `${m.startDate} to ${m.endDate}`}): "${m.metrics}"`)
+              .join("");
+            metricsDetail = `Configured Date-Range Metrics (${b.metricsList.length} ranges):${listStr}`;
+          }
+          return `  - **${b.name || "Marketing Brief"}**${buPart}${periodStr}${descStr} | ${metricsDetail}`;
         }).join("\n") || "  - None configured";
 
         const dws = (aiCtx.dataWarehouses || []).map((d) => {
           const parts = [];
-          if (d.sheetUrl) parts.push(`Sheet URL: "${d.sheetUrl}" [Status: ${d.excelSyncStatus || "READY"}, Rows: ${d.totalRows || 0}]`);
-          else if (d.workbookName || d.workbookId) parts.push(`Workbook: "${d.workbookName || d.workbookId}" [Status: ${d.excelSyncStatus || "READY"}]`);
+          if (Array.isArray(d.sheets) && d.sheets.length > 0) {
+            const sheetDetails = d.sheets.map((s, idx) => {
+              const sName = s.workbookName || `Sheet #${idx + 1}`;
+              const sRows = s.totalRows ? `, ${s.totalRows} rows` : "";
+              const sUrl = s.sheetUrl ? ` [URL: "${s.sheetUrl}"]` : "";
+              const sStatus = s.excelSyncStatus ? ` (Status: ${s.excelSyncStatus})` : "";
+              const sLabel = s.dataLabels ? ` - Data Label: "${s.dataLabels}"` : "";
+              return `\n    * Sheet #${idx + 1}: ${sName}${sStatus}${sRows}${sUrl}${sLabel}`;
+            }).join("");
+            parts.push(`Connected Sheets (${d.sheets.length} total, max 10):${sheetDetails}`);
+          } else {
+            if (d.sheetUrl) parts.push(`Sheet URL: "${d.sheetUrl}" [Status: ${d.excelSyncStatus || "READY"}, Rows: ${d.totalRows || 0}]`);
+            else if (d.workbookName || d.workbookId) parts.push(`Workbook: "${d.workbookName || d.workbookId}" [Status: ${d.excelSyncStatus || "READY"}]`);
+            const purpose = d.dataLevel || d.dataLabels;
+            if (purpose) parts.push(`Data Label: "${purpose}"`);
+          }
           if (d.googleDriveConnected || d.googleDriveEmail) parts.push(`Google Drive: "${d.googleDriveEmail || "Connected"}"`);
-          const purpose = d.dataLevel || d.dataLabels;
-          if (purpose) parts.push(`Data Level: "${purpose}"`);
           if (parts.length === 0) parts.push(`${d.name} (${d.platform || "Excel Sheet & Google Drive"})`);
-          return `  - ${parts.join(" | ")}`;
+          return `  - **${d.name || "Data Warehouse"}**: ${parts.join(" | ")}`;
         }).join("\n") || "  - None configured";
 
         const flowList = (aiCtx.flows || []).map((f, i) => {
           const lp = f.campaignLaunchParameters || {};
+          const buPart = lp.businessUnit ? `Business Unit: **"${lp.businessUnit}"** | ` : "";
+          const periodPart = lp.targetPeriod ? ` | Target Period: "${lp.targetPeriod}"` : "";
+          const metricsStr = Array.isArray(lp.metricsList) && lp.metricsList.length > 0
+            ? lp.metricsList.map((m) => `[${m.formattedPeriod || `${m.startDate} to ${m.endDate}`}]: ${m.metrics}`).join(" ; ")
+            : (lp.metrics || "ROAS");
           return `  - Flow #${f.flowIndex || i + 1} (${f.flowTag || "Workflow"}): ${f.flowSummary}
-    * Synthesized Blueprint: Channel: **${lp.channel || "Meta Ads"}** | Account ID: \`${lp.accountId || "Auto"}\` | Target Product: "${lp.productName || "Product"}" (\`${lp.productUrl || "N/A"}\`) | Funnel: "${lp.funnelEvent || "Purchase"}" | Target KPIs: "${lp.kpis || "ROAS"}"`;
+    * Synthesized Blueprint: ${buPart}Channel: **${lp.channel || "Meta Ads"}** | Ad Account: **"${lp.accountName || lp.accountId || "Auto"}"** (\`${lp.accountId || "N/A"}\`) | Target Product: "${lp.productName || "Product"}" | Funnel Event: "${lp.funnelEvent || "Purchase"}"${lp.funnelDescription ? ` ("${lp.funnelDescription}")` : ""}${periodPart} | Target Metrics: "${metricsStr}"`;
         }).join("\n") || "  - Direct Unified Context Canvas";
 
         aiContextText = `Workflow Name: "${aiCtx.workflowName || "Primary AI Context"}" (${aiCtx.totalFlows || 1} active flow paths, ${aiCtx.totalNodes || 1} total nodes)
@@ -298,12 +328,23 @@ Capabilities & Exact Execution Guidelines:
    - To audit or inspect the full campaign hierarchy (budget + ad groups + keywords count + ads preview): Call "get_google_campaign_structure" with campaignId.
    - All keywords, ads, and campaign structures fetched are automatically persisted and synchronized in MongoDB for fast retrieval.
 
-7. Autonomous Campaign, Ad Set & Ad Creative Creation from User's AI Context & SKILL.md Guidelines (CRITICAL MANDATORY INSTRUCTION):
-   - Whenever the user asks to create, launch, or setup a campaign, ad set, or ad (in ANY phrasing or language, e.g. "ad create kardo ai context ma jo setup kya us data k use kar ka", "create campaign from flow", "skill.md dekh kar complete ad create karo", "campaign adset ad sab banao"):
+7. Autonomous Campaign, Ad Set & Ad Creative Creation from User's AI Context & Sheet Data (CRITICAL MANDATORY INSTRUCTION):
+   - Whenever the user asks to create, launch, or setup a campaign, ad set, or ad (in ANY phrasing or language, e.g. "ad create kardo ai context ma jo setup kya us data k use kar ka", "create campaign from flow", "sheet connect karu ga to node ka detail use karo", "campaign adset ad sab banao"):
      * **MANDATORY SKILL.MD ADHERENCE**: You MUST strictly adhere to the execution runbook in **SKILL.md** (\`meta-ads-campaign-creator\` / workspace skills). Call "get_skill_details" with \`skillName: "meta-ads-campaign-creator"\` if needed, and execute the full multi-level creation chain without skipping any level.
-     * **Step 1: Inspect AI Context & Target Account**:
+     * **STRICT AD ACCOUNT BINDING (MANDATORY)**:
+       - You MUST deploy the campaign strictly to the exact Ad Account connected in the Ad Channel node (\`adAccountId\` / \`accountId\`).
+       - Never deploy to a different account, fallback account, or unlinked account. The ads MUST go to the account connected to that specific node.
+     * **SEAMLESS SHEET + NODE DATA FUSION (MANDATORY)**:
+       - When a Google Sheet / Data Warehouse is connected, fuse the sheet row data (creative assets, row variations, budget) with the node details from the AI Context flow:
+         * **Ad Account**: Use the exact Ad Account connected in the Ad Channel node (\`adAccountId\`).
+         * **Landing Page URL**: If sheet row does not provide a landing page URL, seamlessly use the \`productUrl\` from the connected Product node.
+         * **Objective / Goal**: If sheet does not define an objective, derive it from the Ad Channel's \`funnelEvent\` (e.g. \`Purchase\` ➔ \`OUTCOME_SALES\`, \`Leads\` ➔ \`OUTCOME_LEADS\`, \`Traffic\` ➔ \`OUTCOME_TRAFFIC\`).
+         * **Headline & Primary Text**: If missing in sheet row, derive high-converting ad copy from the Product Name, price, and Marketing Brief USPs/metrics.
+         * **Multi-Sheet Handling**: If multiple sheets are connected in the Warehouse node, respect each sheet's data label and read from the relevant connected sheet.
+     * **Step 1: Inspect AI Context Lineage Flow & Target Account**:
        - Read the user's AI Context from section "User's Structured Marketing AI Context & Flow Graph" above (or call "get_user_ai_context").
-       - Resolve the target advertising channel (Meta Ads vs Google Ads) and the specific target Ad Account ID (\`adAccountId\` from the Ad Channel node or connected accounts).
+       - Hierarchy Mapping: Follow the exact directional graph: Business Unit ➔ Ad Channel ➔ Marketing Brief ➔ Product Catalog ➔ Data Warehouse.
+       - Accurately select the specific Ad Account (\`adAccountId\`) and its customized Funnel Event configured for that branch.
        - Extract Product Name, Landing Page Destination URL (\`productUrl\`), Price, Catalog items, Marketing Brief (KPIs, Strategy, Hooks), and Funnel Event (\`Purchase\`, \`Leads\`, \`Traffic\`).
      * **Step 2: META ADS Multi-Level Creation Hierarchy (According to SKILL.md)**:
        - **Level 1 — Campaign Level**:

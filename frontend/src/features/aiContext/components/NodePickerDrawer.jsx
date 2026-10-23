@@ -62,10 +62,10 @@ export const NodePickerDrawer = ({
           left: (position?.x || 200) + 30,
           top: (position?.y || 200) - 20,
           zIndex: 1000,
-          width: 320,
+          width: 330,
           backgroundColor: "#FFFFFF",
-          borderRadius: 12,
-          boxShadow: "0 14px 40px rgba(15, 23, 42, 0.16), 0 2px 8px rgba(15, 23, 42, 0.08)",
+          borderRadius: 18,
+          boxShadow: "0 20px 48px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.04)",
           border: "1px solid #E2E8F0",
           overflow: "hidden",
         }}
@@ -78,41 +78,52 @@ export const NodePickerDrawer = ({
             alignItems: "center",
             justifyContent: "space-between",
             borderBottom: "1px solid #F1F5F9",
-            padding: "10px 14px",
-            backgroundColor: "#FAFBFD",
+            padding: "13px 16px",
+            backgroundColor: "#FFFFFF",
           }}
         >
           <span
             style={{
-              fontSize: "13px",
+              fontSize: "14px",
               fontWeight: 700,
-              color: "#2563EB",
-              letterSpacing: "0.01em",
+              color: "#0F172A",
+              letterSpacing: "-0.01em",
             }}
           >
-            Nodes
+            Add Context Node
           </span>
 
           <button
             type="button"
             onClick={onClose}
             style={{
-              background: "none",
-              border: "none",
+              background: "#FFFFFF",
+              border: "1px solid #E2E8F0",
               cursor: "pointer",
-              color: "#94A3B8",
-              padding: 2,
+              color: "#64748B",
+              width: 26,
+              height: 26,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
+              borderRadius: 7,
+              transition: "all 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = "#0F172A";
+              e.currentTarget.style.backgroundColor = "#F8FAFC";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = "#64748B";
+              e.currentTarget.style.backgroundColor = "#FFFFFF";
             }}
           >
-            <X size={15} />
+            <X size={14} />
           </button>
         </div>
 
         {/* Search Input */}
-        <div style={{ padding: "10px 12px 6px 12px" }}>
+        <div style={{ padding: "12px 14px 6px 14px" }}>
           <div
             style={{
               display: "flex",
@@ -120,8 +131,8 @@ export const NodePickerDrawer = ({
               gap: 8,
               backgroundColor: "#F8FAFC",
               border: "1px solid #E2E8F0",
-              borderRadius: 8,
-              padding: "6px 10px",
+              borderRadius: 10,
+              padding: "7px 11px",
             }}
           >
             <Search size={14} color="#94A3B8" />
@@ -134,7 +145,7 @@ export const NodePickerDrawer = ({
               style={{
                 border: "none",
                 background: "transparent",
-                fontSize: "12px",
+                fontSize: "12.5px",
                 width: "100%",
                 outline: "none",
                 color: "#0F172A",
@@ -146,20 +157,20 @@ export const NodePickerDrawer = ({
         {/* Anchor Node Hint */}
         <div
           style={{
-            padding: "4px 14px 6px 14px",
+            padding: "4px 16px 8px 16px",
             fontSize: "11px",
             color: "#64748B",
             display: "flex",
             alignItems: "center",
-            gap: 4,
+            gap: 5,
           }}
         >
-          <Sparkles size={11} color="#6366F1" />
-          <span>Connecting from <strong>{anchorNode.label}</strong></span>
+          <Sparkles size={11} color="#0F172A" />
+          <span>Connecting from <strong style={{ color: "#0F172A" }}>{anchorNode.label}</strong></span>
         </div>
 
         {/* Nodes List */}
-        <div style={{ maxHeight: 280, overflowY: "auto", padding: "4px 8px 10px 8px" }}>
+        <div style={{ maxHeight: 290, overflowY: "auto", padding: "4px 8px 12px 8px" }}>
           {filteredNodes.map((item) => {
             const Icon = NODE_ICONS[item.icon] || Sparkles;
             return (
@@ -169,48 +180,49 @@ export const NodePickerDrawer = ({
                 onClick={() => onSelectNode(anchorNode.id, item.type)}
                 style={{
                   display: "flex",
-                  alignItems: "flex-start",
-                  gap: 10,
+                  alignItems: "center",
+                  gap: 12,
                   width: "100%",
-                  padding: "8px 10px",
-                  borderRadius: 8,
+                  padding: "9px 11px",
+                  borderRadius: 10,
                   border: "none",
                   background: "transparent",
                   textAlign: "left",
                   cursor: "pointer",
                   transition: "background 0.15s ease",
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "#F1F5F9")}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#F8FAFC")}
                 onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
               >
                 <div
                   style={{
-                    width: 30,
-                    height: 30,
-                    borderRadius: 8,
-                    backgroundColor: `${item.color}15`,
-                    color: item.color,
+                    width: 38,
+                    height: 38,
+                    borderRadius: 10,
+                    backgroundColor: "#FFFFFF",
+                    border: "1px solid #E2E8F0",
+                    color: "#0F172A",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
                     flexShrink: 0,
-                    marginTop: 2,
+                    boxShadow: "0 1px 3px rgba(0, 0, 0, 0.03)",
                   }}
                 >
-                  <Icon size={16} />
+                  <Icon size={18} strokeWidth={1.9} />
                 </div>
 
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <strong style={{ fontSize: "12.5px", color: "#0F172A" }}>{item.title}</strong>
+                    <strong style={{ fontSize: "13px", fontWeight: 600, color: "#0F172A" }}>{item.title}</strong>
                     <span
                       style={{
                         fontSize: "9.5px",
-                        fontWeight: 700,
-                        padding: "1px 5px",
+                        fontWeight: 600,
+                        padding: "1px 6px",
                         borderRadius: 4,
                         backgroundColor: "#F1F5F9",
-                        color: "#64748B",
+                        color: "#475569",
                         letterSpacing: "0.02em",
                       }}
                     >
@@ -220,7 +232,7 @@ export const NodePickerDrawer = ({
                   <p
                     style={{
                       margin: "2px 0 0 0",
-                      fontSize: "11px",
+                      fontSize: "11.5px",
                       color: "#64748B",
                       lineHeight: 1.3,
                       whiteSpace: "nowrap",

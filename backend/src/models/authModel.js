@@ -27,6 +27,14 @@ const userSchema = new Schema(
       default: "user",
       required: true,
     },
+    avatar: {
+      type: String,
+      default: "",
+    },
+    avatarStoragePath: {
+      type: String,
+      default: "",
+    },
     dashboardSettings: {
       startDate: { type: String, default: "" },
       endDate: { type: String, default: "" },

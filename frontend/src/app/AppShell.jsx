@@ -46,7 +46,12 @@ const AppShell = () => {
   const { user, logout } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [avatarError, setAvatarError] = useState(false);
   const isChat = location.pathname === "/agent";
+
+  useEffect(() => {
+    setAvatarError(false);
+  }, [user?.avatar]);
 
   useEffect(() => {
     dispatch(fetchChannelStatus());
@@ -126,7 +131,18 @@ const AppShell = () => {
             style={{ cursor: "pointer" }}
             title="Click to edit user & company details"
           >
-            <div className="user-avatar">{userInitial}</div>
+            <div className="user-avatar" style={{ overflow: "hidden", padding: 0 }}>
+              {user?.avatar && !avatarError ? (
+                <img
+                  src={user.avatar}
+                  alt={userName}
+                  onError={() => setAvatarError(true)}
+                  style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "8px" }}
+                />
+              ) : (
+                userInitial
+              )}
+            </div>
             {!collapsed && (
               <div className="user-details">
                 <div className="user-name-row">

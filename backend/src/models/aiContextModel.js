@@ -33,13 +33,31 @@ const nodeSchema = new Schema(
       description: { type: String, default: "" },
       contextTag: { type: String, default: "Primary Marketing Context" },
       // Ad Channel Node fields
+      businessUnitName: { type: String, default: "" },
+      accountName: { type: String, default: "" },
       channelName: { type: String, default: "" },
       adAccountId: { type: String, default: "" },
       funnelEvent: { type: String, default: "" },
       funnelDescription: { type: String, default: "" },
       // Marketing Brief Node fields
+      timeframeType: { type: String, default: "month" },
+      targetMonth: { type: String, default: "" },
+      startDate: { type: String, default: "" },
+      endDate: { type: String, default: "" },
+      formattedPeriod: { type: String, default: "" },
       metrics: { type: String, default: "" },
-      kpis: { type: String, default: "" },
+      metricsList: {
+        type: [
+          {
+            id: { type: String, default: "" },
+            startDate: { type: String, default: "" },
+            endDate: { type: String, default: "" },
+            formattedPeriod: { type: String, default: "" },
+            metrics: { type: String, default: "" },
+          },
+        ],
+        default: [],
+      },
       // Product Node fields
       productName: { type: String, default: "" },
       productUrl: { type: String, default: "" },
@@ -61,6 +79,30 @@ const nodeSchema = new Schema(
       },
       catalogCount: { type: Number, default: 0 },
       // Data Warehouse Node fields (Excel Sheet = WHAT, Google Drive = MEDIA)
+      sheets: {
+        type: [
+          {
+            id: { type: String, default: "" },
+            sheetUrl: { type: String, default: "" },
+            excelProvider: { type: String, default: "Google Sheets" },
+            workbookId: { type: String, default: "" },
+            workbookName: { type: String, default: "" },
+            worksheetId: { type: String, default: "" },
+            worksheetName: { type: String, default: "" },
+            excelSyncStatus: { type: String, default: "NOT_CONNECTED" },
+            lastSyncedAt: { type: Date, default: null },
+            totalRows: { type: Number, default: 0 },
+            totalDataRows: { type: Number, default: 0 },
+            totalSheetRows: { type: Number, default: 0 },
+            sheetColumns: { type: [String], default: [] },
+            sheetRows: { type: [Schema.Types.Mixed], default: [] },
+            sheetMetadata: { type: Schema.Types.Mixed, default: {} },
+            dataLabels: { type: String, default: "" },
+            dataLevel: { type: String, default: "" },
+          },
+        ],
+        default: [],
+      },
       warehouseSource: { type: String, enum: ["excel_sheet", "google_drive", "both"], default: "both" },
       sheetUrl: { type: String, default: "" },
       excelProvider: { type: String, default: "Google Sheets" },
