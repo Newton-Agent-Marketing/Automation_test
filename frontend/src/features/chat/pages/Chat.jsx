@@ -685,62 +685,6 @@ const Chat = () => {
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            {sheetSyncInfo && sheetSyncInfo.connected && (
-              <div
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 7,
-                  padding: "4px 10px",
-                  borderRadius: 18,
-                  backgroundColor: sheetSyncInfo.syncStatus === "FAILED" ? "#FEF2F2" : "#F0FDF4",
-                  border: sheetSyncInfo.syncStatus === "FAILED" ? "1px solid #FECACA" : "1px solid #BBF7D0",
-                  fontSize: "11px",
-                  color: sheetSyncInfo.syncStatus === "FAILED" ? "#991B1B" : "#166534",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.03)",
-                }}
-              >
-                <FileSpreadsheet size={13} color={sheetSyncInfo.syncStatus === "FAILED" ? "#DC2626" : "#16A34A"} />
-                <span
-                  style={{ fontWeight: 700, maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                  title={`${sheetSyncInfo.spreadsheetName} (${sheetSyncInfo.worksheetName})`}
-                >
-                  {sheetSyncInfo.spreadsheetName}
-                </span>
-                <span style={{ color: "#64748B", fontSize: "10.5px" }}>({sheetSyncInfo.worksheetName})</span>
-                <span
-                  style={{
-                    fontSize: "10px",
-                    fontWeight: 700,
-                    padding: "1px 5px",
-                    borderRadius: 8,
-                    backgroundColor: sheetSyncInfo.syncStatus === "FAILED" ? "#FEE2E2" : "#DCFCE7",
-                    color: sheetSyncInfo.syncStatus === "FAILED" ? "#B91C1C" : "#15803D",
-                  }}
-                  title={`Sheet data through Row #${sheetSyncInfo.lastRowNumber || (sheetSyncInfo.totalSheetRows || 9)} (${sheetSyncInfo.totalSheetRows || ((sheetSyncInfo.totalDataRows || sheetSyncInfo.totalRows || 0) + 1)} total rows with data). Header at Row #${sheetSyncInfo.headerRowNumber || 1}. ${sheetSyncInfo.totalDataRows || sheetSyncInfo.totalRows || 0} data rows.`}
-                >
-                  {isSyncingSheetDirect ? "Syncing..." : sheetSyncInfo.syncStatus === "FAILED" ? "Failed" : `${sheetSyncInfo.totalDataRows || sheetSyncInfo.totalRows || 0} data rows (through Row #${sheetSyncInfo.lastRowNumber || sheetSyncInfo.totalSheetRows || 9})`}
-                </span>
-                <button
-                  type="button"
-                  disabled={isSyncingSheetDirect}
-                  onClick={handleManualSyncInChat}
-                  title="Sync latest rows from Google Sheets"
-                  style={{
-                    background: "none",
-                    border: "none",
-                    padding: "2px 4px",
-                    cursor: isSyncingSheetDirect ? "not-allowed" : "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    color: sheetSyncInfo.syncStatus === "FAILED" ? "#DC2626" : "#16A34A",
-                    borderRadius: 4,
-                  }}
-                >
-                  <RefreshCw size={11} style={isSyncingSheetDirect ? { animation: "spin 1s linear infinite" } : {}} />
-                </button>
-              </div>
-            )}
             <div className={`chat-status-indicator ${connected ? "online" : ""}`}>
               <span className="status-dot" />
               <span>{connected ? "Live" : "Connecting"}</span>
@@ -825,45 +769,54 @@ const Chat = () => {
           ) : (
             <div className="chat-messages-container">
               <AnimatePresence initial={false}>
-                {messages.map((message) => (
-                  <motion.article
-                    key={message._id || message.createdAt}
-                    initial={{ opacity: 0, y: 10, scale: 0.98 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    transition={{ duration: 0.22, ease: "easeOut" }}
-                    className={`chat-bubble ${message.role}`}
-                  >
-                    <MarkdownMessage
-                      content={message.content}
-                      role={message.role}
-                      id={message._id}
-                      toolCalls={message.toolCalls}
-                      tokenUsage={message.tokenUsage}
-                    />
-                    {message.preparationData && (
-                      <div className="mt-4 w-full">
-                        <CampaignPreparationCard
-                          session={message.preparationData}
-                          onApprove={() => handlePreparationAction("APPROVE")}
-                          onEdit={(instructions) => handlePreparationAction("EDIT", { instructions })}
-                          onAnswerField={(answers) => handlePreparationAction("ANSWER", { answers })}
-                          isSending={prepActionLoading}
+                {messages.map((message) => {
+                  // If message already has an interactive preparation card, avoid rendering redundant raw markdown tables above it
+                  let displayContent = message.content;
+                  if (message.preparationData && typeof displayContent === "string") {
+                    displayContent = displayContent
+                      .replace(/###\s*🎯\s*Complete Campaign Preview[\s\S]*?(?=###\s*🚀|---\s*###\s*🚀|$)/i, "")
+                      .replace(/---\s*###\s*🚀\s*Ready for Authorization[\s\S]*?(?=>\s*🛡️|$)/i, "")
+                      .replace(/>\s*🛡️\s*\*\*Zero Creation Without Approval\*\*[\s\S]*?$/i, "")
+                      .trim();
+                  }
+
+                  return (
+                    <motion.article
+                      key={message._id || message.createdAt}
+                      initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      transition={{ duration: 0.22, ease: "easeOut" }}
+                      className={`chat-bubble ${message.role}`}
+                    >
+                      {displayContent ? (
+                        <MarkdownMessage
+                          content={displayContent}
+                          role={message.role}
+                          id={message._id}
+                          toolCalls={message.toolCalls}
+                          tokenUsage={message.tokenUsage}
                         />
-                      </div>
-                    )}
-                    {message.jobProgress && <RowProgressTracker jobProgress={message.jobProgress} />}
-                  </motion.article>
-                ))}
+                      ) : null}
+                      {message.preparationData && (
+                        <div className="mt-4 w-full">
+                          <CampaignPreparationCard
+                            session={message.preparationData}
+                            onApprove={() => handlePreparationAction("APPROVE")}
+                            onEdit={(instructions) => handlePreparationAction("EDIT", { instructions })}
+                            onAnswerField={(answers) => handlePreparationAction("ANSWER", { answers })}
+                            isSending={prepActionLoading}
+                          />
+                        </div>
+                      )}
+                      {message.jobProgress && <RowProgressTracker jobProgress={message.jobProgress} />}
+                    </motion.article>
+                  );
+                })}
               </AnimatePresence>
 
-              {/* Active preparation session if newer or not attached to the last message */}
+              {/* Active preparation session ONLY if it is not already rendered in any historical message */}
               {preparationData &&
-                (!messages.length ||
-                  !messages[messages.length - 1]?.preparationData ||
-                  messages[messages.length - 1]?.preparationData?.sessionId !== preparationData?.sessionId ||
-                  messages[messages.length - 1]?.preparationData?.status !== preparationData?.status ||
-                  messages[messages.length - 1]?.preparationData?.updatedAt !== preparationData?.updatedAt ||
-                  messages[messages.length - 1]?.preparationData?.preview?.version !== preparationData?.preview?.version) && (
+                !messages.some((m) => m.preparationData?.sessionId === preparationData?.sessionId) && (
                   <motion.div
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -898,12 +851,38 @@ const Chat = () => {
 
               {toolStatus && (
                 <motion.div
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="tool-status-pill"
+                  initial={{ opacity: 0, y: 6, scale: 0.96 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -4, scale: 0.96 }}
+                  className="agent-loading-pill"
                 >
-                  <Sparkles size={14} className="sparkle-spin" />
-                  <span>{toolStatus}</span>
+                  <div className="agent-loading-avatar">
+                    <svg className="agent-loading-svg" viewBox="0 0 36 36">
+                      <circle
+                        cx="18"
+                        cy="18"
+                        r="15"
+                        className="agent-loading-track"
+                      />
+                      <circle
+                        cx="18"
+                        cy="18"
+                        r="15"
+                        className="agent-loading-fill"
+                      />
+                    </svg>
+                    <div className="agent-loading-logo">
+                      <LogoMark size={16} />
+                    </div>
+                  </div>
+                  <div className="agent-loading-content">
+                    <span className="agent-loading-text">{toolStatus}</span>
+                  </div>
+                  <div className="agent-loading-dots">
+                    <span className="agent-dot" />
+                    <span className="agent-dot" />
+                    <span className="agent-dot" />
+                  </div>
                 </motion.div>
               )}
               <div ref={messagesEndRef} style={{ height: 1 }} />

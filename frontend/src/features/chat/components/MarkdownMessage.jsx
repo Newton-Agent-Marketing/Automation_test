@@ -14,6 +14,8 @@ function sanitizeMarkdownText(text) {
   str = str.replace(/access_token=[^&"\s]+/gi, "access_token=[REDACTED_TOKEN]");
   str = str.replace(/app_secret=[^&"\s]+/gi, "app_secret=[REDACTED_SECRET]");
   str = str.replace(/"client_secret"\s*:\s*"[^"]+"/gi, '"client_secret":"[REDACTED_SECRET]"');
+  // Strip out the green "All Fields Validated" callout as requested
+  str = str.replace(/>\s*(?:✅|🟢|\[✓\])?\s*\*\*All Fields Validated\*\*:[^\n]*(\n|$)+/gi, "");
   return str;
 }
 
@@ -81,27 +83,68 @@ export const MarkdownMessage = ({ content, role, id, toolCalls = [], tokenUsage 
   return (
     <div className="assistant-message-wrapper" ref={contentRef}>
       {Array.isArray(toolCalls) && toolCalls.length > 0 && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "10px" }}>
-          {toolCalls.map((t, idx) => (
-            <span
-              key={`tool-badge-${idx}-${t.toolName || "tool"}`}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "4px",
-                fontSize: "11px",
-                fontWeight: 600,
-                padding: "2px 8px",
-                borderRadius: "12px",
-                backgroundColor: t.status === "FAILED" ? "#FEE2E2" : "#F0FDF4",
-                color: t.status === "FAILED" ? "#DC2626" : "#16A34A",
-                border: `1px solid ${t.status === "FAILED" ? "#FECACA" : "#BBF7D0"}`,
-              }}
-            >
-              <span>⚡ Tool: <code>{t.toolName}</code></span>
-              <span style={{ fontSize: "10px", opacity: 0.85 }}>({t.status || "SUCCESS"})</span>
-            </span>
-          ))}
+        <div className="tool-execution-list">
+          {toolCalls.map((t, idx) => {
+            const isFailed = t.status === "FAILED" || t.status === "ERROR";
+            return (
+              <div
+                key={`tool-exec-${idx}-${t.toolName || "tool"}`}
+                className="tool-execution-banner"
+              >
+                <div className="tool-execution-left">
+                  <div className="tool-execution-icon-box" title="Tool execution">
+                    <img
+                      src="/icons/tool-logo.png"
+                      alt="Tool logo"
+                      className="tool-execution-icon-img"
+                      onError={(e) => {
+                        e.currentTarget.style.display = "none";
+                        if (e.currentTarget.nextSibling) {
+                          e.currentTarget.nextSibling.style.display = "block";
+                        }
+                      }}
+                    />
+                    <svg
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      style={{ display: "none" }}
+                    >
+                      <rect x="3.5" y="3.5" width="7" height="7" rx="2" stroke="#FFFFFF" strokeWidth="2.2" />
+                      <rect x="13.5" y="13.5" width="7" height="7" rx="2" stroke="#FFFFFF" strokeWidth="2.2" />
+                      <path d="M7 10.5v3.5a2.5 2.5 0 0 0 2.5 2.5h4" stroke="#FFFFFF" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </div>
+                  <div className="tool-execution-details">
+                    <div className="tool-execution-name">{t.toolName || "Tool execution"}</div>
+                    <div className="tool-execution-sub">Tool execution</div>
+                  </div>
+                </div>
+
+                <div className={`tool-execution-badge ${isFailed ? "failed" : "success"}`}>
+                  {isFailed ? (
+                    <>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="15" y1="9" x2="9" y2="15" />
+                        <line x1="9" y1="9" x2="15" y2="15" />
+                      </svg>
+                      <span>Failed</span>
+                    </>
+                  ) : (
+                    <>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="10" />
+                        <polyline points="16 9 10.5 14.5 8 12" />
+                      </svg>
+                      <span>Success</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -167,6 +210,11 @@ export const MarkdownMessage = ({ content, role, id, toolCalls = [], tokenUsage 
                 }
               } catch (e) {
                 textContent = "";
+              }
+
+              // Suppress green All Fields Validated alert callout completely as requested by user
+              if (/All Fields Validated/i.test(textContent)) {
+                return null;
               }
 
               const isErrorAlert =

@@ -45,6 +45,7 @@ export class SheetUpdateService {
 
     for (let i = 0; i < headers.length; i++) {
       const hNorm = FieldMapper.normalizeHeader(headers[i]);
+      if (hNorm === FieldMapper.normalizeHeader(fieldKey)) return i;
       if (hNorm === FieldMapper.normalizeHeader(standardName)) return i;
       for (const a of aliases) {
         if (hNorm === FieldMapper.normalizeHeader(a)) return i;

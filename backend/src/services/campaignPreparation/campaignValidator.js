@@ -862,7 +862,7 @@ export class CampaignValidator {
         md += `\n`;
       }
     } else {
-      md += `\n> ✅ **All Fields Validated**: Campaign configuration and source sheet data successfully passed all Meta Marketing API preflight checks.\n\n`;
+      // User requested to remove the green validation alert block; status is conveyed by top execution header
     }
 
     return md;

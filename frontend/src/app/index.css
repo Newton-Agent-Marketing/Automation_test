@@ -2098,6 +2098,141 @@ a {
   cursor: not-allowed;
 }
 
+/* ==========================================================================
+   AGENT LOADING PILL (Circular Logo with animated filling border + name)
+   ========================================================================== */
+.agent-loading-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background-color: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  padding: 5px 14px 5px 6px;
+  border-radius: 9999px;
+  box-shadow: 0 2px 8px -2px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.04);
+  margin: 6px 0;
+  max-width: fit-content;
+}
+
+.agent-loading-avatar {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.agent-loading-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 32px;
+  height: 32px;
+  transform: rotate(-90deg);
+  animation: agentRingRotate 1.8s linear infinite;
+}
+
+.agent-loading-track {
+  fill: none;
+  stroke: #EDF2F7;
+  stroke-width: 2.2;
+}
+
+.agent-loading-fill {
+  fill: none;
+  stroke: #2563EB;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-dasharray: 94.25;
+  stroke-dashoffset: 70;
+  animation: agentBorderFill 1.8s ease-in-out infinite;
+}
+
+@keyframes agentRingRotate {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes agentBorderFill {
+  0% {
+    stroke-dashoffset: 85;
+    stroke: #2563EB;
+  }
+  50% {
+    stroke-dashoffset: 25;
+    stroke: #0284C7;
+  }
+  100% {
+    stroke-dashoffset: 85;
+    stroke: #10B981;
+  }
+}
+
+.agent-loading-logo {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background-color: #0F172A;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+  z-index: 1;
+}
+
+.agent-loading-content {
+  display: flex;
+  align-items: center;
+}
+
+.agent-loading-text {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1E293B;
+  letter-spacing: -0.01em;
+}
+
+.agent-loading-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 2px;
+}
+
+.agent-dot {
+  width: 3.5px;
+  height: 3.5px;
+  border-radius: 50%;
+  background-color: #2563EB;
+  animation: agentDotPulse 1.2s infinite ease-in-out;
+}
+
+.agent-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.agent-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes agentDotPulse {
+  0%, 80%, 100% {
+    transform: scale(0.6);
+    opacity: 0.35;
+  }
+  40% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+}
+
 .tool-status-pill {
   display: inline-flex;
   align-items: center;
@@ -3101,4 +3236,387 @@ a {
     transform: scale(1) translateY(0);
   }
 }
+
+/* ==========================================================================
+   CAMPAIGN PREPARATION CARD & PREVIEW TABLES (Clean Light Theme)
+   ========================================================================== */
+.campaign-prep-card {
+  width: 100%;
+  margin: 14px 0 20px 0;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background-color: var(--white);
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+  color: var(--ink);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.prep-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+  background-color: #F8FAFC;
+}
+
+.prep-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.prep-header-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background-color: #EEF4FF;
+  border: 1px solid #BFDBFE;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--blue);
+  flex-shrink: 0;
+}
+
+.prep-header-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 2px;
+}
+
+.prep-header-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.prep-card-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+  background-color: var(--white);
+  overflow-x: auto;
+}
+
+.prep-tab-btn {
+  padding: 12px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.prep-tab-btn:hover {
+  color: var(--ink);
+}
+
+.prep-tab-btn.active {
+  color: var(--blue);
+  border-bottom-color: var(--blue);
+}
+
+.prep-card-body {
+  padding: 18px 20px;
+}
+
+.prep-table-section {
+  margin-bottom: 22px;
+}
+
+.prep-table-section:last-child {
+  margin-bottom: 0;
+}
+
+.prep-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.prep-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink-secondary);
+}
+
+.prep-table-container {
+  overflow-x: auto;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background-color: var(--white);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.prep-data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.prep-data-table th {
+  background-color: #F8FAFC;
+  color: var(--ink-secondary);
+  font-weight: 600;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.prep-data-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line-subtle);
+  color: var(--ink);
+  vertical-align: middle;
+}
+
+.prep-data-table tr:last-child td {
+  border-bottom: none;
+}
+
+.prep-data-table tr:hover td {
+  background-color: #F8FAFC;
+}
+
+.prep-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.prep-badge-success {
+  background-color: #ECFDF5;
+  color: #059669;
+  border: 1px solid #A7F3D0;
+}
+
+.prep-badge-warning {
+  background-color: #FFFBEB;
+  color: #D97706;
+  border: 1px solid #FDE68A;
+}
+
+.prep-badge-error {
+  background-color: #FEF2F2;
+  color: #DC2626;
+  border: 1px solid #FECACA;
+}
+
+.prep-badge-info {
+  background-color: #EEF4FF;
+  color: #2563EB;
+  border: 1px solid #BFDBFE;
+}
+
+.prep-badge-neutral {
+  background-color: #F1F5F9;
+  color: #475569;
+  border: 1px solid #E2E8F0;
+}
+
+.prep-card-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--line);
+  background-color: #F8FAFC;
+}
+
+.prep-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  background-color: #10B981;
+  color: #FFFFFF;
+  border: 1px solid #059669;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(16, 185, 129, 0.2);
+  transition: all 0.15s ease;
+}
+
+.prep-btn-primary:hover:not(:disabled) {
+  background-color: #059669;
+}
+
+.prep-btn-primary:disabled {
+  background-color: #E2E8F0;
+  color: #94A3B8;
+  border-color: #CBD5E1;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.prep-btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  background-color: #FFFFFF;
+  color: #334155;
+  border: 1px solid #CBD5E1;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.prep-btn-secondary:hover:not(:disabled) {
+  background-color: #F8FAFC;
+  border-color: #94A3B8;
+  color: #0F172A;
+}
+
+.prep-btn-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  background-color: #D97706;
+  color: #FFFFFF;
+  border: 1px solid #B45309;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.prep-btn-warning:hover:not(:disabled) {
+  background-color: #B45309;
+}
+
+/* ==========================================================================
+   TOOL EXECUTION BANNER (Image 2 Structure, Image 3 Logo, Website Green)
+   ========================================================================== */
+.tool-execution-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  margin-bottom: 14px;
+}
+
+.tool-execution-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-radius: 12px;
+  background-color: #262628;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.tool-execution-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.tool-execution-icon-box {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  border-radius: 8px;
+  background-color: #000000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  flex-shrink: 0;
+}
+
+.tool-execution-icon-img {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  display: block;
+}
+
+.tool-execution-details {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tool-execution-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #F8FAFC;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: 'Inter', -apple-system, sans-serif;
+}
+
+.tool-execution-sub {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: #94A3B8;
+  margin-top: 1px;
+}
+
+.tool-execution-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+  line-height: 1.2;
+}
+
+.tool-execution-badge.success {
+  background-color: var(--green-soft, #ECFDF5);
+  color: #047857;
+  border: 1px solid #A7F3D0;
+}
+
+.tool-execution-badge.failed {
+  background-color: var(--red-soft, #FEF2F2);
+  color: #DC2626;
+  border: 1px solid #FECACA;
+}
+
+.tool-execution-badge svg {
+  flex-shrink: 0;
+}
+
 

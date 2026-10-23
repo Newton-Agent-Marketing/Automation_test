@@ -3896,12 +3896,13 @@ export const runAgentChat = async ({
   let result = null;
 
   // 1b. Check if this request is a Meta Campaign Preparation Workflow request (create, approve, edit, or answering missing fields)
+  const activePrepSession = await CampaignPreparationService.getActiveSession(conversationId, validUserId || userId);
   const isMetaPrepWorkflow =
     !mentionsGoogleAds &&
-    (CampaignPreparationService.isApprovalCommand(userMessage) ||
-      CampaignPreparationService.isEditCommand(userMessage) ||
-      isCreationOrCampaignCmd ||
-      Boolean(await CampaignPreparationService.getActiveSession(conversationId, validUserId || userId)));
+    (Boolean(activePrepSession) ||
+      CampaignPreparationService.isApprovalCommand(userMessage, activePrepSession) ||
+      CampaignPreparationService.isEditCommand(userMessage, activePrepSession) ||
+      isCreationOrCampaignCmd);
 
   if (isMetaPrepWorkflow) {
     try {

@@ -259,6 +259,10 @@ const campaignPreparationSessionSchema = new mongoose.Schema(
         timestamp: { type: Date, default: Date.now },
       },
     ],
+    pendingEdit: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
   },
   {
     timestamps: true,

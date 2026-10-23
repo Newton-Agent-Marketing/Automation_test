@@ -7,6 +7,7 @@ import { SheetUpdateService } from "./sheetUpdateService.js";
 import { PreviewBuilder } from "./previewBuilder.js";
 import { MetaAdsOrchestrator } from "./metaAdsOrchestrator.js";
 import DynamicSheetFilter from "../data/dynamicSheetFilter.js";
+import { DynamicFieldEditor } from "./dynamicFieldEditor.js";
 
 export class CampaignPreparationService {
   /**
@@ -24,8 +25,13 @@ export class CampaignPreparationService {
   /**
    * Detect if a user message is an explicit Approval command
    */
-  static isApprovalCommand(msg) {
+  static isApprovalCommand(msg, session = null) {
     if (!msg || typeof msg !== "string") return false;
+    // Guard: If there is an active pending edit awaiting confirmation, the message is NOT campaign approval!
+    if (session && session.pendingEdit) {
+      return false;
+    }
+
     const clean = msg
       .toLowerCase()
       .replace(/^["'“`*.\s]+|["'”`*.\s]+$/g, "")
@@ -85,17 +91,28 @@ export class CampaignPreparationService {
   /**
    * Detect if a user message is an Edit request
    */
-  static isEditCommand(msg) {
+  static isEditCommand(msg, session = null) {
+    if (session && session.pendingEdit) return true;
     if (!msg || typeof msg !== "string") return false;
     const clean = msg.toLowerCase().trim();
-    return (
+    if (
       clean.startsWith("edit") ||
       clean.includes("edit") ||
       clean.includes("change") ||
       clean.includes("update") ||
       clean.includes("replace") ||
-      clean.includes("modify")
-    );
+      clean.includes("modify") ||
+      clean.startsWith("set ") ||
+      clean.includes("i want to edit") ||
+      clean.includes("want to edit")
+    ) {
+      return true;
+    }
+    // Pattern: "field, value" e.g. "budget, 500" or "headline: Diwali Sale"
+    if (/^[a-z0-9_\s-]+[,:=]\s*.+$/i.test(clean)) {
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -332,7 +349,7 @@ export class CampaignPreparationService {
     // =========================================================================
     // CASE A: USER APPROVAL ACTION ("Approve Campaign & Create Ads" or Retry)
     // =========================================================================
-    if (this.isApprovalCommand(msg) && session && (session.status === "READY_FOR_REVIEW" || session.status === "FAILED" || session.status === "APPROVED" || session.status === "STALE_APPROVAL")) {
+    if (!session?.pendingEdit && this.isApprovalCommand(msg, session) && session && (session.status === "READY_FOR_REVIEW" || session.status === "FAILED" || session.status === "APPROVED" || session.status === "STALE_APPROVAL")) {
       emit("Verifying approval snapshot & checking source sheet integrity...");
 
       // 1. Sync latest source data if sheet was updated before taking approval snapshot
@@ -430,101 +447,114 @@ export class CampaignPreparationService {
     }
 
     // =========================================================================
-    // CASE B: USER EDIT DETAILS ACTION
+    // CASE B: USER EDIT DETAILS ACTION (Dynamic Schema Discovery & Intelligent Field Editing)
     // =========================================================================
-    if (session && this.isEditCommand(msg)) {
-      emit("Processing edit instruction & updating source data...");
+    if (session && (session.pendingEdit || this.isEditCommand(msg, session))) {
+      emit("Analyzing fields and resolving edit intent...");
       session.status = "EDITING";
 
-      // Parse field changes from user message
-      const parsedEdits = MissingFieldCollector.parseAnswersFromMessage(msg, session.missingFields || []);
-      const affectedRows = [];
-      const rowMatch = msg.match(/(?:row|ad)\s*#?([0-9]+)/i);
-      if (rowMatch) affectedRows.push(Number(rowMatch[1]));
-
-      // 1. Update source sheet
-      const updateRes = await SheetUpdateService.updateSourceSheet({
+      const editResult = await DynamicFieldEditor.handleChatEdit({
+        session,
+        userMessage: msg,
         userId,
-        source: session.source,
-        updates: parsedEdits,
-        affectedRows,
+        userEmail,
+        onProgress,
       });
 
-      // 2. Re-read latest source data
-      const rawSource = await SourceSheetReader.readSource({
-        userId,
-        sheetUrlOrId: session.source?.sheetUrl || session.source?.spreadsheetId,
-        filePath: session.source?.filePath,
-        worksheetName: session.source?.worksheetName,
-      });
+      // If an update was applied, re-read source data, revalidate, and rebuild preview
+      if (editResult.actionTaken === "APPLIED_UPDATE") {
+        emit("Revalidating campaign configuration and updating preview...");
 
-      const { filteredSource: sourceData } = this.applyFiltersToSourceData(rawSource, "", session.filterCriteria);
+        // Invalidate old approval snapshot since data changed
+        session.approval = { status: "NONE", approvedAt: null, approvedBy: null, snapshot: null };
 
-      // 3. Revalidate
-      const valResult = await CampaignValidator.validate({
-        campaignName: parsedEdits.campaignName || session.campaignName,
-        adSetName: parsedEdits.adSetName || session.adSetName,
-        metaAccountId: effectiveMetaAccountId,
-        accountDoc: effectiveAccountDoc,
-        sourceData,
-        userAnswers: parsedEdits,
-        contextNodeData,
-      });
+        // 1. Re-read latest source data
+        let sourceData = null;
+        try {
+          const rawSource = await SourceSheetReader.readSource({
+            userId,
+            sheetUrlOrId: session.source?.sheetUrl || session.source?.spreadsheetId,
+            filePath: session.source?.filePath,
+            worksheetName: session.source?.worksheetName,
+          });
+          const filtered = this.applyFiltersToSourceData(rawSource, "", session.filterCriteria);
+          sourceData = filtered.filteredSource;
+          if (sourceData?.dataFingerprint) {
+            session.source.dataFingerprint = sourceData.dataFingerprint;
+          }
+        } catch (srcErr) {
+          console.warn("[DynamicFieldEditor Re-read Warning]:", srcErr.message);
+        }
 
-      session.validationReport = {
-        summaryTable: valResult.summaryTable,
-        campaignIssues: valResult.campaignIssues,
-        adSetIssues: valResult.adSetIssues,
-        adIssues: valResult.adIssues,
-        mediaIssues: valResult.mediaIssues,
-        blockingCount: valResult.blockingCount,
-        warningCount: valResult.warningCount,
-      };
-      session.missingFields = valResult.missingFields;
-      session.campaignType = valResult.campaignType;
-      session.objective = valResult.objective;
-      session.contextNodeData = contextNodeData;
-      if (effectiveMetaAccountId) session.metaAccountId = effectiveMetaAccountId;
-      session.userAnswers = { ...(session.userAnswers || {}), ...parsedEdits };
-      session.source.dataFingerprint = sourceData.dataFingerprint;
-
-      // Invalidate any old approval
-      session.approval = { status: "NONE", approvedAt: null, approvedBy: null, snapshot: null };
-
-      let replyMd = `### ✏️ Details Updated Successfully\n\n`;
-      replyMd += `${updateRes.message}\n\n`;
-
-      if (valResult.isValid) {
-        session.status = "READY_FOR_REVIEW";
-        const newVersion = (session.preview?.version || 1) + 1;
-        const newPreview = PreviewBuilder.buildPreview({
-          validationResult: valResult,
-          sourceData,
-          userAnswers: parsedEdits,
-          version: newVersion,
+        // 2. Revalidate
+        const valResult = await CampaignValidator.validate({
+          campaignName: session.campaignName,
+          adSetName: session.adSetName,
+          metaAccountId: effectiveMetaAccountId,
+          accountDoc: effectiveAccountDoc,
+          sourceData: sourceData || { headers: [], rows: [] },
+          userAnswers: session.userAnswers || {},
+          contextNodeData,
         });
-        session.preview = newPreview;
-        await session.save();
 
-        replyMd += PreviewBuilder.formatPreviewMarkdown(newPreview);
-      } else {
-        session.status = "NEEDS_USER_INPUT";
-        await session.save();
-        replyMd += CampaignValidator.formatReportMarkdown(valResult);
-        replyMd += `\n\n` + MissingFieldCollector.formatQuestionsMarkdown(valResult.missingFields);
+        session.validationReport = {
+          summaryTable: valResult.summaryTable,
+          campaignIssues: valResult.campaignIssues,
+          adSetIssues: valResult.adSetIssues,
+          adIssues: valResult.adIssues,
+          mediaIssues: valResult.mediaIssues,
+          blockingCount: valResult.blockingCount,
+          warningCount: valResult.warningCount,
+        };
+        session.missingFields = valResult.missingFields;
+        session.campaignType = valResult.campaignType;
+        session.objective = valResult.objective;
+        session.contextNodeData = contextNodeData;
+        if (effectiveMetaAccountId) session.metaAccountId = effectiveMetaAccountId;
+
+        let replyMd = `### ✏️ Details Updated Successfully\n\n`;
+        replyMd += editResult.content + `\n\n`;
+
+        if (valResult.isValid) {
+          session.status = "READY_FOR_REVIEW";
+          const newVersion = (session.preview?.version || 1) + 1;
+          const newPreview = PreviewBuilder.buildPreview({
+            validationResult: valResult,
+            sourceData: sourceData || { headers: [], rows: [] },
+            userAnswers: session.userAnswers || {},
+            version: newVersion,
+          });
+          session.preview = newPreview;
+          await session.save();
+
+          replyMd += PreviewBuilder.formatPreviewMarkdown(newPreview);
+        } else {
+          session.status = "NEEDS_USER_INPUT";
+          await session.save();
+          replyMd += CampaignValidator.formatReportMarkdown(valResult);
+          replyMd += `\n\n` + MissingFieldCollector.formatQuestionsMarkdown(valResult.missingFields);
+        }
+
+        return {
+          content: replyMd,
+          preparationSession: session,
+          toolCalls: editResult.toolCalls || [
+            {
+              toolName: "update_field",
+              toolArgs: { instruction: msg },
+              toolResult: editResult,
+              status: "SUCCESS",
+            },
+          ],
+        };
       }
 
+      // If waiting for confirmation, clarification, or prompt:
+      await session.save();
       return {
-        content: replyMd,
+        content: editResult.content,
         preparationSession: session,
-        toolCalls: [
-          {
-            toolName: "update_source_sheet",
-            toolArgs: parsedEdits,
-            toolResult: updateRes,
-            status: "SUCCESS",
-          },
-        ],
+        toolCalls: editResult.toolCalls || [],
       };
     }
 
