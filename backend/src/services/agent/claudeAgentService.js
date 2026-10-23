@@ -2,6 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import ChatMessage from "../../models/chatMessage.js";
 import GoogleAccount from "../../models/googleAccountModel.js";
 import MetaAccount from "../../models/metaAccount.js";
+import AiAutomation from "../../models/aiAutomationModel.js";
 import { AgentStreamHandler } from "./agentStream.js";
 import { ADS_ALLOWED_TOOLS, createAdsMcpServer } from "./claudeAgentTools.js";
 
@@ -76,14 +77,46 @@ export const buildSystemPrompt = async ({ accountId, userId }) => {
   let googleContextText = "No Google Ads account connected";
   let metaContextText = "No Meta Ads account connected";
   let aiContextText = "No custom AI context workflow configured yet.";
+  let aiAutomationText = "No AI Automation canvas workflow created yet.";
   let skillsText = "None configured.";
 
   try {
-    const [googleAcc, aiCtx, loadedSkills] = await Promise.all([
+    const [googleAcc, aiCtx, aiAutomation, loadedSkills] = await Promise.all([
       userId ? GoogleAccount.findOne({ userId, isActive: true }).lean() : null,
       userId ? getUserAiContext({ userId }).catch(() => null) : null,
+      userId ? AiAutomation.findOne({ userId }).lean().catch(() => null) : null,
       loadWorkspaceSkills(),
     ]);
+
+    if (aiAutomation && Array.isArray(aiAutomation.nodes) && aiAutomation.nodes.length > 0) {
+      const sortedNodes = [...aiAutomation.nodes].sort((a, b) => {
+        if (a.stepNumber && b.stepNumber) return a.stepNumber - b.stepNumber;
+        if (a.stepNumber) return -1;
+        if (b.stepNumber) return 1;
+        return 0;
+      });
+
+      const stepsLines = sortedNodes.map((n) => {
+        const label = n.sequenceLabel || (n.stepNumber ? `node${n.stepNumber}` : "node_");
+        const content = n.text && n.text.trim() ? n.text.trim() : "(Empty text)";
+        const status = n.stepNumber ? `Step #${label}` : `Unconnected Draft (#${label})`;
+        return `  - ${status}: "${content}"`;
+      }).join("\n");
+
+      const edgesLines = (aiAutomation.edges || []).map((e) => {
+        const src = aiAutomation.nodes.find((n) => n.id === e.source);
+        const tgt = aiAutomation.nodes.find((n) => n.id === e.target);
+        const srcLbl = src?.sequenceLabel || (src?.stepNumber ? `node${src.stepNumber}` : "node_");
+        const tgtLbl = tgt?.sequenceLabel || (tgt?.stepNumber ? `node${tgt.stepNumber}` : "node_");
+        return `    * #${srcLbl} -> #${tgtLbl}`;
+      }).join("\n") || "    (No connections)";
+
+      aiAutomationText = `Automation Workspace: "${aiAutomation.name || "AI Automation Workspace"}" (${aiAutomation.nodes.length} nodes, ${aiAutomation.edges.length} active connections)
+Sequential Execution Steps:
+${stepsLines}
+Flow Connections:
+${edgesLines}`;
+    }
 
     const aiContextMetaChannel = (aiCtx?.adChannels || []).find((c) =>
       ["meta", "metaads", "facebook", "fb", "meta ads"].includes(String(c.channel || c.channelName || "").toLowerCase())
@@ -234,6 +267,9 @@ ${googleContextText}
 
 User's Structured Marketing AI Context & Flow Graph:
 ${aiContextText}
+
+User's Configured AI Automation Workflow (Sequential Node Graph):
+${aiAutomationText}
 
 Capabilities & Exact Execution Guidelines:
 1. Google Ads Account Resolution & Seamless Multi-Account Switching:

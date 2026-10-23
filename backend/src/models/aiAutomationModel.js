@@ -4,12 +4,14 @@ const automationNodeSchema = new Schema(
   {
     id: { type: String, required: true },
     text: { type: String, default: "" },
+    stepNumber: { type: Number, default: null }, // e.g. 1 for node1, 2 for node2, null for unconnected
+    sequenceLabel: { type: String, default: "node_" }, // e.g. "node1", "node2", or "node_"
     position: {
       x: { type: Number, default: 250 },
       y: { type: Number, default: 150 },
     },
-    width: { type: Number, default: 240 },
-    height: { type: Number, default: 110 },
+    width: { type: Number, default: 260 },
+    height: { type: Number, default: 100 },
   },
   { _id: false, timestamps: true }
 );
@@ -19,8 +21,8 @@ const automationEdgeSchema = new Schema(
     id: { type: String, required: true },
     source: { type: String, required: true },
     target: { type: String, required: true },
-    sourceHandle: { type: String, default: "bottom" },
-    targetHandle: { type: String, default: "top" },
+    sourceHandle: { type: String, default: "right" },
+    targetHandle: { type: String, default: "left" },
   },
   { _id: false, timestamps: true }
 );

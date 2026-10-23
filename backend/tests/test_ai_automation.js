@@ -61,7 +61,21 @@ async function runAutomationBackendTests() {
   assert(targetNode.text === "Review VIP customer support tickets", "Node text successfully updated");
   assert(doc.nodes[1].text === "Draft email reply to user", "Other node text untouched");
 
-  // 6. Cascade edge deletion on node removal
+  // 6. Test Node Sequence computation: #node1, #node_, #node2
+  const { computeNodeSequences } = await import("../src/controller/aiAutomationController.js");
+  const seqNodes = [
+    { id: "node_a", text: "First node" },
+    { id: "node_b", text: "Second node (unconnected)" },
+  ];
+  computeNodeSequences(seqNodes, []);
+  assert(seqNodes[0].sequenceLabel === "node1" && seqNodes[0].stepNumber === 1, "First node is sequence #node1");
+  assert(seqNodes[1].sequenceLabel === "node_" && seqNodes[1].stepNumber === null, "Unconnected second node is #node_");
+
+  // Connect node_a -> node_b
+  computeNodeSequences(seqNodes, [{ source: "node_a", target: "node_b" }]);
+  assert(seqNodes[1].sequenceLabel === "node2" && seqNodes[1].stepNumber === 2, "Connected second node becomes #node2");
+
+  // 7. Cascade edge deletion on node removal
   const deletedNodeId = "node_1";
   doc.nodes = doc.nodes.filter((n) => n.id !== deletedNodeId);
   doc.edges = doc.edges.filter((e) => e.source !== deletedNodeId && e.target !== deletedNodeId);

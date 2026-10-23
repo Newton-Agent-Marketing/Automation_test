@@ -1,5 +1,51 @@
 import AiAutomation from "../models/aiAutomationModel.js";
 
+/**
+ * Compute the sequential order and labels for automation nodes.
+ * - The very first created node (nodes[0]) is always #node1.
+ * - Any newly added node that is not connected has stepNumber: null, sequenceLabel: "node_".
+ * - When a node is connected from #node1, it gets #node2, and downstream nodes get #node3, etc.
+ */
+export function computeNodeSequences(nodes, edges) {
+  if (!Array.isArray(nodes) || nodes.length === 0) return [];
+
+  const rootNode = nodes[0];
+  const stepMap = new Map();
+  stepMap.set(rootNode.id, 1);
+
+  // Traverse directed edges starting from rootNode
+  const queue = [rootNode.id];
+  const visited = new Set([rootNode.id]);
+
+  while (queue.length > 0) {
+    const currentId = queue.shift();
+    const currentStep = stepMap.get(currentId);
+
+    const outgoing = (edges || []).filter((e) => e.source === currentId);
+    for (const edge of outgoing) {
+      if (!visited.has(edge.target)) {
+        visited.add(edge.target);
+        stepMap.set(edge.target, currentStep + 1);
+        queue.push(edge.target);
+      }
+    }
+  }
+
+  // Update nodes with stepNumber and sequenceLabel
+  for (const node of nodes) {
+    const step = stepMap.get(node.id);
+    if (step !== undefined) {
+      node.stepNumber = step;
+      node.sequenceLabel = `node${step}`;
+    } else {
+      node.stepNumber = null;
+      node.sequenceLabel = "node_";
+    }
+  }
+
+  return nodes;
+}
+
 export class AiAutomationController {
   /**
    * GET /api/automation
@@ -19,6 +65,9 @@ export class AiAutomationController {
           nodes: [], // Zero predefined nodes
           edges: [],
         });
+      } else if (automation.nodes && automation.nodes.length > 0) {
+        computeNodeSequences(automation.nodes, automation.edges);
+        await automation.save();
       }
 
       return res.status(200).json({
@@ -58,6 +107,9 @@ export class AiAutomationController {
       const validEdges = Array.isArray(edges)
         ? edges.filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target))
         : [];
+
+      // Compute sequences
+      computeNodeSequences(nodes, validEdges);
 
       const automation = await AiAutomation.findOneAndUpdate(
         { userId },
@@ -104,9 +156,11 @@ export class AiAutomationController {
       const newNode = {
         id: nodeId,
         text: typeof text === "string" ? text : "",
+        stepNumber: null,
+        sequenceLabel: "node_",
         position: nodePosition,
-        width: 240,
-        height: 110,
+        width: 260,
+        height: 100,
       };
 
       let automation = await AiAutomation.findOne({ userId });
@@ -121,12 +175,15 @@ export class AiAutomationController {
         automation.nodes.push(newNode);
       }
 
+      computeNodeSequences(automation.nodes, automation.edges);
       await automation.save();
+
+      const createdNode = automation.nodes.find((n) => n.id === nodeId) || newNode;
 
       return res.status(201).json({
         success: true,
         message: "Node created successfully",
-        node: newNode,
+        node: createdNode,
         data: automation,
       });
     } catch (err) {
@@ -176,6 +233,7 @@ export class AiAutomationController {
         };
       }
 
+      computeNodeSequences(automation.nodes, automation.edges);
       await automation.save();
 
       return res.status(200).json({
@@ -196,7 +254,7 @@ export class AiAutomationController {
 
   /**
    * DELETE /api/automation/node/:nodeId
-   * Delete a node and all edges connected to it.
+   * Remove a node and any edges connected to it.
    */
   static async deleteNode(req, res) {
     try {
@@ -211,7 +269,6 @@ export class AiAutomationController {
         });
       }
 
-      // Remove the node
       const initialNodeCount = automation.nodes.length;
       automation.nodes = automation.nodes.filter((n) => n.id !== nodeId);
 
@@ -222,16 +279,18 @@ export class AiAutomationController {
         });
       }
 
-      // Cascade remove connected edges
+      // Cascade remove all edges connected to this node
       automation.edges = automation.edges.filter(
         (e) => e.source !== nodeId && e.target !== nodeId
       );
 
+      computeNodeSequences(automation.nodes, automation.edges);
       await automation.save();
 
       return res.status(200).json({
         success: true,
         message: "Node and associated connections removed",
+        nodeId,
         data: automation,
       });
     } catch (err) {
@@ -302,11 +361,12 @@ export class AiAutomationController {
         id: edgeId,
         source,
         target,
-        sourceHandle: sourceHandle || "bottom",
-        targetHandle: targetHandle || "top",
+        sourceHandle: sourceHandle || "right",
+        targetHandle: targetHandle || "left",
       };
 
       automation.edges.push(newEdge);
+      computeNodeSequences(automation.nodes, automation.edges);
       await automation.save();
 
       return res.status(201).json({
@@ -352,6 +412,7 @@ export class AiAutomationController {
         });
       }
 
+      computeNodeSequences(automation.nodes, automation.edges);
       await automation.save();
 
       return res.status(200).json({

@@ -146,7 +146,7 @@ export const NodeTextEditorModal = ({
                     fontFamily: "monospace",
                   }}
                 >
-                  Node ID: {node.id?.slice(0, 8)}...
+                  Step: #{node.sequenceLabel || (node.stepNumber ? `node${node.stepNumber}` : "node_")}
                 </span>
               </div>
             </div>

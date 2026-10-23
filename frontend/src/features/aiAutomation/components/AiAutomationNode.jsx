@@ -115,12 +115,12 @@ export const AiAutomationNode = ({
             style={{
               fontSize: 11,
               fontWeight: 600,
-              color: "#64748B",
+              color: node.stepNumber ? "#0081FB" : "#64748B",
               fontFamily: "monospace",
               letterSpacing: "0.03em",
             }}
           >
-            NODE #{node.id?.slice(0, 6)}
+            NODE #{node.sequenceLabel || (node.stepNumber ? `node${node.stepNumber}` : "node_")}
           </span>
         </div>
 

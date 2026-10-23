@@ -128,6 +128,44 @@ const initialState = {
   successMessage: null,
 };
 
+export function computeNodeSequences(nodes, edges) {
+  if (!Array.isArray(nodes) || nodes.length === 0) return nodes;
+
+  const rootNode = nodes[0];
+  const stepMap = new Map();
+  stepMap.set(rootNode.id, 1);
+
+  const queue = [rootNode.id];
+  const visited = new Set([rootNode.id]);
+
+  while (queue.length > 0) {
+    const currentId = queue.shift();
+    const currentStep = stepMap.get(currentId);
+
+    const outgoing = (edges || []).filter((e) => e.source === currentId);
+    for (const edge of outgoing) {
+      if (!visited.has(edge.target)) {
+        visited.add(edge.target);
+        stepMap.set(edge.target, currentStep + 1);
+        queue.push(edge.target);
+      }
+    }
+  }
+
+  for (const node of nodes) {
+    const step = stepMap.get(node.id);
+    if (step !== undefined) {
+      node.stepNumber = step;
+      node.sequenceLabel = `node${step}`;
+    } else {
+      node.stepNumber = null;
+      node.sequenceLabel = "node_";
+    }
+  }
+
+  return nodes;
+}
+
 const aiAutomationSlice = createSlice({
   name: "aiAutomation",
   initialState,
@@ -195,6 +233,7 @@ const aiAutomationSlice = createSlice({
         state.name = action.payload?.name || "AI Automation Workspace";
         state.nodes = action.payload?.nodes || [];
         state.edges = action.payload?.edges || [];
+        computeNodeSequences(state.nodes, state.edges);
       })
       .addCase(fetchAutomation.rejected, (state, action) => {
         state.loading = false;
@@ -213,6 +252,7 @@ const aiAutomationSlice = createSlice({
         if (action.payload) {
           state.nodes = action.payload.nodes || state.nodes;
           state.edges = action.payload.edges || state.edges;
+          computeNodeSequences(state.nodes, state.edges);
         }
       })
       .addCase(saveAutomation.rejected, (state, action) => {
@@ -228,6 +268,7 @@ const aiAutomationSlice = createSlice({
         } else if (action.payload?.data?.nodes) {
           state.nodes = action.payload.data.nodes;
         }
+        computeNodeSequences(state.nodes, state.edges);
         state.successMessage = "Node added to canvas";
       })
       .addCase(createNode.rejected, (state, action) => {
@@ -277,12 +318,15 @@ const aiAutomationSlice = createSlice({
         const { nodeId } = action.payload;
         state.nodes = state.nodes.filter((n) => n.id !== nodeId);
         state.edges = state.edges.filter((e) => e.source !== nodeId && e.target !== nodeId);
+        computeNodeSequences(state.nodes, state.edges);
         if (state.selectedNodeId === nodeId) {
           state.selectedNodeId = null;
         }
         if (state.editingNodeId === nodeId) {
           state.isEditingModalOpen = false;
+          state.isEditModalOpen = false;
           state.editingNodeId = null;
+          state.activeEditingNodeId = null;
         }
         state.successMessage = "Node removed";
       })
@@ -298,6 +342,7 @@ const aiAutomationSlice = createSlice({
         } else if (action.payload?.data?.edges) {
           state.edges = action.payload.data.edges;
         }
+        computeNodeSequences(state.nodes, state.edges);
         state.successMessage = "Nodes connected";
       })
       .addCase(addEdge.rejected, (state, action) => {
@@ -309,6 +354,7 @@ const aiAutomationSlice = createSlice({
       .addCase(removeEdge.fulfilled, (state, action) => {
         const { edgeId } = action.payload;
         state.edges = state.edges.filter((e) => e.id !== edgeId);
+        computeNodeSequences(state.nodes, state.edges);
         state.successMessage = "Connection removed";
       })
       .addCase(removeEdge.rejected, (state, action) => {
