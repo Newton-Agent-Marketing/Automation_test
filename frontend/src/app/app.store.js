@@ -4,6 +4,7 @@ import dashboardReducer from "../features/dashboard/dashbord.slice";
 import channelReducer from "../features/channel/channel.slice";
 import chatReducer from "../features/chat/chat.slice";
 import aiContextReducer from "../features/aiContext/aiContext.slice";
+import aiAutomationReducer from "../features/aiAutomation/aiAutomation.slice";
 
 export const store = configureStore({
   reducer: {
@@ -12,5 +13,6 @@ export const store = configureStore({
     channel: channelReducer,
     chat: chatReducer,
     aiContext: aiContextReducer,
+    aiAutomation: aiAutomationReducer,
   },
 });

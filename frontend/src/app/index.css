@@ -3619,4 +3619,47 @@ a {
   flex-shrink: 0;
 }
 
+/* ==========================================================================
+   AI Automation Canvas & Node Styles
+   ========================================================================== */
+
+.ai-automation-page {
+  animation: fadeIn 0.2s ease-out;
+}
+
+.ai-automation-canvas-container {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ai-automation-node-card {
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.ai-automation-node-card:hover {
+  box-shadow: 0 10px 24px -4px rgba(15, 23, 42, 0.10), 0 2px 6px -1px rgba(15, 23, 42, 0.05);
+  border-color: #CBD5E1;
+}
+
+.ai-automation-node-card.is-selected-card {
+  border-color: #0081FB !important;
+  box-shadow: 0 0 0 3px rgba(0, 129, 251, 0.18), 0 12px 28px -4px rgba(0, 129, 251, 0.15) !important;
+}
+
+.ai-automation-node-card.is-dragging {
+  cursor: grabbing !important;
+  opacity: 0.95;
+  transition: none !important;
+}
+
+.automation-source-handle:hover,
+.automation-target-handle:hover {
+  box-shadow: 0 0 0 4px rgba(0, 129, 251, 0.28) !important;
+}
+
+.edge-group:hover path {
+  stroke: #0081FB !important;
+  stroke-width: 2.6px !important;
+}
+
 

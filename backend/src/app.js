@@ -25,6 +25,7 @@ app.use(cookieParser());
 app.use(morgan("dev"));
 
 import aiContextRoutes from "./routes/aiContext.route.js";
+import aiAutomationRoutes from "./routes/aiAutomation.route.js";
 import driveRoutes from "./routes/drive.route.js";
 import { DriveController } from "./controller/driveController.js";
 import dbLoggerService from "./services/logger/dbLoggerService.js";
@@ -41,6 +42,7 @@ app.use("/api/meta-dashboard", metaDashboardRoutes);
 app.use("/api/dashboard", metaDashboardRoutes);
 app.use("/api/agent", chatAgentRoutes);
 app.use("/api/ai-context", aiContextRoutes);
+app.use("/api/automation", aiAutomationRoutes);
 app.use("/api/drive", driveRoutes);
 
 // Terminal Logs API (Fetch recent console logs stored in MongoDB)

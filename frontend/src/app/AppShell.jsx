@@ -10,6 +10,7 @@ import {
   MessageSquare,
   Network,
   Settings,
+  Workflow,
   Zap,
 } from "lucide-react";
 import { useDispatch } from "react-redux";
@@ -38,6 +39,7 @@ const NAV = [
   { to: "/ad-preview", label: "Ad Preview", icon: Eye },
   { to: "/channels", label: "Channels", icon: GitBranch },
   { to: "/ai-context", label: "AI Context", icon: Network },
+  { to: "/ai-automation", label: "AI Automation", icon: Workflow },
 ];
 
 const AppShell = () => {

@@ -9,6 +9,7 @@ import Chat from "../features/chat/pages/Chat";
 import Dashboard from "../features/dashboard/pages/Dashboard";
 import Channel from "../features/channel/pages/channel";
 import AiContext from "../features/aiContext/pages/AiContext";
+import AiAutomation from "../features/aiAutomation/pages/AiAutomation";
 import OAuthCallback from "../features/auth/pages/OAuthCallback";
 import { LogoMark } from "./LogoMark";
 import AppShell from "./AppShell";
@@ -136,6 +137,7 @@ const AppRouters = () => {
               <Route path="/ad-preview" element={<AdPreview />} />
               <Route path="/channels" element={<Channel />} />
               <Route path="/ai-context" element={<AiContext />} />
+              <Route path="/ai-automation" element={<AiAutomation />} />
             </Route>
           </Route>
           <Route path="/oauth/callback" element={<OAuthCallback />} />
