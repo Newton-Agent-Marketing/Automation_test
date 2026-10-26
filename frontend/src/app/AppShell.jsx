@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Eye,
   GitBranch,
+  History,
   LayoutGrid,
   LogOut,
   MessageSquare,
@@ -40,7 +41,9 @@ const NAV = [
   { to: "/channels", label: "Channels", icon: GitBranch },
   { to: "/ai-context", label: "AI Context", icon: Network },
   { to: "/ai-automation", label: "AI Automation", icon: Workflow },
+  { to: "/automation-logs", label: "Automation Logs", icon: History },
 ];
+
 
 const AppShell = () => {
   const dispatch = useDispatch();

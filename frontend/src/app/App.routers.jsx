@@ -10,6 +10,7 @@ import Dashboard from "../features/dashboard/pages/Dashboard";
 import Channel from "../features/channel/pages/channel";
 import AiContext from "../features/aiContext/pages/AiContext";
 import AiAutomation from "../features/aiAutomation/pages/AiAutomation";
+import AutomationLogs from "../features/automationLogs/pages/AutomationLogs";
 import OAuthCallback from "../features/auth/pages/OAuthCallback";
 import { LogoMark } from "./LogoMark";
 import AppShell from "./AppShell";
@@ -138,7 +139,9 @@ const AppRouters = () => {
               <Route path="/channels" element={<Channel />} />
               <Route path="/ai-context" element={<AiContext />} />
               <Route path="/ai-automation" element={<AiAutomation />} />
+              <Route path="/automation-logs" element={<AutomationLogs />} />
             </Route>
+
           </Route>
           <Route path="/oauth/callback" element={<OAuthCallback />} />
           <Route path="*" element={<Navigate to="/agent" replace />} />

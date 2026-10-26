@@ -5,6 +5,7 @@ import channelReducer from "../features/channel/channel.slice";
 import chatReducer from "../features/chat/chat.slice";
 import aiContextReducer from "../features/aiContext/aiContext.slice";
 import aiAutomationReducer from "../features/aiAutomation/aiAutomation.slice";
+import automationLogsReducer from "../features/automationLogs/automationLogs.slice";
 
 export const store = configureStore({
   reducer: {
@@ -14,5 +15,7 @@ export const store = configureStore({
     chat: chatReducer,
     aiContext: aiContextReducer,
     aiAutomation: aiAutomationReducer,
+    automationLogs: automationLogsReducer,
   },
 });
+

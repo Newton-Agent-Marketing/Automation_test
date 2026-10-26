@@ -111,12 +111,13 @@ export const NodeTextEditorModal = ({
               backgroundColor: "#FAFAFC",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              {/* Logo / Icon on the side */}
               <div
                 style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 8,
+                  width: 34,
+                  height: 34,
+                  borderRadius: 10,
                   backgroundColor: "#EFF6FF",
                   border: "1px solid #DBEAFE",
                   display: "flex",
@@ -125,29 +126,27 @@ export const NodeTextEditorModal = ({
                   color: "#0081FB",
                 }}
               >
-                <FileText size={16} />
+                <FileText size={17} />
               </div>
-              <div>
-                <h3
-                  style={{
-                    margin: 0,
-                    fontSize: 15,
-                    fontWeight: 600,
-                    color: "#0F172A",
-                    lineHeight: 1.2,
-                  }}
-                >
-                  Edit Node Content
-                </h3>
-                <span
-                  style={{
-                    fontSize: 11,
-                    color: "#64748B",
-                    fontFamily: "monospace",
-                  }}
-                >
-                  Step: #{node.sequenceLabel || (node.stepNumber ? `node${node.stepNumber}` : "node_")}
-                </span>
+
+              {/* Oval Pill Box showing node1 / node2 */}
+              <div
+                style={{
+                  padding: "4px 14px",
+                  borderRadius: 20,
+                  backgroundColor: "#F1F5F9",
+                  border: "1px solid #E2E8F0",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: "#0F172A",
+                  fontFamily: "monospace",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  letterSpacing: "0.02em",
+                }}
+              >
+                {node.sequenceLabel || (node.stepNumber ? `node${node.stepNumber}` : "node1")}
               </div>
             </div>
 
@@ -182,24 +181,26 @@ export const NodeTextEditorModal = ({
 
           {/* Body */}
           <div style={{ padding: "20px" }}>
-            <label
-              style={{
-                display: "block",
-                fontSize: 12,
-                fontWeight: 600,
-                color: "#475569",
-                marginBottom: 8,
-                textTransform: "uppercase",
-                letterSpacing: "0.04em",
-              }}
-            >
-              Node Text
-            </label>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              <label
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "#475569",
+                  letterSpacing: "0.02em",
+                }}
+              >
+                Instruction & Field Values
+              </label>
+              <span style={{ fontSize: 11, color: "#64748B", fontWeight: 400 }}>
+                Give any prompt, specify campaign fields, or fetch channel data
+              </span>
+            </div>
             <textarea
               ref={textareaRef}
               value={text}
               onChange={(e) => setText(e.target.value)}
-              placeholder="Enter text or description for this node..."
+              placeholder="Enter instruction (e.g. 'Create a Meta Ads campaign named Summer Special with $500 budget and OUTCOME_TRAFFIC objective' or 'Fetch active campaigns & CTR from Google Ads' or 'Read latest rows from Google Sheet')..."
               rows={6}
               disabled={isSaving}
               style={{

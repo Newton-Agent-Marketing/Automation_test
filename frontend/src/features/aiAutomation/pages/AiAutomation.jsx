@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import {
   Workflow,
@@ -7,23 +7,147 @@ import {
   CheckCircle2,
   AlertCircle,
   RefreshCw,
+  Zap,
+  Calendar,
+  Clock,
+  Play,
+  Pause,
+  RotateCw,
+  Terminal,
+  History,
+  Power,
+  ChevronDown,
+  Save,
+  Check,
+  AlertTriangle,
+  X,
 } from "lucide-react";
 import {
   fetchAutomation,
   createNode,
-  updateNodeText,
   updateNodePosition,
   deleteNode,
   addEdge,
   removeEdge,
   moveNodeLocal,
   setSelectedNode,
+  openDetailsDrawer,
+  closeDetailsDrawer,
   openEditModal,
   closeEditModal,
+  updateNodeText,
+  updateNodeConfig,
+  saveAutomation,
+  validateAutomation,
+  toggleActiveAutomation,
+  runNowAutomation,
+  fetchExecutionHistory,
+  setConnectionAlert,
+  clearConnectionAlert,
   clearError,
+  clearSuccess,
 } from "../aiAutomation.slice";
 import { AiAutomationCanvas } from "../components/AiAutomationCanvas";
+import { ExecutionResultsPanel } from "../components/ExecutionResultsPanel";
+import { ExecutionHistoryModal } from "../components/ExecutionHistoryModal";
 import { NodeTextEditorModal } from "../components/NodeTextEditorModal";
+import { TriggerNodeConfigModal } from "../components/TriggerNodeConfigModal";
+import { aiAutomationApi } from "../service/aiAutomation.api";
+import { getSocket } from "../../chat/service/chat.socket";
+
+/**
+ * Extract connected workflow component (subgraph) containing startNodeId.
+ * On a canvas with multiple workflows, this isolates ONLY the nodes and edges
+ * belonging to the targeted workflow.
+ */
+export const getWorkflowSubgraph = (nodes = [], edges = [], startNodeId = null) => {
+  if (!nodes || !nodes.length) {
+    return { nodes: [], edges: [], rootNode: null, actionNode: null, triggerNode: null };
+  }
+
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const undirectedAdj = new Map();
+  nodes.forEach((n) => undirectedAdj.set(n.id, []));
+  edges.forEach((e) => {
+    if (undirectedAdj.has(e.source) && undirectedAdj.has(e.target)) {
+      undirectedAdj.get(e.source).push(e.target);
+      undirectedAdj.get(e.target).push(e.source);
+    }
+  });
+
+  let seedNodeId = startNodeId;
+  if (!seedNodeId || !nodeMap.has(seedNodeId)) {
+    const trigger = nodes.find((n) => n.type === "trigger");
+    const action = nodes.find((n) => n.type === "action");
+    seedNodeId = trigger?.id || action?.id || nodes[0]?.id;
+  }
+
+  const connectedIds = new Set();
+  const queue = [seedNodeId];
+  while (queue.length > 0) {
+    const curr = queue.shift();
+    if (connectedIds.has(curr)) continue;
+    connectedIds.add(curr);
+
+    for (const neighbor of undirectedAdj.get(curr) || []) {
+      if (!connectedIds.has(neighbor)) {
+        queue.push(neighbor);
+      }
+    }
+  }
+
+  const workflowNodes = nodes.filter((n) => connectedIds.has(n.id));
+  const workflowEdges = edges.filter(
+    (e) => connectedIds.has(e.source) && connectedIds.has(e.target)
+  );
+
+  const actionNode =
+    workflowNodes.find((n) => n.id === startNodeId && n.type === "action") ||
+    workflowNodes.find((n) => n.type === "action") ||
+    workflowNodes.find((n) => n.id === startNodeId) ||
+    workflowNodes[0];
+
+  const triggerNode = workflowNodes.find((n) => n.type === "trigger");
+  const rootNode =
+    triggerNode ||
+    workflowNodes.find((n) => n.id !== actionNode?.id && n.type !== "date" && n.type !== "time") ||
+    workflowNodes[0];
+
+  return {
+    nodes: workflowNodes,
+    edges: workflowEdges,
+    rootNode,
+    actionNode,
+    triggerNode,
+  };
+};
+
+/**
+ * Find all independent workflow subgraphs on the canvas.
+ */
+export const getAllWorkflowSubgraphs = (nodes = [], edges = []) => {
+  if (!nodes || !nodes.length) return [];
+  const visited = new Set();
+  const workflows = [];
+
+  const seeds = nodes.filter((n) => n.type === "trigger" || n.type === "action");
+  for (const s of seeds) {
+    if (visited.has(s.id)) continue;
+    const sub = getWorkflowSubgraph(nodes, edges, s.id);
+    sub.nodes.forEach((n) => visited.add(n.id));
+    if (sub.nodes.length > 0) workflows.push(sub);
+  }
+
+  for (const n of nodes) {
+    if (!visited.has(n.id)) {
+      const sub = getWorkflowSubgraph(nodes, edges, n.id);
+      sub.nodes.forEach((node) => visited.add(node.id));
+      if (sub.nodes.length > 0) workflows.push(sub);
+    }
+  }
+
+  return workflows;
+};
 
 export const AiAutomation = () => {
   const dispatch = useDispatch();
@@ -32,9 +156,15 @@ export const AiAutomation = () => {
     edges,
     loading,
     saving,
-    saveStatus,
+    isRunning,
+    isActive,
+    lastRunAt,
+    nextRunAt,
     error,
+    successMessage,
+    connectionAlert,
     selectedNodeId,
+    isDetailsDrawerOpen,
     isEditingModalOpen,
     isEditModalOpen,
     editingNodeId,
@@ -43,30 +173,190 @@ export const AiAutomation = () => {
 
   const modalOpen = Boolean(isEditingModalOpen || isEditModalOpen);
   const currentEditId = editingNodeId || activeEditingNodeId;
+  const activeEditingNode = nodes.find((n) => n.id === currentEditId);
+
+  // Local state for UI menus and modals
+  const [isTriggerMenuOpen, setIsTriggerMenuOpen] = useState(false);
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+  const [validationBanner, setValidationBanner] = useState(null);
+  const menuRef = useRef(null);
+
+  // Workflow sequential execution animation state
+  const [isExecutingWorkflow, setIsExecutingWorkflow] = useState(false);
+  const [executingNodeId, setExecutingNodeId] = useState(null);
+  const [executingEdgeIds, setExecutingEdgeIds] = useState([]);
+  const [completedNodeIds, setCompletedNodeIds] = useState([]);
+  const [completedEdgeIds, setCompletedEdgeIds] = useState([]);
+  const [nodeStatusMap, setNodeStatusMap] = useState({});
+  const [isWorkflowPaused, setIsWorkflowPaused] = useState(false);
+  const [isResultsPanelOpen, setIsResultsPanelOpen] = useState(false);
+  const [currentExecution, setCurrentExecution] = useState(null);
+  const [allNodesBlue, setAllNodesBlue] = useState(false);
+  const isExecutingWorkflowRef = useRef(false);
+  const activeWorkflowRef = useRef(null);
+  const lastScheduledRunKeyRef = useRef("");
+
+  // Close dropdown menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setIsTriggerMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   // Fetch automation canvas data on mount
   useEffect(() => {
     dispatch(fetchAutomation());
   }, [dispatch]);
 
-  // Handle adding a new generic node with sensible positioning
-  const handleAddNode = useCallback(() => {
-    // Calculate a sensible starting position
-    const nodeCount = nodes.length;
-    const col = nodeCount % 3;
-    const row = Math.floor(nodeCount / 3);
-    const startX = 140 + col * 320;
-    const startY = 120 + row * 180;
+  // Hydrate latest execution state on mount to preserve results on page refresh
+  useEffect(() => {
+    let isMounted = true;
+    const hydrateLatestExecution = async () => {
+      try {
+        const res = await aiAutomationApi.getExecutions({ limit: 1 });
+        const latest = res.data?.data?.[0];
+        if (latest && isMounted) {
+          setCurrentExecution(latest);
+          const statusMap = {};
+          const completedIds = [];
+          const completedEdges = [];
+
+          (latest.nodes || []).forEach((n) => {
+            statusMap[n.nodeId] = {
+              status: n.status,
+              input: n.input,
+              output: n.output,
+              error: n.error,
+              startedAt: n.startedAt,
+              completedAt: n.completedAt,
+              durationMs: n.durationMs,
+            };
+            if (n.status === "completed") {
+              completedIds.push(n.nodeId);
+              const edge = edges.find((e) => e.target === n.nodeId || e.source === n.nodeId);
+              if (edge) completedEdges.push(edge.id);
+            }
+          });
+
+          setNodeStatusMap(statusMap);
+          setCompletedNodeIds(completedIds);
+
+          if (latest.status === "completed") {
+            setCompletedEdgeIds(edges.map((e) => e.id));
+          } else {
+            setCompletedEdgeIds(completedEdges);
+          }
+
+          if (latest.status === "running") {
+            setIsExecutingWorkflow(true);
+            isExecutingWorkflowRef.current = true;
+          } else if (latest.status === "paused") {
+            setIsWorkflowPaused(true);
+          }
+        }
+      } catch (err) {
+        console.warn("[AiAutomation] Failed to hydrate latest execution:", err);
+      }
+    };
+
+    if (nodes.length > 0) {
+      hydrateLatestExecution();
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, [nodes.length, edges]);
+
+  // Check if a trigger node already exists
+  const existingTriggerNode = nodes.find((n) => n.type === "trigger");
+
+  // Handler for creating specific node types
+  const handleCreateTypedNode = (type) => {
+    setIsTriggerMenuOpen(false);
+
+    // Rule: Exactly one Trigger node allowed
+    if (type === "trigger" && existingTriggerNode) {
+      dispatch(
+        setConnectionAlert(
+          "A Trigger node already exists on this canvas. Only one Trigger node is permitted per automation."
+        )
+      );
+      return;
+    }
+
+    // Determine smart default positioning
+    let posX = 120;
+    let posY = 200;
+
+    if (type === "trigger") {
+      posX = 120;
+      posY = 220;
+    } else {
+      // Place child nodes to the right of the trigger
+      const triggerX = existingTriggerNode ? existingTriggerNode.position?.x : 120;
+      const triggerY = existingTriggerNode ? existingTriggerNode.position?.y : 220;
+
+      if (type === "date") {
+        posX = triggerX + 380;
+        posY = triggerY - 140;
+      } else if (type === "action") {
+        posX = triggerX + 380;
+        posY = triggerY ;
+      } else if (type === "time") {
+        posX = triggerX + 380;
+        posY = triggerY + 140;
+      } else {
+        posX = triggerX + 380;
+        posY = triggerY + (nodes.length * 60);
+      }
+    }
+
+    // Default configuration objects
+    let defaultLabel = type === "trigger" ? "Start Node" : "Normal Node";
+    let defaultConfig = { mode: "schedule" };
+
+    if (type === "date") {
+      defaultLabel = "Date Schedule";
+      defaultConfig = {
+        dateType: "specific",
+        specificDate: new Date().toISOString().split("T")[0],
+        timezone: "Asia/Kolkata",
+      };
+    } else if (type === "action") {
+      defaultLabel = "Action";
+      defaultConfig = {
+        actionType: "send_notification",
+        message: "Generate my daily Meta Ads performance summary",
+        priority: "medium",
+      };
+    } else if (type === "time") {
+      defaultLabel = "Time Schedule";
+      defaultConfig = {
+        time: "09:00",
+        timezone: "Asia/Kolkata",
+        recurrence: "daily",
+      };
+    } else if (type === "generic") {
+      defaultLabel = "Custom Task";
+      defaultConfig = {};
+    }
 
     dispatch(
       createNode({
-        text: "",
-        position: { x: startX, y: startY },
+        type,
+        label: defaultLabel,
+        config: defaultConfig,
+        position: { x: posX, y: posY },
       })
     );
-  }, [dispatch, nodes.length]);
+  };
 
-  // Handle live node movement (synchronous in Redux for smooth rendering)
+  // Handle live node movement
   const handleMoveNode = useCallback(
     (id, x, y) => {
       dispatch(moveNodeLocal({ id, nodeId: id, x, y, position: { x, y } }));
@@ -74,7 +364,7 @@ export const AiAutomation = () => {
     [dispatch]
   );
 
-  // Handle persisting final node position to server
+  // Handle saving node position
   const handleSaveNodePosition = useCallback(
     (id, x, y) => {
       dispatch(updateNodePosition({ id, nodeId: id, position: { x, y } }));
@@ -82,7 +372,7 @@ export const AiAutomation = () => {
     [dispatch]
   );
 
-  // Handle node selection
+  // Handle node selection: only selects node, does NOT open side drawer
   const handleSelectNode = useCallback(
     (id) => {
       dispatch(setSelectedNode(id));
@@ -90,7 +380,7 @@ export const AiAutomation = () => {
     [dispatch]
   );
 
-  // Handle opening node text editor
+  // Handle opening node text editor popup modal
   const handleOpenEdit = useCallback(
     (id) => {
       dispatch(openEditModal(id));
@@ -98,15 +388,37 @@ export const AiAutomation = () => {
     [dispatch]
   );
 
-  // Handle closing node text editor
+  // Handle closing node popup text editor
   const handleCloseEdit = useCallback(() => {
     dispatch(closeEditModal());
   }, [dispatch]);
 
-  // Handle saving node text
+  // Handle saving node text from popup (for Normal Nodes)
   const handleSaveNodeText = useCallback(
     async (id, text) => {
       await dispatch(updateNodeText({ id, text })).unwrap();
+      dispatch(saveAutomation());
+    },
+    [dispatch]
+  );
+
+  // Handle saving Date / Time / Action node configuration from popup modal
+  const handleSaveTriggerConfig = useCallback(
+    async (id, config, defaultLabel) => {
+      await dispatch(
+        updateNodeConfig({
+          nodeId: id,
+          config,
+          label: defaultLabel,
+          status: "configured",
+        })
+      ).unwrap();
+      dispatch(saveAutomation());
+      dispatch(closeEditModal());
+      setValidationBanner({
+        type: "success",
+        message: "Schedule configured! When the scheduled Date & Time arrives, this workflow will run automatically without needing to click the action node.",
+      });
     },
     [dispatch]
   );
@@ -127,7 +439,7 @@ export const AiAutomation = () => {
     [dispatch]
   );
 
-  // Handle deleting a connection
+  // Handle deleting an edge
   const handleDeleteEdge = useCallback(
     (edgeId) => {
       dispatch(removeEdge(edgeId));
@@ -135,7 +447,651 @@ export const AiAutomation = () => {
     [dispatch]
   );
 
-  const activeEditingNode = nodes.find((n) => n.id === currentEditId);
+  // Save Automation Canvas
+  const handleSaveCanvas = () => {
+    dispatch(saveAutomation());
+  };
+
+  // Real AI Automation Execution Engine with Medium Speed Wire & Node Progression
+  const handleExecuteWorkflow = useCallback(
+    async (startNodeId, { isScheduled = false } = {}) => {
+      if (isExecutingWorkflowRef.current) return;
+      if (!nodes || !nodes.length) {
+        setValidationBanner({
+          type: "error",
+          message: "No workflow nodes configured on canvas.",
+        });
+        return;
+      }
+
+      // Isolate the specific workflow connected to startNodeId
+      const targetWorkflow = getWorkflowSubgraph(nodes, edges, startNodeId);
+      const {
+        nodes: workflowNodes,
+        edges: workflowEdges,
+        rootNode,
+        actionNode,
+      } = targetWorkflow;
+
+      if (!workflowNodes.length) {
+        setValidationBanner({
+          type: "error",
+          message: "No connected nodes found for this workflow.",
+        });
+        return;
+      }
+
+      activeWorkflowRef.current = targetWorkflow;
+      isExecutingWorkflowRef.current = true;
+      setIsExecutingWorkflow(true);
+      setIsWorkflowPaused(false);
+      setAllNodesBlue(false);
+
+      // Reset execution states ONLY for nodes in this specific workflow
+      const wfNodeIds = new Set(workflowNodes.map((n) => n.id));
+      const wfEdgeIds = new Set(workflowEdges.map((e) => e.id));
+
+      setCompletedNodeIds((prev) => prev.filter((id) => !wfNodeIds.has(id)));
+      setCompletedEdgeIds((prev) => prev.filter((id) => !wfEdgeIds.has(id)));
+      setExecutingEdgeIds([]);
+      setIsResultsPanelOpen(true);
+
+      const workflowName =
+        rootNode?.text?.trim()?.split("\n")[0] ||
+        rootNode?.label ||
+        "AI Workflow";
+
+      setValidationBanner({
+        type: "info",
+        message: isScheduled
+          ? `⏰ Scheduled workflow "${workflowName}" triggered! Executing nodes with AI Agent...`
+          : `Starting execution for workflow "${workflowName}"...`,
+      });
+
+      // Helper to find edge connecting two node IDs in either direction within this workflow
+      const findEdge = (id1, id2) => {
+        return workflowEdges.find(
+          (e) =>
+            (e.source === id1 && e.target === id2) ||
+            (e.source === id2 && e.target === id1)
+        );
+      };
+
+      const dateNodes = workflowNodes.filter(
+        (n) => n.type === "date" && n.id !== actionNode?.id && n.id !== rootNode?.id
+      );
+      const timeNodes = workflowNodes.filter(
+        (n) => n.type === "time" && n.id !== actionNode?.id && n.id !== rootNode?.id
+      );
+
+      // --- STEP 1: Action Node starts with persistent loading spinner (Medium speed) ---
+      if (actionNode) {
+        setExecutingNodeId(actionNode.id);
+        await new Promise((r) => setTimeout(r, 650));
+      }
+
+      // --- STEP 2: Blue line flows from Action node wire -> passes Date node ---
+      for (const dNode of dateNodes) {
+        const edgeToDate =
+          findEdge(actionNode?.id, dNode.id) ||
+          findEdge(rootNode?.id, dNode.id) ||
+          workflowEdges.find((e) => e.source === dNode.id || e.target === dNode.id);
+
+        if (edgeToDate) {
+          const fromId = edgeToDate.target === dNode.id ? edgeToDate.source : edgeToDate.target;
+          setExecutingEdgeIds([
+            {
+              edgeId: edgeToDate.id,
+              fromNodeId: fromId,
+              toNodeId: dNode.id,
+            },
+          ]);
+        }
+        await new Promise((r) => setTimeout(r, 850));
+        setExecutingNodeId(dNode.id);
+        setCompletedNodeIds((prev) => [...new Set([...prev, dNode.id])]);
+        if (edgeToDate) {
+          setCompletedEdgeIds((prev) => [...new Set([...prev, edgeToDate.id])]);
+        }
+        await new Promise((r) => setTimeout(r, 500));
+        setExecutingEdgeIds([]);
+      }
+
+      // --- STEP 3: Blue line flows from Date node wire -> passes Time node ---
+      for (const tNode of timeNodes) {
+        const lastPassedId = dateNodes[dateNodes.length - 1]?.id || actionNode?.id;
+        const edgeToTime =
+          (lastPassedId && findEdge(lastPassedId, tNode.id)) ||
+          findEdge(actionNode?.id, tNode.id) ||
+          findEdge(rootNode?.id, tNode.id) ||
+          workflowEdges.find((e) => e.source === tNode.id || e.target === tNode.id);
+
+        if (edgeToTime) {
+          const fromId = edgeToTime.target === tNode.id ? edgeToTime.source : edgeToTime.target;
+          setExecutingEdgeIds([
+            {
+              edgeId: edgeToTime.id,
+              fromNodeId: fromId,
+              toNodeId: tNode.id,
+            },
+          ]);
+        }
+        await new Promise((r) => setTimeout(r, 850));
+        setExecutingNodeId(tNode.id);
+        setCompletedNodeIds((prev) => [...new Set([...prev, tNode.id])]);
+        if (edgeToTime) {
+          setCompletedEdgeIds((prev) => [...new Set([...prev, edgeToTime.id])]);
+        }
+        await new Promise((r) => setTimeout(r, 500));
+        setExecutingEdgeIds([]);
+      }
+
+      // --- STEP 4: Blue line flows to Start Node (Arrives at Start Node) ---
+      if (rootNode && actionNode && rootNode.id !== actionNode.id) {
+        const lastPassedId =
+          timeNodes[timeNodes.length - 1]?.id ||
+          dateNodes[dateNodes.length - 1]?.id ||
+          actionNode.id;
+
+        const edgeToRoot =
+          findEdge(lastPassedId, rootNode.id) ||
+          findEdge(actionNode.id, rootNode.id) ||
+          workflowEdges.find(
+            (e) =>
+              (e.source === rootNode.id && [lastPassedId, actionNode.id].includes(e.target)) ||
+              (e.target === rootNode.id && [lastPassedId, actionNode.id].includes(e.source))
+          );
+
+        if (edgeToRoot) {
+          const fromId = edgeToRoot.target === rootNode.id ? edgeToRoot.source : edgeToRoot.target;
+          setExecutingEdgeIds([
+            {
+              edgeId: edgeToRoot.id,
+              fromNodeId: fromId,
+              toNodeId: rootNode.id,
+            },
+          ]);
+        }
+        await new Promise((r) => setTimeout(r, 950)); // Arrive at Start node
+
+        // Arrive at Start Node
+        setExecutingNodeId(rootNode.id);
+        if (edgeToRoot) {
+          setCompletedEdgeIds((prev) => [...new Set([...prev, edgeToRoot.id])]);
+        }
+        await new Promise((r) => setTimeout(r, 450));
+        setExecutingEdgeIds([]);
+      } else if (rootNode) {
+        setExecutingNodeId(rootNode.id);
+      }
+
+      // Mark Action, Date, and Time nodes as validated/completed for this run
+      const preludeIds = [actionNode?.id, ...dateNodes.map((d) => d.id), ...timeNodes.map((t) => t.id)].filter(
+        Boolean
+      );
+      setCompletedNodeIds((prev) => [...new Set([...prev, ...preludeIds])]);
+
+      // --- STEP 5: Start Node executes its task and moves forward to next nodes on backend ---
+      // (This prelude only happens ONCE! Backend executes the Start Node task, then subsequent task nodes)
+      try {
+        const response = await aiAutomationApi.startExecution({
+          startNodeId: rootNode?.id || startNodeId,
+        });
+        if (response.data?.success) {
+          const exec = response.data.execution;
+          setCurrentExecution(exec);
+          const initialStatus = {};
+          (exec.nodes || []).forEach((n) => {
+            initialStatus[n.nodeId] = {
+              status: n.status || "pending",
+              input: n.input,
+              output: n.output,
+              error: n.error,
+              startedAt: n.startedAt,
+              completedAt: n.completedAt,
+              durationMs: n.durationMs,
+            };
+          });
+          setNodeStatusMap((prev) => ({ ...prev, ...initialStatus }));
+        } else {
+          throw new Error(response.data?.message || "Failed to start workflow execution");
+        }
+      } catch (err) {
+        console.error("[AiAutomation] Execution launch error:", err);
+        setIsExecutingWorkflow(false);
+        isExecutingWorkflowRef.current = false;
+        setValidationBanner({
+          type: "error",
+          message: err.response?.data?.message || err.message || "Failed to execute workflow",
+        });
+      }
+    },
+    [nodes, edges]
+  );
+
+  // Pause / Resume Execution Handler
+  const handleTogglePauseResume = useCallback(async () => {
+    if (!isExecutingWorkflow && !isWorkflowPaused) {
+      handleExecuteWorkflow();
+      return;
+    }
+
+    const executionId = currentExecution?.executionId;
+    if (!executionId) return;
+
+    try {
+      if (isWorkflowPaused) {
+        setValidationBanner({
+          type: "info",
+          message: "Resuming workflow execution...",
+        });
+        await aiAutomationApi.resumeExecution(executionId);
+        setIsWorkflowPaused(false);
+      } else if (isExecutingWorkflow) {
+        setValidationBanner({
+          type: "info",
+          message: "Pausing workflow execution safely at next checkpoint...",
+        });
+        await aiAutomationApi.pauseExecution(executionId);
+        setIsWorkflowPaused(true);
+      }
+    } catch (err) {
+      console.error("[AiAutomation] Pause/Resume error:", err);
+      setValidationBanner({
+        type: "error",
+        message: err.response?.data?.message || err.message || "Failed to toggle execution state",
+      });
+    }
+  }, [currentExecution, isWorkflowPaused, isExecutingWorkflow, handleExecuteWorkflow]);
+
+  // Retry Failed Node Handler
+  const handleRetryNode = useCallback(
+    async (nodeId) => {
+      const executionId = currentExecution?.executionId;
+      if (!executionId || !nodeId) return;
+
+      try {
+        setValidationBanner({
+          type: "info",
+          message: `Retrying execution from node...`,
+        });
+        setIsExecutingWorkflow(true);
+        isExecutingWorkflowRef.current = true;
+        setIsWorkflowPaused(false);
+
+        setNodeStatusMap((prev) => ({
+          ...prev,
+          [nodeId]: {
+            ...(prev[nodeId] || {}),
+            status: "running",
+            error: null,
+          },
+        }));
+
+        await aiAutomationApi.retryNodeExecution(executionId, nodeId);
+      } catch (err) {
+        console.error("[AiAutomation] Retry node error:", err);
+        setValidationBanner({
+          type: "error",
+          message: err.response?.data?.message || err.message || "Failed to retry node execution",
+        });
+      }
+    },
+    [currentExecution]
+  );
+
+  // Real-time Socket.IO listener for live workflow execution lifecycle events
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+
+    const handleExecutionUpdate = (payload) => {
+      if (!payload) return;
+      const { event, executionId, nodeId, node, execution, error } = payload;
+
+      if (event === "started") {
+        setIsExecutingWorkflow(true);
+        isExecutingWorkflowRef.current = true;
+        setIsWorkflowPaused(false);
+        if (execution) {
+          setCurrentExecution(execution);
+          const initialStatus = {};
+          (execution.nodes || []).forEach((n) => {
+            initialStatus[n.nodeId] = {
+              status: n.status || "pending",
+              input: n.input,
+              output: n.output,
+              error: n.error,
+              startedAt: n.startedAt,
+              completedAt: n.completedAt,
+              durationMs: n.durationMs,
+            };
+          });
+          setNodeStatusMap(initialStatus);
+        }
+        // Preserve validated prelude nodes (Action, Date, Time) from execution payload
+        const completedFromExec = (execution?.nodes || [])
+          .filter((n) => n.status === "completed")
+          .map((n) => n.nodeId);
+        setCompletedNodeIds((prev) => [...new Set([...prev, ...completedFromExec])]);
+        setExecutingNodeId(null);
+        setExecutingEdgeIds([]);
+      } else if (event === "node_started") {
+        setIsExecutingWorkflow(true);
+        isExecutingWorkflowRef.current = true;
+        setExecutingNodeId(nodeId);
+
+        // Animate wire leading to this node from the upstream completed node
+        const incomingEdge =
+          edges.find((e) => e.target === nodeId && completedNodeIds.includes(e.source)) ||
+          edges.find((e) => e.source === nodeId && completedNodeIds.includes(e.target)) ||
+          edges.find((e) => e.target === nodeId) ||
+          edges.find((e) => e.source === nodeId);
+
+        if (incomingEdge) {
+          const fromNodeId = incomingEdge.target === nodeId ? incomingEdge.source : incomingEdge.target;
+          setExecutingEdgeIds([
+            {
+              edgeId: incomingEdge.id,
+              fromNodeId: fromNodeId,
+              toNodeId: nodeId,
+            },
+          ]);
+        } else {
+          setExecutingEdgeIds([]);
+        }
+
+        setNodeStatusMap((prev) => ({
+          ...prev,
+          [nodeId]: {
+            ...(prev[nodeId] || {}),
+            status: "running",
+            startedAt: node?.startedAt || new Date().toISOString(),
+          },
+        }));
+
+        setCurrentExecution((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            status: "running",
+            nodes: (prev.nodes || []).map((n) =>
+              n.nodeId === nodeId
+                ? { ...n, status: "running", startedAt: node?.startedAt || new Date().toISOString() }
+                : n
+            ),
+          };
+        });
+      } else if (event === "node_completed") {
+        setNodeStatusMap((prev) => ({
+          ...prev,
+          [nodeId]: {
+            ...(prev[nodeId] || {}),
+            status: "completed",
+            output: node?.output,
+            completedAt: node?.completedAt || new Date().toISOString(),
+            durationMs: node?.durationMs,
+          },
+        }));
+
+        setCompletedNodeIds((prev) => [...new Set([...prev, nodeId])]);
+
+        // Transition wire to completed solid blue
+        const incomingEdge =
+          edges.find((e) => e.target === nodeId && completedNodeIds.includes(e.source)) ||
+          edges.find((e) => e.source === nodeId && completedNodeIds.includes(e.target)) ||
+          edges.find((e) => e.target === nodeId) ||
+          edges.find((e) => e.source === nodeId);
+        if (incomingEdge) {
+          setCompletedEdgeIds((prev) => [...new Set([...prev, incomingEdge.id])]);
+        }
+        setExecutingEdgeIds([]);
+
+        setCurrentExecution((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            successfulNodes: (prev.successfulNodes || 0) + 1,
+            nodes: (prev.nodes || []).map((n) =>
+              n.nodeId === nodeId ? { ...n, ...node, status: "completed" } : n
+            ),
+          };
+        });
+      } else if (event === "node_failed") {
+        setNodeStatusMap((prev) => ({
+          ...prev,
+          [nodeId]: {
+            ...(prev[nodeId] || {}),
+            status: "failed",
+            error: error || node?.error,
+            completedAt: node?.completedAt || new Date().toISOString(),
+          },
+        }));
+
+        setExecutingNodeId(null);
+        setExecutingEdgeIds([]);
+        setIsExecutingWorkflow(false);
+        isExecutingWorkflowRef.current = false;
+
+        setCurrentExecution((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            status: "failed",
+            failedNodes: (prev.failedNodes || 0) + 1,
+            errorSummary: error || node?.error?.message || "Execution error",
+            nodes: (prev.nodes || []).map((n) =>
+              n.nodeId === nodeId ? { ...n, ...node, status: "failed", error: error || node?.error } : n
+            ),
+          };
+        });
+
+        setValidationBanner({
+          type: "error",
+          message: `Node execution failed: ${error || node?.error?.message || "Unknown error"}. You can retry this node.`,
+        });
+      } else if (event === "paused") {
+        setIsWorkflowPaused(true);
+        if (nodeId) {
+          setNodeStatusMap((prev) => ({
+            ...prev,
+            [nodeId]: {
+              ...(prev[nodeId] || {}),
+              status: "paused",
+            },
+          }));
+        }
+        setCurrentExecution((prev) => (prev ? { ...prev, status: "paused" } : prev));
+      } else if (event === "resumed") {
+        setIsWorkflowPaused(false);
+        if (nodeId) {
+          setNodeStatusMap((prev) => ({
+            ...prev,
+            [nodeId]: {
+              ...(prev[nodeId] || {}),
+              status: "running",
+            },
+          }));
+        }
+        setCurrentExecution((prev) => (prev ? { ...prev, status: "running" } : prev));
+      } else if (event === "completed") {
+        if (execution) {
+          setCurrentExecution(execution);
+        }
+        setIsExecutingWorkflow(false);
+        isExecutingWorkflowRef.current = false;
+        setIsWorkflowPaused(false);
+        setExecutingNodeId(null);
+        setExecutingEdgeIds([]);
+
+        if (execution?.status === "completed") {
+          // Glow all node borders in blue (#0081FB) for a few seconds upon completion, then return to normal
+          setAllNodesBlue(true);
+          setTimeout(() => {
+            setAllNodesBlue(false);
+          }, 3500);
+
+          // Turn ONLY this workflow's connection wires to solid blue
+          const wfEdges = activeWorkflowRef.current?.edges || [];
+          if (wfEdges.length > 0) {
+            setCompletedEdgeIds((prev) => [...new Set([...prev, ...wfEdges.map((e) => e.id)])]);
+          }
+          setValidationBanner({
+            type: "success",
+            message: `Workflow completed successfully! ${execution.successfulNodes || 0} nodes executed.`,
+          });
+        }
+      }
+    };
+
+    const handleScheduledRun = (payload) => {
+      console.log("[AiAutomation] ⏰ Scheduled run notification from server:", payload);
+      // Notification update only; do not re-trigger execution flow
+      if (payload?.executionId) {
+        setValidationBanner({
+          type: "info",
+          message: `⏰ Scheduled workflow run active [ID: ${payload.executionId}]`,
+        });
+      }
+    };
+
+    socket.on("automation:execution_update", handleExecutionUpdate);
+    socket.on("automation:scheduled_start", handleScheduledRun);
+    socket.on("automation:scheduled_run", handleScheduledRun);
+
+    return () => {
+      socket.off("automation:execution_update", handleExecutionUpdate);
+      socket.off("automation:scheduled_start", handleScheduledRun);
+      socket.off("automation:scheduled_run", handleScheduledRun);
+    };
+  }, [edges, handleExecuteWorkflow]);
+
+  // Automatic Client-side Scheduler: Checks every 4 seconds if the configured Date & Time match current time
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (!isActive) return;
+      if (isExecutingWorkflowRef.current) return;
+      if (!nodes || !nodes.length) return;
+
+      const workflows = getAllWorkflowSubgraphs(nodes, edges);
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const currentMonth = String(now.getMonth() + 1).padStart(2, "0");
+      const currentDay = String(now.getDate()).padStart(2, "0");
+      const currentDateStr = `${currentYear}-${currentMonth}-${currentDay}`;
+      const currentHours = now.getHours();
+      const currentMinutes = now.getMinutes();
+      const currentDayOfWeek = now.toLocaleDateString("en-US", { weekday: "long" }).toLowerCase();
+
+      for (const sub of workflows) {
+        const dateNode = sub.nodes.find((n) => n.type === "date");
+        const timeNode = sub.nodes.find((n) => n.type === "time");
+
+        // Needs at least a configured time node in this specific workflow
+        if (!timeNode?.config?.time) continue;
+
+        // Check Time Match
+        const rawTime = String(timeNode.config.time || "").trim();
+        let ampm = timeNode.config.ampm || null;
+        let cleanTime = rawTime;
+        if (/pm/i.test(cleanTime)) {
+          ampm = "PM";
+          cleanTime = cleanTime.replace(/pm/i, "").trim();
+        } else if (/am/i.test(cleanTime)) {
+          ampm = "AM";
+          cleanTime = cleanTime.replace(/am/i, "").trim();
+        }
+
+        const parts = cleanTime.split(":");
+        let targetHour = parseInt(parts[0], 10);
+        let targetMin = parseInt(parts[1], 10);
+        if (isNaN(targetHour) || isNaN(targetMin)) continue;
+
+        if (ampm === "PM" && targetHour < 12) targetHour += 12;
+        if (ampm === "AM" && targetHour === 12) targetHour = 0;
+
+        if (currentHours !== targetHour || currentMinutes !== targetMin) {
+          continue;
+        }
+
+        // Check Date Match (if dateNode is present in this workflow)
+        if (dateNode?.config) {
+          const mode = dateNode.config.dateType || dateNode.config.dateMode || "specific";
+          if (mode === "specific") {
+            let targetDate = (dateNode.config.specificDate || "").trim();
+            if (targetDate) {
+              const dParts = targetDate.split("-");
+              if (dParts.length === 3) {
+                targetDate = `${dParts[0]}-${String(dParts[1]).padStart(2, "0")}-${String(dParts[2]).padStart(2, "0")}`;
+              }
+              if (currentDateStr !== targetDate) continue;
+            }
+          } else if (mode === "recurring") {
+            const pattern = dateNode.config.recurrencePattern || dateNode.config.recurringPattern || "every_day";
+            if (pattern === "every_week") {
+              const days = Array.isArray(dateNode.config.selectedDaysOfWeek)
+                ? dateNode.config.selectedDaysOfWeek
+                : [dateNode.config.selectedDayOfWeek || "Monday"];
+              const matchDay = days.some((d) => d && currentDayOfWeek === d.toLowerCase());
+              if (!matchDay) continue;
+            } else if (pattern === "every_month") {
+              const targetDayOfMonth = parseInt(dateNode.config.dayOfMonth, 10);
+              if (!isNaN(targetDayOfMonth) && now.getDate() !== targetDayOfMonth) continue;
+            }
+          }
+        }
+
+        // Unique run key per workflow and per minute
+        const workflowKey = (sub.rootNode?.id || "wf") + `_${currentDateStr} ${String(currentHours).padStart(2, "0")}:${String(currentMinutes).padStart(2, "0")}`;
+        if (lastScheduledRunKeyRef.current === workflowKey) {
+          continue;
+        }
+
+        lastScheduledRunKeyRef.current = workflowKey;
+        console.log(
+          `[AiAutomation] ⏰ Scheduled Date & Time arrived for workflow "${sub.workflowName || sub.rootNode?.label || ""}". Automatically executing workflow without clicking action node!`
+        );
+
+        const actionNode = sub.actionNode || sub.nodes.find((n) => n.type === "action") || sub.nodes[0];
+        if (actionNode) {
+          handleExecuteWorkflow(actionNode.id, { isScheduled: true });
+          break; // Process one at a time
+        }
+      }
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [nodes, edges, handleExecuteWorkflow, isActive]);
+
+
+  // Run Now (Execute immediately on real backend + visual sequential flow)
+  const handleRunNow = async () => {
+    setValidationBanner(null);
+    const actionNode = nodes.find((n) => n.type === "action") || nodes[0];
+    if (actionNode) {
+      handleExecuteWorkflow(actionNode.id);
+    } else {
+      const result = await dispatch(runNowAutomation());
+      if (result.error) {
+        setValidationBanner({
+          type: "error",
+          message: result.payload || "Run Now failed. Please review your workflow configuration.",
+        });
+      }
+    }
+  };
+
+  // Activate / Deactivate Toggle
+  const handleToggleActive = async () => {
+    setValidationBanner(null);
+    const result = await dispatch(toggleActiveAutomation());
+    if (result.error) {
+      setValidationBanner({
+        type: "error",
+        message: result.payload || "Could not activate automation. Please review validation errors.",
+      });
+    }
+  };
 
   return (
     <div
@@ -147,6 +1103,7 @@ export const AiAutomation = () => {
         minHeight: "calc(100vh - 40px)",
         padding: "16px 20px 20px 20px",
         overflow: "hidden",
+        position: "relative",
       }}
     >
       {/* Top Header Bar */}
@@ -159,145 +1116,364 @@ export const AiAutomation = () => {
           flexShrink: 0,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        {/* Title and Automation Status */}
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <div
             style={{
-              width: 40,
-              height: 40,
+              width: 42,
+              height: 42,
               borderRadius: 12,
-              backgroundColor: "#FFFFFF",
-              color: "#0081FB",
-              border: "1px solid #E2E8F0",
+              backgroundColor: "#F5F3FF",
+              color: "#7C3AED",
+              border: "1px solid #DDD6FE",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              boxShadow:
-                "0 2px 6px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)",
+              boxShadow: "0 2px 6px rgba(124, 58, 237, 0.12)",
             }}
           >
-            <Workflow size={20} />
+            <Zap size={22} />
           </div>
           <div>
-            <h1
-              style={{
-                fontSize: "18px",
-                fontWeight: 700,
-                color: "#0F172A",
-                margin: 0,
-                letterSpacing: "-0.02em",
-              }}
-            >
-              AI Automation
-            </h1>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <h1
+                style={{
+                  fontSize: "18px",
+                  fontWeight: 700,
+                  color: "#0F172A",
+                  margin: 0,
+                  letterSpacing: "-0.02em",
+                }}
+              >
+                AI Automation
+              </h1>
+
+              {/* Status Badge */}
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  padding: "3px 8px",
+                  borderRadius: 20,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.04em",
+                  backgroundColor: isActive ? "#DCFCE7" : "#F1F5F9",
+                  color: isActive ? "#15803D" : "#64748B",
+                  border: `1px solid ${isActive ? "#86EFAC" : "#E2E8F0"}`,
+                }}
+              >
+                <span
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    backgroundColor: isActive ? "#16A34A" : "#94A3B8",
+                  }}
+                />
+                {isActive ? "Active Schedule" : "Inactive"}
+              </span>
+            </div>
             <p
               style={{
-                fontSize: "12.5px",
+                fontSize: "12px",
                 color: "#64748B",
                 margin: 0,
                 marginTop: 2,
               }}
             >
-              Create, arrange, and connect custom automation nodes on an open canvas
+              Trigger ➔ Date, Action, Time independent branches
+              {nextRunAt && isActive && (
+                <span style={{ color: "#2563EB", marginLeft: 8 }}>
+                  • Next run: {new Date(nextRunAt).toLocaleString()}
+                </span>
+              )}
             </p>
           </div>
         </div>
 
-        {/* Action Controls & Status */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          {/* Node & Connection Counts */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              fontSize: 12,
-              color: "#64748B",
-              backgroundColor: "#FFFFFF",
-              padding: "6px 12px",
-              borderRadius: 8,
-              border: "1px solid #E2E8F0",
-            }}
-          >
-            <span>
-              <strong style={{ color: "#0F172A" }}>{nodes.length}</strong>{" "}
-              {nodes.length === 1 ? "Node" : "Nodes"}
-            </span>
-            <span style={{ color: "#CBD5E1" }}>•</span>
-            <span>
-              <strong style={{ color: "#0F172A" }}>{edges.length}</strong>{" "}
-              {edges.length === 1 ? "Connection" : "Connections"}
-            </span>
-          </div>
-
-          {/* Sync / Save Status Indicator */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              fontSize: 12,
-              color:
-                saveStatus === "saving"
-                  ? "#0081FB"
-                  : saveStatus === "error"
-                  ? "#EF4444"
-                  : "#10B981",
-              backgroundColor: "#FFFFFF",
-              padding: "6px 12px",
-              borderRadius: 8,
-              border: "1px solid #E2E8F0",
-            }}
-          >
-            {saveStatus === "saving" ? (
-              <>
-                <Loader2 size={13} className="animate-spin" />
-                <span>Saving...</span>
-              </>
-            ) : saveStatus === "error" ? (
-              <>
-                <AlertCircle size={13} />
-                <span>Sync Error</span>
-              </>
-            ) : (
-              <>
-                <CheckCircle2 size={13} />
-                <span>Saved to cloud</span>
-              </>
-            )}
-          </div>
-
-          {/* Add Node Button */}
+        {/* Action Controls - Execution Controls, Results Panel, Normal Node and Trigger */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {/* Live Execution Results Panel Toggle Button */}
           <button
             type="button"
-            onClick={handleAddNode}
-            disabled={loading}
+            onClick={() => setIsResultsPanelOpen((prev) => !prev)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 7,
+              padding: "8px 14px",
+              borderRadius: 8,
+              border: isResultsPanelOpen ? "1.5px solid #0081FB" : "1px solid #CBD5E1",
+              backgroundColor: isResultsPanelOpen ? "#EFF6FF" : "#FFFFFF",
+              color: isResultsPanelOpen ? "#0081FB" : "#0F172A",
+              fontSize: "13px",
+              fontWeight: 600,
+              cursor: "pointer",
+              boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+              transition: "all 0.15s ease",
+            }}
+            title="Toggle Live Execution Results Panel"
+          >
+            <Terminal size={15} color={isResultsPanelOpen ? "#0081FB" : "#64748B"} />
+            <span>Execution Results</span>
+            {isExecutingWorkflow && (
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  backgroundColor: "#0081FB",
+                  display: "inline-block",
+                  boxShadow: "0 0 0 3px rgba(0, 129, 251, 0.25)",
+                }}
+              />
+            )}
+            {currentExecution?.status === "completed" && !isExecutingWorkflow && (
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  backgroundColor: "#10B981",
+                  display: "inline-block",
+                }}
+              />
+            )}
+            {currentExecution?.status === "failed" && !isExecutingWorkflow && (
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  backgroundColor: "#EF4444",
+                  display: "inline-block",
+                }}
+              />
+            )}
+          </button>
+
+          {/* Separate Add Normal Node Button */}
+          <button
+            type="button"
+            onClick={() => handleCreateTypedNode("generic")}
             style={{
               display: "flex",
               alignItems: "center",
               gap: 6,
-              padding: "8px 16px",
+              padding: "8px 14px",
               borderRadius: 8,
-              border: "none",
-              backgroundColor: "#0081FB",
-              color: "#FFFFFF",
+              border: "1px solid #CBD5E1",
+              backgroundColor: "#FFFFFF",
+              color: "#0F172A",
               fontSize: "13px",
               fontWeight: 600,
-              cursor: loading ? "not-allowed" : "pointer",
-              boxShadow: "0 2px 8px rgba(0, 129, 251, 0.25)",
+              cursor: "pointer",
+              boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
               transition: "all 0.15s ease",
             }}
             onMouseEnter={(e) => {
-              if (!loading) e.currentTarget.style.backgroundColor = "#006FD0";
+              e.currentTarget.style.backgroundColor = "#F8FAFC";
+              e.currentTarget.style.borderColor = "#94A3B8";
             }}
             onMouseLeave={(e) => {
-              if (!loading) e.currentTarget.style.backgroundColor = "#0081FB";
+              e.currentTarget.style.backgroundColor = "#FFFFFF";
+              e.currentTarget.style.borderColor = "#CBD5E1";
             }}
           >
-            <Plus size={16} />
-            Add Node
+            <Plus size={15} color="#0081FB" />
+            Normal Node
           </button>
+
+          {/* Trigger Dropdown Button with options: Date, Action, Time */}
+          <div ref={menuRef} style={{ position: "relative" }}>
+            <button
+              type="button"
+              onClick={() => setIsTriggerMenuOpen((prev) => !prev)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "8px 16px",
+                borderRadius: 8,
+                border: "none",
+                backgroundColor: "#0081FB",
+                color: "#FFFFFF",
+                fontSize: "13px",
+                fontWeight: 600,
+                cursor: "pointer",
+                boxShadow: "0 2px 8px rgba(0, 129, 251, 0.25)",
+                transition: "all 0.15s ease",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = "#006FD0";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = "#0081FB";
+              }}
+            >
+              <Zap size={15} />
+              Trigger
+              <ChevronDown size={14} />
+            </button>
+
+            {/* Dropdown Menu */}
+            {isTriggerMenuOpen && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 6px)",
+                  right: 0,
+                  width: 230,
+                  backgroundColor: "#FFFFFF",
+                  borderRadius: 12,
+                  border: "1px solid #E2E8F0",
+                  boxShadow: "0 10px 25px rgba(15, 23, 42, 0.12)",
+                  padding: "6px",
+                  zIndex: 200,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                }}
+              >
+                {/* 1. Add Date Node */}
+                <button
+                  type="button"
+                  onClick={() => handleCreateTypedNode("date")}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "8px 12px",
+                    borderRadius: 8,
+                    border: "none",
+                    backgroundColor: "transparent",
+                    color: "#2563EB",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    textAlign: "left",
+                    width: "100%",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#EFF6FF")}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                >
+                  <Calendar size={16} color="#2563EB" />
+                  <div style={{ flex: 1 }}>
+                    <div>+ Date Node</div>
+                    <div style={{ fontSize: 11, color: "#64748B", fontWeight: 400 }}>
+                      Specific or recurring date
+                    </div>
+                  </div>
+                </button>
+
+                {/* 3. Add Action Node */}
+                <button
+                  type="button"
+                  onClick={() => handleCreateTypedNode("action")}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "8px 12px",
+                    borderRadius: 8,
+                    border: "none",
+                    backgroundColor: "transparent",
+                    color: "#059669",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    textAlign: "left",
+                    width: "100%",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#ECFDF5")}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                >
+                  <Play size={16} color="#059669" />
+                  <div style={{ flex: 1 }}>
+                    <div>+ Action Node</div>
+                    <div style={{ fontSize: 11, color: "#64748B", fontWeight: 400 }}>
+                      Task, notification, or AI
+                    </div>
+                  </div>
+                </button>
+
+                {/* 4. Add Time Node */}
+                <button
+                  type="button"
+                  onClick={() => handleCreateTypedNode("time")}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "8px 12px",
+                    borderRadius: 8,
+                    border: "none",
+                    backgroundColor: "transparent",
+                    color: "#D97706",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    textAlign: "left",
+                    width: "100%",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#FFFBEB")}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                >
+                  <Clock size={16} color="#D97706" />
+                  <div style={{ flex: 1 }}>
+                    <div>+ Time Node</div>
+                    <div style={{ fontSize: 11, color: "#64748B", fontWeight: 400 }}>
+                      Time & repeat interval
+                    </div>
+                  </div>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
+
+      {/* Validation Banner / Notification */}
+      {validationBanner && (
+        <div
+          style={{
+            marginBottom: 10,
+            padding: "10px 16px",
+            borderRadius: 10,
+            backgroundColor:
+              validationBanner.type === "error" ? "#FEF2F2" : "#F0FDF4",
+            border: `1px solid ${
+              validationBanner.type === "error" ? "#FCA5A5" : "#86EFAC"
+            }`,
+            color: validationBanner.type === "error" ? "#991B1B" : "#166534",
+            fontSize: "13px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <AlertTriangle size={16} />
+            <span>{validationBanner.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setValidationBanner(null)}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              padding: 2,
+              color: "inherit",
+            }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
 
       {/* Main Canvas Area */}
       <div
@@ -336,6 +1512,21 @@ export const AiAutomation = () => {
             nodes={nodes}
             edges={edges}
             selectedNodeId={selectedNodeId}
+            executingNodeId={executingNodeId}
+            executingEdgeIds={executingEdgeIds}
+            completedNodeIds={completedNodeIds}
+            completedEdgeIds={completedEdgeIds}
+            nodeStatusMap={nodeStatusMap}
+            isWorkflowRunning={isExecutingWorkflow}
+            isWorkflowPaused={isWorkflowPaused}
+            isWorkflowCompleted={currentExecution?.status === "completed"}
+            allNodesBlue={allNodesBlue}
+            onTogglePauseResume={handleTogglePauseResume}
+            onRetryNode={handleRetryNode}
+            onExecuteWorkflow={handleExecuteWorkflow}
+            connectionAlert={connectionAlert}
+            onClearConnectionAlert={() => dispatch(clearConnectionAlert())}
+            onInvalidConnection={(msg) => dispatch(setConnectionAlert(msg))}
             onSelectNode={handleSelectNode}
             onOpenEdit={handleOpenEdit}
             onMoveNode={handleMoveNode}
@@ -343,18 +1534,59 @@ export const AiAutomation = () => {
             onDeleteNode={handleDeleteNode}
             onConnect={handleConnect}
             onDeleteEdge={handleDeleteEdge}
-            onAddNode={handleAddNode}
+            onAddNode={handleCreateTypedNode}
           />
         )}
       </div>
 
-      {/* Node Text Editing Modal */}
+      {/* Live Execution Results Panel Drawer */}
+      <ExecutionResultsPanel
+        isOpen={isResultsPanelOpen}
+        onClose={() => setIsResultsPanelOpen(false)}
+        execution={currentExecution}
+        isExecuting={isExecutingWorkflow}
+        isPaused={isWorkflowPaused}
+        onPause={handleTogglePauseResume}
+        onResume={handleTogglePauseResume}
+        onRetryNode={handleRetryNode}
+        onRunNow={() => handleExecuteWorkflow()}
+      />
+
+      {/* Execution History Modal */}
+      <ExecutionHistoryModal
+        isOpen={isHistoryModalOpen}
+        onClose={() => setIsHistoryModalOpen(false)}
+      />
+
+      {/* Node Text Editing Popup Modal (for Normal Nodes) */}
       <NodeTextEditorModal
-        isOpen={modalOpen}
+        isOpen={
+          modalOpen &&
+          (!activeEditingNode?.type ||
+            activeEditingNode?.type === "generic" ||
+            activeEditingNode?.type === "trigger")
+        }
         node={activeEditingNode}
-        isSaving={saving || saveStatus === "saving"}
+        isSaving={saving}
         onClose={handleCloseEdit}
         onSave={handleSaveNodeText}
+      />
+
+      {/* Trigger Branch Configuration Modal (for Date and Time Circular Nodes only - NOT Action Node) */}
+      <TriggerNodeConfigModal
+        isOpen={
+          modalOpen &&
+          (activeEditingNode?.type === "date" ||
+            activeEditingNode?.type === "time")
+        }
+        node={activeEditingNode}
+        isSaving={saving}
+        onClose={handleCloseEdit}
+        onSave={handleSaveTriggerConfig}
+        onDelete={(id) => {
+          handleDeleteNode(id);
+          handleCloseEdit();
+        }}
       />
     </div>
   );

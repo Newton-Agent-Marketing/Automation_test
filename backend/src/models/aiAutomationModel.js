@@ -3,9 +3,24 @@ import mongoose, { Schema } from "mongoose";
 const automationNodeSchema = new Schema(
   {
     id: { type: String, required: true },
+    type: {
+      type: String,
+      enum: ["trigger", "date", "action", "time", "generic"],
+      default: "generic",
+    },
+    label: { type: String, default: "" },
     text: { type: String, default: "" },
-    stepNumber: { type: Number, default: null }, // e.g. 1 for node1, 2 for node2, null for unconnected
-    sequenceLabel: { type: String, default: "node_" }, // e.g. "node1", "node2", or "node_"
+    status: {
+      type: String,
+      enum: ["configured", "incomplete", "invalid", "saved"],
+      default: "incomplete",
+    },
+    stepNumber: { type: Number, default: null },
+    sequenceLabel: { type: String, default: "node_" },
+    config: {
+      type: Schema.Types.Mixed,
+      default: {},
+    },
     position: {
       x: { type: Number, default: 250 },
       y: { type: Number, default: 150 },
@@ -27,6 +42,21 @@ const automationEdgeSchema = new Schema(
   { _id: false, timestamps: true }
 );
 
+const executionHistorySchema = new Schema(
+  {
+    id: { type: String, required: true },
+    executedAt: { type: Date, default: Date.now },
+    triggerType: { type: String, default: "manual" }, // "manual" | "schedule" | "webhook"
+    actionType: { type: String, default: "send_notification" },
+    status: { type: String, enum: ["success", "failed"], default: "success" },
+    message: { type: String, default: "" },
+    result: { type: Schema.Types.Mixed, default: null },
+    error: { type: String, default: null },
+    durationMs: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
 const aiAutomationSchema = new Schema(
   {
     userId: {
@@ -40,12 +70,28 @@ const aiAutomationSchema = new Schema(
       type: String,
       default: "AI Automation Workspace",
     },
+    isActive: {
+      type: Boolean,
+      default: false,
+    },
+    lastRunAt: {
+      type: Date,
+      default: null,
+    },
+    nextRunAt: {
+      type: Date,
+      default: null,
+    },
     nodes: {
       type: [automationNodeSchema],
-      default: [], // Zero predefined nodes! Empty canvas initially.
+      default: [], // Zero predefined nodes initially
     },
     edges: {
       type: [automationEdgeSchema],
+      default: [],
+    },
+    executionHistory: {
+      type: [executionHistorySchema],
       default: [],
     },
   },

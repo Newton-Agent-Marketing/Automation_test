@@ -34,10 +34,13 @@ export const saveAutomation = createAsyncThunk(
 
 export const createNode = createAsyncThunk(
   "aiAutomation/createNode",
-  async ({ text = "", position }, { rejectWithValue }) => {
+  async ({ type = "generic", label, text = "", config, position }, { rejectWithValue }) => {
     try {
       const payload = {
+        type,
+        label,
         text,
+        config,
         position: position || { x: 300, y: 180 },
       };
       const res = await aiAutomationApi.addNode(payload);
@@ -61,6 +64,19 @@ export const updateNodeText = createAsyncThunk(
   }
 );
 
+export const updateNodeConfig = createAsyncThunk(
+  "aiAutomation/updateNodeConfig",
+  async ({ nodeId, id, config, label, status = "configured" }, { rejectWithValue }) => {
+    const targetId = nodeId || id;
+    try {
+      const res = await aiAutomationApi.updateNode(targetId, { config, label, status });
+      return { nodeId: targetId, config, label, status, data: res.data.data };
+    } catch (err) {
+      return rejectWithValue(getErrorMessage(err, "Failed to update node configuration"));
+    }
+  }
+);
+
 export const updateNodePosition = createAsyncThunk(
   "aiAutomation/updateNodePosition",
   async ({ nodeId, id, position }, { rejectWithValue }) => {
@@ -78,8 +94,8 @@ export const deleteNode = createAsyncThunk(
   "aiAutomation/deleteNode",
   async (nodeId, { rejectWithValue }) => {
     try {
-      const res = await aiAutomationApi.deleteNode(nodeId);
-      return { nodeId, data: res.data.data };
+      await aiAutomationApi.deleteNode(nodeId);
+      return { nodeId };
     } catch (err) {
       return rejectWithValue(getErrorMessage(err, "Failed to delete node"));
     }
@@ -90,8 +106,12 @@ export const addEdge = createAsyncThunk(
   "aiAutomation/addEdge",
   async ({ source, target, sourceHandle, targetHandle }, { rejectWithValue }) => {
     try {
-      const payload = { source, target, sourceHandle, targetHandle };
-      const res = await aiAutomationApi.createEdge(payload);
+      const res = await aiAutomationApi.createEdge({
+        source,
+        target,
+        sourceHandle: sourceHandle || "right",
+        targetHandle: targetHandle || "left",
+      });
       return res.data;
     } catch (err) {
       return rejectWithValue(getErrorMessage(err, "Failed to create connection"));
@@ -103,35 +123,66 @@ export const removeEdge = createAsyncThunk(
   "aiAutomation/removeEdge",
   async (edgeId, { rejectWithValue }) => {
     try {
-      const res = await aiAutomationApi.deleteEdge(edgeId);
-      return { edgeId, data: res.data.data };
+      await aiAutomationApi.deleteEdge(edgeId);
+      return { edgeId };
     } catch (err) {
-      return rejectWithValue(getErrorMessage(err, "Failed to remove connection"));
+      return rejectWithValue(getErrorMessage(err, "Failed to delete connection"));
     }
   }
 );
 
-const initialState = {
-  loading: false,
-  saving: false,
-  automationId: null,
-  name: "AI Automation Workspace",
-  nodes: [], // Zero predefined nodes!
-  edges: [],
-  selectedNodeId: null,
-  editingNodeId: null,
-  activeEditingNodeId: null,
-  editingNodeText: "",
-  isEditingModalOpen: false,
-  isEditModalOpen: false,
-  error: null,
-  successMessage: null,
-};
+export const validateAutomation = createAsyncThunk(
+  "aiAutomation/validateAutomation",
+  async (_, { rejectWithValue }) => {
+    try {
+      const res = await aiAutomationApi.validate();
+      return res.data;
+    } catch (err) {
+      return rejectWithValue(getErrorMessage(err, "Validation failed"));
+    }
+  }
+);
+
+export const toggleActiveAutomation = createAsyncThunk(
+  "aiAutomation/toggleActiveAutomation",
+  async (_, { rejectWithValue }) => {
+    try {
+      const res = await aiAutomationApi.toggleActive();
+      return res.data;
+    } catch (err) {
+      return rejectWithValue(getErrorMessage(err, "Failed to toggle activation status"));
+    }
+  }
+);
+
+export const runNowAutomation = createAsyncThunk(
+  "aiAutomation/runNowAutomation",
+  async (_, { rejectWithValue }) => {
+    try {
+      const res = await aiAutomationApi.runNow();
+      return res.data;
+    } catch (err) {
+      return rejectWithValue(getErrorMessage(err, "Run failed"));
+    }
+  }
+);
+
+export const fetchExecutionHistory = createAsyncThunk(
+  "aiAutomation/fetchExecutionHistory",
+  async (_, { rejectWithValue }) => {
+    try {
+      const res = await aiAutomationApi.getHistory();
+      return res.data.data;
+    } catch (err) {
+      return rejectWithValue(getErrorMessage(err, "Failed to load history"));
+    }
+  }
+);
 
 export function computeNodeSequences(nodes, edges) {
   if (!Array.isArray(nodes) || nodes.length === 0) return nodes;
 
-  const rootNode = nodes[0];
+  const rootNode = nodes.find((n) => n.type === "trigger") || nodes[0];
   const stepMap = new Map();
   stepMap.set(rootNode.id, 1);
 
@@ -165,6 +216,32 @@ export function computeNodeSequences(nodes, edges) {
 
   return nodes;
 }
+
+const initialState = {
+  loading: false,
+  saving: false,
+  isRunning: false,
+  automationId: null,
+  name: "AI Automation Workspace",
+  isActive: false,
+  lastRunAt: null,
+  nextRunAt: null,
+  nodes: [],
+  edges: [],
+  executionHistory: [],
+  validationErrors: [],
+  connectionAlert: null,
+  selectedNodeId: null,
+  editingNodeId: null,
+  activeEditingNodeId: null,
+  editingNodeText: "",
+  isEditingModalOpen: false,
+  isEditModalOpen: false,
+  isDetailsDrawerOpen: false,
+  activeDetailsNodeId: null,
+  error: null,
+  successMessage: null,
+};
 
 const aiAutomationSlice = createSlice({
   name: "aiAutomation",
@@ -210,6 +287,22 @@ const aiAutomationSlice = createSlice({
       state.activeEditingNodeId = null;
       state.editingNodeText = "";
     },
+    openDetailsDrawer: (state, action) => {
+      const nodeId = action.payload;
+      state.activeDetailsNodeId = nodeId;
+      state.selectedNodeId = nodeId;
+      state.isDetailsDrawerOpen = true;
+    },
+    closeDetailsDrawer: (state) => {
+      state.isDetailsDrawerOpen = false;
+      state.activeDetailsNodeId = null;
+    },
+    setConnectionAlert: (state, action) => {
+      state.connectionAlert = action.payload;
+    },
+    clearConnectionAlert: (state) => {
+      state.connectionAlert = null;
+    },
     setEditingNodeText: (state, action) => {
       state.editingNodeText = action.payload;
     },
@@ -231,8 +324,12 @@ const aiAutomationSlice = createSlice({
         state.loading = false;
         state.automationId = action.payload?._id || null;
         state.name = action.payload?.name || "AI Automation Workspace";
+        state.isActive = Boolean(action.payload?.isActive);
+        state.lastRunAt = action.payload?.lastRunAt || null;
+        state.nextRunAt = action.payload?.nextRunAt || null;
         state.nodes = action.payload?.nodes || [];
         state.edges = action.payload?.edges || [];
+        state.executionHistory = action.payload?.executionHistory || [];
         computeNodeSequences(state.nodes, state.edges);
       })
       .addCase(fetchAutomation.rejected, (state, action) => {
@@ -252,6 +349,7 @@ const aiAutomationSlice = createSlice({
         if (action.payload) {
           state.nodes = action.payload.nodes || state.nodes;
           state.edges = action.payload.edges || state.edges;
+          state.isActive = Boolean(action.payload.isActive);
           computeNodeSequences(state.nodes, state.edges);
         }
       })
@@ -263,10 +361,11 @@ const aiAutomationSlice = createSlice({
     // createNode
     builder
       .addCase(createNode.fulfilled, (state, action) => {
-        if (action.payload?.node) {
-          state.nodes.push(action.payload.node);
-        } else if (action.payload?.data?.nodes) {
+        if (action.payload?.data?.nodes) {
           state.nodes = action.payload.data.nodes;
+          state.edges = action.payload.data.edges || state.edges;
+        } else if (action.payload?.node) {
+          state.nodes.push(action.payload.node);
         }
         computeNodeSequences(state.nodes, state.edges);
         state.successMessage = "Node added to canvas";
@@ -275,13 +374,25 @@ const aiAutomationSlice = createSlice({
         state.error = action.payload;
       });
 
+    // updateNodeConfig
+    builder
+      .addCase(updateNodeConfig.fulfilled, (state, action) => {
+        const { nodeId, config, label, status } = action.payload;
+        const node = state.nodes.find((n) => n.id === nodeId);
+        if (node) {
+          if (config) node.config = { ...(node.config || {}), ...config };
+          if (label) node.label = label;
+          if (status) node.status = status;
+        }
+        state.successMessage = "Configuration saved";
+      })
+      .addCase(updateNodeConfig.rejected, (state, action) => {
+        state.error = action.payload;
+      });
+
     // updateNodeText
     builder
-      .addCase(updateNodeText.pending, (state) => {
-        state.saving = true;
-      })
       .addCase(updateNodeText.fulfilled, (state, action) => {
-        state.saving = false;
         const { nodeId, text } = action.payload;
         const node = state.nodes.find((n) => n.id === nodeId);
         if (node) {
@@ -293,24 +404,16 @@ const aiAutomationSlice = createSlice({
         state.activeEditingNodeId = null;
         state.editingNodeText = "";
         state.successMessage = "Node text updated";
-      })
-      .addCase(updateNodeText.rejected, (state, action) => {
-        state.saving = false;
-        state.error = action.payload;
       });
 
     // updateNodePosition
-    builder
-      .addCase(updateNodePosition.fulfilled, (state, action) => {
-        const { nodeId, position } = action.payload;
-        const node = state.nodes.find((n) => n.id === nodeId);
-        if (node && position) {
-          node.position = position;
-        }
-      })
-      .addCase(updateNodePosition.rejected, (state, action) => {
-        state.error = action.payload;
-      });
+    builder.addCase(updateNodePosition.fulfilled, (state, action) => {
+      const { nodeId, position } = action.payload;
+      const node = state.nodes.find((n) => n.id === nodeId);
+      if (node && position) {
+        node.position = position;
+      }
+    });
 
     // deleteNode
     builder
@@ -322,11 +425,9 @@ const aiAutomationSlice = createSlice({
         if (state.selectedNodeId === nodeId) {
           state.selectedNodeId = null;
         }
-        if (state.editingNodeId === nodeId) {
-          state.isEditingModalOpen = false;
-          state.isEditModalOpen = false;
-          state.editingNodeId = null;
-          state.activeEditingNodeId = null;
+        if (state.activeDetailsNodeId === nodeId) {
+          state.isDetailsDrawerOpen = false;
+          state.activeDetailsNodeId = null;
         }
         state.successMessage = "Node removed";
       })
@@ -337,16 +438,31 @@ const aiAutomationSlice = createSlice({
     // addEdge
     builder
       .addCase(addEdge.fulfilled, (state, action) => {
-        if (action.payload?.edge) {
-          state.edges.push(action.payload.edge);
-        } else if (action.payload?.data?.edges) {
+        if (action.payload?.data?.edges) {
           state.edges = action.payload.data.edges;
+        } else if (action.payload?.edge) {
+          const edge = action.payload.edge;
+          const exists = state.edges.some(
+            (e) => (e.id && e.id === edge.id) ||
+                   (e.source === edge.source && e.target === edge.target) ||
+                   (e.source === edge.target && e.target === edge.source)
+          );
+          if (!exists) {
+            state.edges.push(edge);
+          }
         }
+
+        if (action.payload?.data?.nodes) {
+          state.nodes = action.payload.data.nodes;
+        }
+
         computeNodeSequences(state.nodes, state.edges);
+        state.connectionAlert = null;
         state.successMessage = "Nodes connected";
       })
       .addCase(addEdge.rejected, (state, action) => {
         state.error = action.payload;
+        state.connectionAlert = action.payload;
       });
 
     // removeEdge
@@ -360,6 +476,53 @@ const aiAutomationSlice = createSlice({
       .addCase(removeEdge.rejected, (state, action) => {
         state.error = action.payload;
       });
+
+    // validateAutomation
+    builder
+      .addCase(validateAutomation.fulfilled, (state, action) => {
+        state.validationErrors = action.payload.errors || [];
+      })
+      .addCase(validateAutomation.rejected, (state, action) => {
+        state.error = action.payload;
+      });
+
+    // toggleActiveAutomation
+    builder
+      .addCase(toggleActiveAutomation.fulfilled, (state, action) => {
+        state.isActive = Boolean(action.payload.isActive);
+        state.successMessage = action.payload.message;
+        state.validationErrors = [];
+      })
+      .addCase(toggleActiveAutomation.rejected, (state, action) => {
+        state.error = action.payload;
+        if (action.meta?.arg?.errors) {
+          state.validationErrors = action.meta.arg.errors;
+        }
+      });
+
+    // runNowAutomation
+    builder
+      .addCase(runNowAutomation.pending, (state) => {
+        state.isRunning = true;
+        state.error = null;
+      })
+      .addCase(runNowAutomation.fulfilled, (state, action) => {
+        state.isRunning = false;
+        state.successMessage = action.payload.message || "Action executed successfully";
+        if (action.payload.data?.executionHistory) {
+          state.executionHistory = action.payload.data.executionHistory;
+          state.lastRunAt = action.payload.data.lastRunAt;
+        }
+      })
+      .addCase(runNowAutomation.rejected, (state, action) => {
+        state.isRunning = false;
+        state.error = action.payload;
+      });
+
+    // fetchExecutionHistory
+    builder.addCase(fetchExecutionHistory.fulfilled, (state, action) => {
+      state.executionHistory = action.payload || [];
+    });
   },
 });
 
@@ -368,6 +531,10 @@ export const {
   selectNode,
   openEditModal,
   closeEditModal,
+  openDetailsDrawer,
+  closeDetailsDrawer,
+  setConnectionAlert,
+  clearConnectionAlert,
   setEditingNodeText,
   clearError,
   clearSuccess,
