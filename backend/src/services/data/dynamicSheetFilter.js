@@ -53,6 +53,19 @@ export class DynamicSheetFilter {
     if (!msg || typeof msg !== "string") return null;
     const isCampaign = type === "campaign";
 
+    // Fast-path: Explicit key-value declaration takes highest precedence (e.g. "- Campaign Name: Diwali Special Promo")
+    const explicitPattern = isCampaign
+      ? /(?:^|[\n\r;•\-])\s*(?:campaign\s*(?:names?|title|titled|label|called)?|campaign_name|camp\s*(?:names?|title)?)\s*[:=]\s*([^\n\r;]+)/i
+      : /(?:^|[\n\r;•\-])\s*(?:(?:adset|ad_set|ad\s*set|adgroup)\s*(?:names?|title|titled|label|called)?|ad_set_name|adset_name)\s*[:=]\s*([^\n\r;]+)/i;
+
+    const explicitMatch = msg.match(explicitPattern);
+    if (explicitMatch && explicitMatch[1]) {
+      const explicitVal = explicitMatch[1].trim().replace(/^["'\`]+|["'\`]+$/g, "").trim();
+      if (explicitVal && !explicitVal.toLowerCase().startsWith("http") && !/(?:on\s+meta\s+ads|for\s+ad\s+account)/i.test(explicitVal)) {
+        return explicitVal;
+      }
+    }
+
     // Locate the entity declaration anywhere in the sentence
     const entityRegex = isCampaign
       ? /\b(?:(?:(?:make|create|launch|set\s*up|build|banao|with|for|having|use)\s+)(?:an?|the\s+)?(?:campaign\s*(?:names?|title|titled|label|called|ka\s*name)?|campaign_name|camp\s*(?:names?|title)?)\b|\b(?:campaign\s*(?:names?|title|titled|label|called|ka\s*name)|campaign_name|camp\s*(?:names?|title))\b|\bcampaign\b(?!\s+(?:objective|type|status|budget|goal|id|category|group|setting|settings|field|column)\b))/gi

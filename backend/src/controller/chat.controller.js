@@ -2834,7 +2834,7 @@ ${rowsContent}
     }
   }
 
-  // 1.6. If user is asking to LIST CAMPAIGN NAMES or SHOW CAMPAIGN LIST
+  // 1.6. If user is asking to LIST CAMPAIGN NAMES, SHOW CAMPAIGN LIST, or COUNT ADS
   if (
     (lower.includes("list of campaign") ||
       lower.includes("list campaign") ||
@@ -2844,28 +2844,69 @@ ${rowsContent}
       lower.includes("show campaign") ||
       lower.includes("my campaigns") ||
       lower.includes("all campaign") ||
-      lower.includes("show campaigns")) &&
+      lower.includes("show campaigns") ||
+      lower.includes("fetch all campaigns") ||
+      lower.includes("fetch campaigns") ||
+      lower.includes("kitna campaign") ||
+      lower.includes("kitne campaign") ||
+      lower.includes("kitna ads") ||
+      lower.includes("kitne ads") ||
+      lower.includes("ads hai") ||
+      lower.includes("total ads") ||
+      (lower.includes("campaign") && (lower.includes("list") || lower.includes("count") || lower.includes("fetch")))) &&
     !lower.includes("text_optimization") &&
-    !lower.includes("optimization") &&
-    !lower.includes("ad level")
+    !lower.includes("optimization")
   ) {
     try {
       const MetaCampaign = (await import("../models/metaCampaign.js")).default;
       const GoogleAccount = (await import("../models/googleAccountModel.js")).default;
+      const MetaAccount = (await import("../models/metaAccount.js")).default;
 
-      const [metaCamps, googleAcc] = await Promise.all([
+      const [metaCamps, googleAcc, activeMetaAcc] = await Promise.all([
         MetaCampaign.find({ userId }).lean().catch(() => []),
         GoogleAccount.findOne({ userId, isActive: true }).lean().catch(() => null),
+        MetaAccount.findOne({ userId, isActive: true }).lean().catch(() => null),
       ]);
 
       let campaignRows = [];
+      const explicitMetaMatch = (userMessage || "").match(/\b(?:act_)?(\d{10,22})\b/i);
+      const targetMetaAccId = explicitMetaMatch ? explicitMetaMatch[1] : (metaAccountId || accountId || activeMetaAcc?.accountId);
 
+      // 1. Query Live Meta API if account ID or connected Meta account is present
+      if (targetMetaAccId || activeMetaAcc) {
+        try {
+          const liveMeta = await executeAgentTool("fetch_live_meta_ads_mcp", {
+            toolType: "get_live_campaigns_status",
+            accountId: targetMetaAccId || activeMetaAcc?.accountId,
+            userId,
+          });
+          const mCamps = liveMeta?.campaigns || [];
+          if (mCamps.length > 0) {
+            mCamps.forEach((c) => {
+              const cId = c.id || c.campaignId;
+              const exists = campaignRows.some((r) => r.includes(cId));
+              if (!exists) {
+                campaignRows.push(`| Meta Ads | **${c.name}** | \`${cId}\` | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ACTIVE"} |`);
+              }
+            });
+          }
+        } catch (mErr) {
+          console.warn("[Live Meta Fetch in Campaign List Warning]:", mErr.message);
+        }
+      }
+
+      // 2. Add campaigns saved in database
       if (metaCamps && metaCamps.length > 0) {
         metaCamps.forEach((c) => {
-          campaignRows.push(`| Meta Ads | **${c.name}** | \`${c.campaignId}\` | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ACTIVE"} |`);
+          const cId = c.campaignId || c.id;
+          const exists = campaignRows.some((r) => r.includes(cId));
+          if (!exists) {
+            campaignRows.push(`| Meta Ads | **${c.name}** | \`${cId}\` | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ACTIVE"} |`);
+          }
         });
       }
 
+      // 3. Query Google Ads if connected
       if (googleAcc) {
         try {
           const liveGoogle = await executeAgentTool("fetch_live_google_ads_mcp", {
@@ -2884,15 +2925,16 @@ ${rowsContent}
 
       if (campaignRows.length === 0) {
         return {
-          content: `### 📋 Active Campaigns List\n\nNo active campaign records were found for your connected channels. You can create a campaign by typing:\n> *"Create a Meta Ads campaign for my product with daily budget ₹1000"*`,
+          content: `### 📋 Active Campaigns List\n\nNo active campaigns were found for Ad Account \`${targetMetaAccId ? `act_${targetMetaAccId}` : "connected account"}\`. You can create a campaign by specifying:\n> *"Create a campaign on Meta Ads: Campaign Name: Diwali Special, Ad Set Name: Diwali Adset, Daily Budget: ₹1000, Objective: OUTCOME_TRAFFIC"*\n\n*(Also ensure your Meta Ads account is connected under Channels).*`,
           toolCalls: [],
         };
       }
 
+      const totalCount = campaignRows.length;
       return {
-        content: `### 📋 List of Advertising Campaigns (Live from Database & Ad Accounts)
+        content: `### 📋 List of Advertising Campaigns (Live from Ad Accounts & Database)
 
-Here are your active and configured advertising campaigns:
+**Total Campaigns Found:** ${totalCount}
 
 | Platform | Campaign Name | Campaign ID | Daily Budget | Status |
 | :--- | :--- | :--- | :--- | :--- |
@@ -3706,7 +3748,10 @@ export const runAgentChat = async ({
   const mentionsGoogleAds =
     msgLower.includes("google ads") ||
     (msgLower.includes("google") && !msgLower.includes("drive") && !msgLower.includes("sheet") && !msgLower.includes("docs.google.com"));
+  const isFetchOrQueryCmd =
+    /\b(?:fetch|get|list|show|count|check|preview|read|view|kitna|kitne|batao|status|insights|metrics|performance|audit)\b/i.test(msgLower);
   const isCreationOrCampaignCmd =
+    !isFetchOrQueryCmd &&
     (msgLower.includes("create") || msgLower.includes("launch") || msgLower.includes("setup") || msgLower.includes("upload") || msgLower.includes("banao")) &&
     (msgLower.includes("campaign") || msgLower.includes("adset") || msgLower.includes("ad set") || msgLower.includes("ad") || msgLower.includes("ads") || msgLower.includes("sheet"));
   const isMetaIntent =
@@ -3899,6 +3944,7 @@ export const runAgentChat = async ({
   const activePrepSession = await CampaignPreparationService.getActiveSession(conversationId, validUserId || userId);
   const isMetaPrepWorkflow =
     !mentionsGoogleAds &&
+    !isFetchOrQueryCmd &&
     (Boolean(activePrepSession) ||
       CampaignPreparationService.isApprovalCommand(userMessage, activePrepSession) ||
       CampaignPreparationService.isEditCommand(userMessage, activePrepSession) ||

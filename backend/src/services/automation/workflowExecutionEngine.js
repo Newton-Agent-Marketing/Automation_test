@@ -360,37 +360,24 @@ export class WorkflowExecutionEngine {
       };
     }
 
-    const promptContext = `You are an AI Marketing & Automation Execution Agent.
-You have access to tools and capabilities to:
-1. Parse and extract any marketing field values directly provided inside the task instruction text (e.g., campaign name, budget, objective, target audience, locations, dates, Google Sheets URL/range, channel name, etc.).
-2. Create or configure marketing campaigns, ad sets, ads, or budget updates directly using the provided parameters.
-3. Fetch real-time information, metrics, campaigns, performance data, sheets data, or channel insights from any connected channel (Meta Ads, Google Ads, Google Sheets, Google Drive).
-4. If upstream context from previous nodes is provided, incorporate those inputs seamlessly into your execution.
-5. Return clear, thorough, and informative results summarizing what was fetched, created, or processed.`;
+    // Extract any explicit Meta Ad Account ID like act_1416124059911929 or 1416124059911929
+    let metaAccountId = null;
+    const actMatch = instruction.match(/\b(?:act_)?(\d{10,22})\b/i);
+    if (actMatch) {
+      metaAccountId = actMatch[1];
+    }
 
-    let userMessage = "";
+    let userMessage = instruction;
     if (previousNodeOutput) {
       const formattedPrev =
         typeof previousNodeOutput === "string"
           ? previousNodeOutput
           : JSON.stringify(previousNodeOutput, null, 2);
 
-      userMessage = `${promptContext}
+      userMessage = `${instruction}
 
-[UPSTREAM CONTEXT FROM PREVIOUS NODE]:
-${formattedPrev}
-
-[YOUR TASK INSTRUCTION & FIELD VALUES]:
-${instruction}
-
-Please execute this task now using your tools and channel integrations. Provide a clear, real, and actionable output.`;
-    } else {
-      userMessage = `${promptContext}
-
-[YOUR TASK INSTRUCTION & FIELD VALUES]:
-${instruction}
-
-Please execute this task now using your tools and channel integrations. Provide a clear, real, and actionable output.`;
+[Context from previous step]:
+${formattedPrev}`;
     }
 
     let streamedText = "";
@@ -400,6 +387,8 @@ Please execute this task now using your tools and channel integrations. Provide 
       userId,
       conversationId: `automation_${executionId}_${node.id}`,
       userMessage,
+      metaAccountId,
+      accountId: metaAccountId ? `act_${metaAccountId}` : undefined,
       onEvent: (event) => {
         if (event.type === "text_delta" || event.type === "content") {
           streamedText += event.content || event.text || "";
