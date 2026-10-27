@@ -2760,17 +2760,186 @@ ${lastAdSet ? `- **Ad Set Verified in Meta**: \`${lastAdSet.name}\` (ID: \`${las
     }
   }
 
-  // 1.5. If user is asking to READ or VIEW connected Excel / Google Sheet / Warehouse data
-  if (
-    lower.includes("excel") ||
-    lower.includes("sheet") ||
-    lower.includes("spreadsheet") ||
-    lower.includes("read the sheet") ||
-    lower.includes("read excel") ||
-    lower.includes("view sheet") ||
-    lower.includes("sheet data") ||
-    lower.includes("warehouse data")
-  ) {
+  // Extract prompt text without upstream context so previous step output does not bias intent classification
+  const promptOnly = (userMessage || "").split(/\[Context from previous step\]:/i)[0].trim();
+  const promptLower = promptOnly.toLowerCase();
+
+  // 1.5. If user is asking to LIST CAMPAIGNS, SHOW CAMPAIGNS, or COUNT ADS FROM LIVE CHANNELS (Meta Ads / Google Ads)
+  const isCampaignOrChannelQuery =
+    (promptLower.includes("campaign") ||
+      promptLower.includes("campaigns") ||
+      promptLower.includes("meta ads") ||
+      promptLower.includes("meta ad") ||
+      promptLower.includes("facebook ads") ||
+      promptLower.includes("act_") ||
+      promptLower.includes("ad account") ||
+      promptLower.includes("google ads") ||
+      promptLower.includes("google ad") ||
+      promptLower.includes("kitna ads") ||
+      promptLower.includes("kitne ads") ||
+      promptLower.includes("kitna campaign") ||
+      promptLower.includes("kitne campaign") ||
+      promptLower.includes("total ads") ||
+      promptLower.includes("count ads") ||
+      promptLower.includes("ads count") ||
+      promptLower.includes("ads hai")) &&
+    (promptLower.includes("fetch") ||
+      promptLower.includes("get") ||
+      promptLower.includes("list") ||
+      promptLower.includes("show") ||
+      promptLower.includes("count") ||
+      promptLower.includes("how many") ||
+      promptLower.includes("kitna") ||
+      promptLower.includes("kitne") ||
+      promptLower.includes("breakdown") ||
+      promptLower.includes("status") ||
+      promptLower.includes("details") ||
+      promptLower.includes("all")) &&
+    !promptLower.includes("text_optimization") &&
+    !promptLower.includes("optimization");
+
+  if (isCampaignOrChannelQuery) {
+    try {
+      const MetaCampaign = (await import("../models/metaCampaign.js")).default;
+      const GoogleAccount = (await import("../models/googleAccountModel.js")).default;
+      const MetaAccount = (await import("../models/metaAccount.js")).default;
+
+      const [metaCamps, googleAcc, activeMetaAcc] = await Promise.all([
+        MetaCampaign.find({ userId }).lean().catch(() => []),
+        GoogleAccount.findOne({ userId, isActive: true }).lean().catch(() => null),
+        MetaAccount.findOne({ userId, isActive: true }).lean().catch(() => null),
+      ]);
+
+      let campaignRows = [];
+      const adsBreakdownList = [];
+      const explicitMetaMatch = (userMessage || "").match(/\b(?:act_)?(\d{10,22})\b/i);
+      const targetMetaAccId = explicitMetaMatch ? explicitMetaMatch[1] : (metaAccountId || accountId || activeMetaAcc?.accountId);
+
+      let totalAdsInAccount = 0;
+
+      // 1. Query Live Meta API if account ID or connected Meta account is present
+      if (targetMetaAccId || activeMetaAcc) {
+        try {
+          const liveMeta = await executeAgentTool("fetch_live_meta_ads_mcp", {
+            toolType: "get_live_campaigns_status",
+            accountId: targetMetaAccId || activeMetaAcc?.accountId,
+            userId,
+          });
+          totalAdsInAccount = liveMeta?.totalAdsInAccount || 0;
+          const mCamps = liveMeta?.campaigns || [];
+          if (mCamps.length > 0) {
+            mCamps.forEach((c) => {
+              const cId = c.id || c.campaignId;
+              const exists = campaignRows.some((r) => r.includes(cId));
+              if (!exists) {
+                const adsCountText = c.totalAds !== undefined ? `**${c.totalAds} Ads**` : "0 Ads";
+                campaignRows.push(`| Meta Ads | **${c.name}** | \`${cId}\` | ${adsCountText} | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ACTIVE"} |`);
+              }
+              if (Array.isArray(c.ads) && c.ads.length > 0) {
+                const adList = c.ads.map((a, idx) => `  * **Ad #${idx + 1}**: "${a.name}" (\`${a.id}\`) — Status: \`${a.status || "ACTIVE"}\``).join("\n");
+                adsBreakdownList.push(`- **Campaign: ${c.name}** (\`${cId}\`) — **${c.ads.length} Ads Total**:\n${adList}`);
+              } else {
+                adsBreakdownList.push(`- **Campaign: ${c.name}** (\`${cId}\`) — **0 Ads** created under this campaign.`);
+              }
+            });
+          }
+        } catch (mErr) {
+          console.warn("[Live Meta Fetch in Campaign List Warning]:", mErr.message);
+        }
+      }
+
+      // 2. Add campaigns saved in database if not already included
+      if (metaCamps && metaCamps.length > 0) {
+        metaCamps.forEach((c) => {
+          const cId = c.campaignId || c.id;
+          const exists = campaignRows.some((r) => r.includes(cId));
+          if (!exists) {
+            campaignRows.push(`| Meta Ads | **${c.name}** | \`${cId}\` | -- | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ACTIVE"} |`);
+          }
+        });
+      }
+
+      // 3. Query Google Ads if connected
+      if (googleAcc) {
+        try {
+          const liveGoogle = await executeAgentTool("fetch_live_google_ads_mcp", {
+            toolType: "get_live_campaigns_status",
+            accountId: accountId || googleAcc.selectedCustomerId || googleAcc.accountId,
+            userId,
+          });
+          const gCamps = liveGoogle.campaigns || [];
+          gCamps.forEach((c) => {
+            campaignRows.push(`| Google Ads | **${c.name}** | \`${c.id || c.campaignId}\` | -- | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ENABLED"} |`);
+          });
+        } catch (gErr) {
+          // ignore
+        }
+      }
+
+      if (campaignRows.length === 0) {
+        return {
+          content: `### 📋 Active Campaigns List\n\nNo active campaigns were found for Ad Account \`${targetMetaAccId ? `act_${targetMetaAccId}` : "connected account"}\`.\n\n*(Please ensure your Meta Ads account act_${targetMetaAccId || ""} is connected under Channels with active permissions).*`,
+          toolCalls: [
+            {
+              toolName: "fetch_live_meta_ads_mcp",
+              toolArgs: { toolType: "get_live_campaigns_status", accountId: targetMetaAccId },
+              toolResult: { totalCampaigns: 0, totalAds: 0 },
+              status: "SUCCESS",
+            },
+          ],
+        };
+      }
+
+      const totalCount = campaignRows.length;
+      const breakdownMd = adsBreakdownList.length > 0
+        ? `\n\n#### 📢 Ads Detail & Status Breakdown per Campaign:\n${adsBreakdownList.join("\n\n")}`
+        : "";
+
+      return {
+        content: `### 📋 Live Campaigns & Ads Breakdown (Live from Meta Ads API)
+
+- **Target Ad Account:** \`act_${targetMetaAccId || "connected"}\`
+- **Total Campaigns:** ${totalCount}
+- **Total Ads Found in Account:** ${totalAdsInAccount > 0 ? totalAdsInAccount : "See breakdown below"}
+
+| Platform | Campaign Name | Campaign ID | Total Ads | Daily Budget | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+${campaignRows.join("\n")}${breakdownMd}
+
+> 💡 *All campaigns and ad counts listed above are synchronized live directly from Meta Ads & Google Ads networks.*`,
+        toolCalls: [
+          {
+            toolName: "fetch_live_meta_ads_mcp",
+            toolArgs: { toolType: "get_live_campaigns_status", accountId: targetMetaAccId },
+            toolResult: { totalCampaigns: totalCount, totalAds: totalAdsInAccount },
+            status: "SUCCESS",
+          },
+        ],
+      };
+    } catch (err) {
+      console.error("[Live Campaign Fetch Error]:", err);
+    }
+  }
+
+  // 1.6. If user is explicitly asking to READ or VIEW connected Excel / Google Sheet / Warehouse data
+  const isSheetDataQuery =
+    !isCampaignOrChannelQuery &&
+    (promptLower.includes("sheet") ||
+      promptLower.includes("excel") ||
+      promptLower.includes("spreadsheet") ||
+      promptLower.includes("warehouse data")) &&
+    (promptLower.includes("read") ||
+      promptLower.includes("view") ||
+      promptLower.includes("fetch") ||
+      promptLower.includes("show") ||
+      promptLower.includes("get") ||
+      promptLower.includes("data") ||
+      promptLower.includes("rows") ||
+      promptLower.includes("table") ||
+      promptLower.includes("content") ||
+      promptLower.includes("batao"));
+
+  if (isSheetDataQuery) {
     try {
       const sheetData = await executeAgentTool("get_connected_sheet_rows", { userId });
       const aiCtx = await executeAgentTool("get_user_ai_context", { userId });
@@ -2836,126 +3005,7 @@ ${rowsContent}
         ],
       };
     } catch (err) {
-      // fallback
-    }
-  }
-
-  // 1.6. If user is asking to LIST CAMPAIGN NAMES, SHOW CAMPAIGN LIST, or COUNT ADS
-  if (
-    (lower.includes("list of campaign") ||
-      lower.includes("list campaign") ||
-      lower.includes("campaign list") ||
-      lower.includes("campaign name") ||
-      lower.includes("campaign names") ||
-      lower.includes("show campaign") ||
-      lower.includes("my campaigns") ||
-      lower.includes("all campaign") ||
-      lower.includes("show campaigns") ||
-      lower.includes("fetch all campaigns") ||
-      lower.includes("fetch campaigns") ||
-      lower.includes("kitna campaign") ||
-      lower.includes("kitne campaign") ||
-      lower.includes("kitna ads") ||
-      lower.includes("kitne ads") ||
-      lower.includes("ads hai") ||
-      lower.includes("total ads") ||
-      (lower.includes("campaign") && (lower.includes("list") || lower.includes("count") || lower.includes("fetch")))) &&
-    !lower.includes("text_optimization") &&
-    !lower.includes("optimization")
-  ) {
-    try {
-      const MetaCampaign = (await import("../models/metaCampaign.js")).default;
-      const GoogleAccount = (await import("../models/googleAccountModel.js")).default;
-      const MetaAccount = (await import("../models/metaAccount.js")).default;
-
-      const [metaCamps, googleAcc, activeMetaAcc] = await Promise.all([
-        MetaCampaign.find({ userId }).lean().catch(() => []),
-        GoogleAccount.findOne({ userId, isActive: true }).lean().catch(() => null),
-        MetaAccount.findOne({ userId, isActive: true }).lean().catch(() => null),
-      ]);
-
-      let campaignRows = [];
-      const explicitMetaMatch = (userMessage || "").match(/\b(?:act_)?(\d{10,22})\b/i);
-      const targetMetaAccId = explicitMetaMatch ? explicitMetaMatch[1] : (metaAccountId || accountId || activeMetaAcc?.accountId);
-
-      let totalAdsInAccount = 0;
-
-      // 1. Query Live Meta API if account ID or connected Meta account is present
-      if (targetMetaAccId || activeMetaAcc) {
-        try {
-          const liveMeta = await executeAgentTool("fetch_live_meta_ads_mcp", {
-            toolType: "get_live_campaigns_status",
-            accountId: targetMetaAccId || activeMetaAcc?.accountId,
-            userId,
-          });
-          totalAdsInAccount = liveMeta?.totalAdsInAccount || 0;
-          const mCamps = liveMeta?.campaigns || [];
-          if (mCamps.length > 0) {
-            mCamps.forEach((c) => {
-              const cId = c.id || c.campaignId;
-              const exists = campaignRows.some((r) => r.includes(cId));
-              if (!exists) {
-                const adsCountText = c.totalAds !== undefined ? `**${c.totalAds} Ads**` : "0 Ads";
-                campaignRows.push(`| Meta Ads | **${c.name}** | \`${cId}\` | ${adsCountText} | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ACTIVE"} |`);
-              }
-            });
-          }
-        } catch (mErr) {
-          console.warn("[Live Meta Fetch in Campaign List Warning]:", mErr.message);
-        }
-      }
-
-      // 2. Add campaigns saved in database
-      if (metaCamps && metaCamps.length > 0) {
-        metaCamps.forEach((c) => {
-          const cId = c.campaignId || c.id;
-          const exists = campaignRows.some((r) => r.includes(cId));
-          if (!exists) {
-            campaignRows.push(`| Meta Ads | **${c.name}** | \`${cId}\` | -- | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ACTIVE"} |`);
-          }
-        });
-      }
-
-      // 3. Query Google Ads if connected
-      if (googleAcc) {
-        try {
-          const liveGoogle = await executeAgentTool("fetch_live_google_ads_mcp", {
-            toolType: "get_live_campaigns_status",
-            accountId: accountId || googleAcc.selectedCustomerId || googleAcc.accountId,
-            userId,
-          });
-          const gCamps = liveGoogle.campaigns || [];
-          gCamps.forEach((c) => {
-            campaignRows.push(`| Google Ads | **${c.name}** | \`${c.id || c.campaignId}\` | -- | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ENABLED"} |`);
-          });
-        } catch (gErr) {
-          // ignore
-        }
-      }
-
-      if (campaignRows.length === 0) {
-        return {
-          content: `### 📋 Active Campaigns List\n\nNo active campaigns were found for Ad Account \`${targetMetaAccId ? `act_${targetMetaAccId}` : "connected account"}\`. You can create a campaign by specifying:\n> *"Create a campaign on Meta Ads: Campaign Name: Diwali Special, Ad Set Name: Diwali Adset, Daily Budget: ₹1000, Objective: OUTCOME_TRAFFIC"*\n\n*(Also ensure your Meta Ads account is connected under Channels).*`,
-          toolCalls: [],
-        };
-      }
-
-      const totalCount = campaignRows.length;
-      return {
-        content: `### 📋 List of Advertising Campaigns & Ads Count (Live from Meta Ads API)
-
-- **Total Campaigns:** ${totalCount}
-- **Total Ads Found in Account:** ${totalAdsInAccount > 0 ? totalAdsInAccount : "Available per campaign below"}
-
-| Platform | Campaign Name | Campaign ID | Total Ads | Daily Budget | Status |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-${campaignRows.join("\n")}
-
-> 💡 *All campaigns and ad counts listed above are synchronized live with Meta Ads & Google Ads networks.*`,
-        toolCalls: [],
-      };
-    } catch (err) {
-      // fallback
+      console.error("[Sheet Data Fetch Error]:", err);
     }
   }
 
