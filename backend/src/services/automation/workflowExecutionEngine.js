@@ -7,9 +7,53 @@ import { getIo } from "../../socket/index.js";
 /**
  * Sanitize sensitive keys (passwords, tokens, api keys, secret headers)
  */
-export const sanitizePayload = (data) => {
+/**
+ * Sanitize sensitive keys (passwords, tokens, api keys, secret headers)
+ * Protected against circular references and deep call stack overflows.
+ */
+export const sanitizePayload = (data, seen = new WeakSet(), depth = 0) => {
   if (data === null || data === undefined) return data;
   if (typeof data !== "object") return data;
+
+  // Prevent infinite call stack on deeply nested structures
+  if (depth > 8) {
+    return "[Truncated]";
+  }
+
+  // Prevent circular references
+  if (seen.has(data)) {
+    return "[Circular]";
+  }
+  seen.add(data);
+
+  // Handle standard primitives and native objects
+  if (data instanceof Date) return data.toISOString();
+  if (data instanceof RegExp) return data.toString();
+  if (data instanceof Error) {
+    return {
+      message: data.message,
+      name: data.name,
+      code: data.code,
+      stack: depth <= 1 ? data.stack : undefined,
+    };
+  }
+
+  // Convert Mongoose documents or objects with custom toObject/toJSON
+  if (typeof data.toObject === "function") {
+    try {
+      data = data.toObject();
+    } catch {
+      // ignore
+    }
+  } else if (typeof data.toJSON === "function" && !(data instanceof Date)) {
+    try {
+      data = data.toJSON();
+    } catch {
+      // ignore
+    }
+  }
+
+  if (typeof data !== "object" || data === null) return data;
 
   const SENSITIVE_KEYS = new Set([
     "password",
@@ -29,16 +73,36 @@ export const sanitizePayload = (data) => {
     "private_key",
   ]);
 
+  const IGNORED_INTERNAL_KEYS = new Set([
+    "$__",
+    "__v",
+    "_doc",
+    "$isNew",
+    "_events",
+    "_eventsCount",
+    "socket",
+    "_socket",
+    "client",
+    "db",
+    "collection",
+    "topology",
+    "parser",
+    "_httpMessage",
+  ]);
+
   if (Array.isArray(data)) {
-    return data.map((item) => sanitizePayload(item));
+    return data.slice(0, 100).map((item) => sanitizePayload(item, seen, depth + 1));
   }
 
   const clean = {};
   for (const [key, val] of Object.entries(data)) {
+    if (IGNORED_INTERNAL_KEYS.has(key)) {
+      continue;
+    }
     if (SENSITIVE_KEYS.has(key.toLowerCase())) {
       clean[key] = "[REDACTED]";
     } else if (typeof val === "object" && val !== null) {
-      clean[key] = sanitizePayload(val);
+      clean[key] = sanitizePayload(val, seen, depth + 1);
     } else {
       clean[key] = val;
     }

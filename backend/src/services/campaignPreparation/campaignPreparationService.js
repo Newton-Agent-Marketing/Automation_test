@@ -435,7 +435,7 @@ export class CampaignPreparationService {
 
       return {
         content: responseMd,
-        preparationSession: session,
+        preparationSession: typeof session?.toObject === "function" ? session.toObject() : session,
         toolCalls: [
           {
             toolName: "execute_meta_ads_creation",
@@ -862,7 +862,7 @@ export class CampaignPreparationService {
 
         return {
           content: responseMd,
-          preparationSession: session,
+          preparationSession: typeof session?.toObject === "function" ? session.toObject() : session,
           toolCalls: [
             {
               toolName: "execute_meta_ads_creation",
