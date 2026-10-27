@@ -3900,45 +3900,50 @@ export const runAgentChat = async ({
     }
   }
 
-  // Check if this conversation already has an existing title in MongoDB
-  const existingMessage = await ChatMessage.findOne({
-    conversationId,
-    $or: [{ userId: validUserId }, { userId: String(userId) }],
-    conversationTitle: { $ne: null, $exists: true },
-  }).sort({ createdAt: 1 });
+  const isAutomationTask = Boolean(conversationId?.startsWith("automation_"));
 
-  let conversationTitle = existingMessage?.conversationTitle;
-  if (!conversationTitle) {
-    const cleanFirstLine = (userMessage || "New Conversation")
-      .trim()
-      .replace(/[\r\n\t]+/g, " ");
-    conversationTitle =
-      cleanFirstLine.length > 55
-        ? cleanFirstLine.slice(0, 52) + "..."
-        : cleanFirstLine;
-  }
-
-  // 1. Save User Message in MongoDB with conversationTitle
-  try {
-    await ChatMessage.create({
+  // Check if this conversation already has an existing title in MongoDB (Chat only, skip for AI Automation)
+  let conversationTitle = null;
+  if (!isAutomationTask) {
+    const existingMessage = await ChatMessage.findOne({
       conversationId,
-      conversationTitle,
-      userId: validUserId || null,
+      $or: [{ userId: validUserId }, { userId: String(userId) }],
+      conversationTitle: { $ne: null, $exists: true },
+    }).sort({ createdAt: 1 });
+
+    conversationTitle = existingMessage?.conversationTitle;
+    if (!conversationTitle) {
+      const cleanFirstLine = (userMessage || "New Conversation")
+        .trim()
+        .replace(/[\r\n\t]+/g, " ");
+      conversationTitle =
+        cleanFirstLine.length > 55
+          ? cleanFirstLine.slice(0, 52) + "..."
+          : cleanFirstLine;
+    }
+
+    // 1. Save User Message in MongoDB with conversationTitle (Only for actual chat, not automation)
+    try {
+      await ChatMessage.create({
+        conversationId,
+        conversationTitle,
+        userId: validUserId || null,
         role: "user",
         content: userMessage,
-      metaAccountId: effectiveAccountId || null,
-    });
+        metaAccountId: effectiveAccountId || null,
+      });
 
-    await ChatMessage.updateMany(
-      {
-        conversationId,
-        $or: [{ userId: validUserId }, { userId: String(userId) }],
-        conversationTitle: null,
-      },
-      { $set: { conversationTitle } }
-    );
-  } catch (saveUserErr) {
-    console.warn("[Save User Message Warning]:", saveUserErr.message);
+      await ChatMessage.updateMany(
+        {
+          conversationId,
+          $or: [{ userId: validUserId }, { userId: String(userId) }],
+          conversationTitle: null,
+        },
+        { $set: { conversationTitle } }
+      );
+    } catch (saveUserErr) {
+      console.warn("[Save User Message Warning]:", saveUserErr.message);
+    }
   }
 
   const connectedChannels = await ConnectedChannel.find({ userId: validUserId || userId, isConnected: true }).lean();
@@ -4174,34 +4179,36 @@ export const runAgentChat = async ({
     };
   }
 
-  // 4. ALWAYS Store AI Assistant Message in MongoDB Database with toolCalls & tokenUsage details
+  // 4. Store AI Assistant Message in MongoDB Database (Only for Chat, skip for AI Automation)
   let savedAssistantMessage = null;
-  try {
-    savedAssistantMessage = await ChatMessage.create({
+  if (!isAutomationTask) {
+    try {
+      savedAssistantMessage = await ChatMessage.create({
         conversationId,
-      conversationTitle,
-      userId: validUserId || null,
+        conversationTitle,
+        userId: validUserId || null,
         role: "assistant",
-      content: result.content || "Response processed successfully.",
-      metaAccountId: effectiveAccountId || accountId || null,
+        content: result.content || "Response processed successfully.",
+        metaAccountId: effectiveAccountId || accountId || null,
         claudeSessionId: result.claudeSessionId || null,
-      jobProgress: result.jobProgress || null,
-      preparationData: result.preparationData || null,
-      toolCalls: result.toolCalls || [],
-      tokenUsage: result.tokenUsage || {
-        inputTokens: 350,
-        outputTokens: 200,
-        totalTokens: 550,
-        model: "claude-sonnet-4-5",
-        costUsd: 0.00405,
-        costInr: 0.35,
-        executionTimeMs: 120,
-        actionsPerformed: [{ action: "general_inquiry", description: "Answered user inquiry", tokensBurned: 550, status: "SUCCESS" }],
-      },
-    });
-    console.log(`✅ [ChatMessage Stored] Stored assistant message in MongoDB (Conv: ${conversationId}, Tools: ${result.toolCalls?.length || 0})`);
-  } catch (saveErr) {
-    console.error("❌ [ChatMessage Store Error]:", saveErr.message);
+        jobProgress: result.jobProgress || null,
+        preparationData: result.preparationData || null,
+        toolCalls: result.toolCalls || [],
+        tokenUsage: result.tokenUsage || {
+          inputTokens: 350,
+          outputTokens: 200,
+          totalTokens: 550,
+          model: "claude-sonnet-4-5",
+          costUsd: 0.00405,
+          costInr: 0.35,
+          executionTimeMs: 120,
+          actionsPerformed: [{ action: "general_inquiry", description: "Answered user inquiry", tokensBurned: 550, status: "SUCCESS" }],
+        },
+      });
+      console.log(`✅ [ChatMessage Stored] Stored assistant message in MongoDB (Conv: ${conversationId}, Tools: ${result.toolCalls?.length || 0})`);
+    } catch (saveErr) {
+      console.error("❌ [ChatMessage Store Error]:", saveErr.message);
+    }
   }
 
   return {
@@ -4284,6 +4291,7 @@ export class ChatAgentController {
               { userId: userObjId },
               { userId: userStrId },
             ],
+            conversationId: { $not: /^automation_/ },
           },
         },
         { $sort: { createdAt: 1 } },
