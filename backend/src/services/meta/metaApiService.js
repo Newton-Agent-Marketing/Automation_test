@@ -486,7 +486,7 @@ export class MetaApiService {
       params: {
         access_token: accessToken,
         fields:
-          "id,name,status,effective_status,objective,daily_budget,lifetime_budget,start_time,stop_time",
+          "id,name,status,effective_status,objective,daily_budget,lifetime_budget,start_time,stop_time,ads{id,name,status,effective_status}",
         limit: 100,
       },
     });

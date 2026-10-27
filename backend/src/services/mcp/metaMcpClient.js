@@ -229,57 +229,15 @@ export class MetaMcpClient {
       case "get_live_campaigns_status": {
         try {
           const campaigns = await MetaApiService.getCampaigns(effectiveAccountId, effectiveToken);
-          let allAds = [];
 
-          // 1. Attempt account-level ads fetch
-          try {
-            allAds = await MetaApiService.getAccountAds(effectiveAccountId, effectiveToken);
-          } catch (e) {
-            console.warn("[get_live_campaigns_status]: getAccountAds failed, will fetch per campaign:", e.message);
-            allAds = [];
-          }
-
-          const adsByCampaign = {};
-          (allAds || []).forEach((ad) => {
-            const cId = String(ad.campaign_id || "");
-            if (cId) {
-              if (!adsByCampaign[cId]) adsByCampaign[cId] = [];
-              adsByCampaign[cId].push(ad);
-            }
-          });
-
-          // 2. Direct per-campaign fetch fallback:
-          // If allAds is empty OR any campaign has 0 ads found, query campaign edge directly to ensure real-time accuracy
-          const campaignsNeedingFetch = (campaigns || []).filter(
-            (c) => !adsByCampaign[c.id] || adsByCampaign[c.id].length === 0
-          );
-
-          if (campaignsNeedingFetch.length > 0) {
-            const parallelResults = await Promise.all(
-              campaignsNeedingFetch.map(async (c) => {
-                try {
-                  const campAds = await MetaApiService.getCampaignAds(c.id, effectiveToken);
-                  return { campId: c.id, ads: campAds || [] };
-                } catch (err) {
-                  return { campId: c.id, ads: [] };
-                }
-              })
-            );
-
-            parallelResults.forEach(({ campId, ads }) => {
-              if (ads && ads.length > 0) {
-                adsByCampaign[campId] = ads;
-                ads.forEach((a) => {
-                  if (!allAds.some((existing) => existing.id === a.id)) {
-                    allAds.push({ ...a, campaign_id: campId });
-                  }
-                });
-              }
-            });
-          }
-
+          let totalAdsInAccount = 0;
           const mappedCampaigns = (campaigns || []).map((c) => {
-            const campAds = adsByCampaign[c.id] || [];
+            const rawAds = Array.isArray(c.ads?.data)
+              ? c.ads.data
+              : Array.isArray(c.ads)
+              ? c.ads
+              : [];
+            totalAdsInAccount += rawAds.length;
             return {
               id: c.id,
               name: c.name,
@@ -287,20 +245,42 @@ export class MetaMcpClient {
               effectiveStatus: c.effective_status,
               dailyBudget: c.daily_budget ? Number(c.daily_budget) / 100 : 0,
               objective: c.objective,
-              totalAds: campAds.length,
-              ads: campAds.map((a) => ({ id: a.id, name: a.name, status: a.status })),
+              totalAds: rawAds.length,
+              ads: rawAds.map((a) => ({ id: a.id, name: a.name, status: a.status || a.effective_status || "ACTIVE" })),
             };
           });
 
-          const totalAdsCount = allAds.length > 0
-            ? allAds.length
-            : mappedCampaigns.reduce((sum, c) => sum + (c.totalAds || 0), 0);
+          // Fallback: If campaigns did not contain nested ads, query account ads safely
+          if (totalAdsInAccount === 0 && mappedCampaigns.length > 0) {
+            try {
+              const allAds = await MetaApiService.getAccountAds(effectiveAccountId, effectiveToken);
+              if (allAds && allAds.length > 0) {
+                totalAdsInAccount = allAds.length;
+                const adsByCamp = {};
+                allAds.forEach((a) => {
+                  if (a.campaign_id) {
+                    if (!adsByCamp[a.campaign_id]) adsByCamp[a.campaign_id] = [];
+                    adsByCamp[a.campaign_id].push(a);
+                  }
+                });
+                mappedCampaigns.forEach((c) => {
+                  const cAds = adsByCamp[c.id] || [];
+                  if (cAds.length > 0) {
+                    c.totalAds = cAds.length;
+                    c.ads = cAds.map((a) => ({ id: a.id, name: a.name, status: a.status || "ACTIVE" }));
+                  }
+                });
+              }
+            } catch (fallbackErr) {
+              console.warn("[get_live_campaigns_status]: Fallback getAccountAds error:", fallbackErr.message);
+            }
+          }
 
           return {
             status: "LIVE_DATA_FROM_META",
             accountId: effectiveAccountId,
             accountName: account.accountName,
-            totalAdsInAccount: totalAdsCount,
+            totalAdsInAccount,
             campaigns: mappedCampaigns,
           };
         } catch (err) {
