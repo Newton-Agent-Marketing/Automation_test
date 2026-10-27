@@ -2809,16 +2809,27 @@ ${lastAdSet ? `- **Ad Set Verified in Meta**: \`${lastAdSet.name}\` (ID: \`${las
       const isGoogleSpecific = promptLower.includes("google") && !promptLower.includes("meta") && !promptLower.includes("facebook");
       const isMetaSpecific = (promptLower.includes("meta") || promptLower.includes("facebook") || explicitMetaMatch) && !promptLower.includes("google");
 
-      const targetMetaAccId = explicitMetaMatch
+      let targetMetaAccId = explicitMetaMatch
         ? explicitMetaMatch[1]
         : (metaAccountId || (accountId && /^(?:act_)?\d{10,22}$/.test(accountId) ? String(accountId).replace(/^act_/, "") : null));
 
       let cleanMetaId = targetMetaAccId ? String(targetMetaAccId).replace(/^act_/, "") : null;
       let activeMetaAcc = null;
       if (!cleanMetaId && !isGoogleSpecific) {
-        activeMetaAcc = await MetaAccount.findOne({ userId, isActive: true }).lean().catch(() => null);
-        if (activeMetaAcc?.accountId) {
-          cleanMetaId = String(activeMetaAcc.accountId).replace(/^act_/, "");
+        const allUserMetaAccs = await MetaAccount.find({ userId }).lean().catch(() => []);
+        const matchedByName = allUserMetaAccs.find(
+          (a) => a.accountName && a.accountName.trim().length > 2 && promptLower.includes(a.accountName.toLowerCase().trim())
+        );
+        if (matchedByName) {
+          activeMetaAcc = matchedByName;
+          cleanMetaId = String(matchedByName.accountId).replace(/^act_/, "");
+          targetMetaAccId = cleanMetaId;
+        } else {
+          activeMetaAcc = allUserMetaAccs.find((a) => a.isActive) || null;
+          if (activeMetaAcc?.accountId) {
+            cleanMetaId = String(activeMetaAcc.accountId).replace(/^act_/, "");
+            targetMetaAccId = cleanMetaId;
+          }
         }
       }
 

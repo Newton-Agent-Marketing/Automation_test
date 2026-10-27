@@ -424,8 +424,11 @@ export class WorkflowExecutionEngine {
       };
     }
 
-    // Extract any explicit Meta Ad Account ID like act_1416124059911929 or 1416124059911929
-    let metaAccountId = null;
+    // Extract any explicit Meta Ad Account ID like act_1416124059911929 or 1416124059911929 or from node configuration
+    let metaAccountId = node.data?.adAccountId || node.data?.accountId || node.adAccountId || node.accountId || null;
+    if (metaAccountId) {
+      metaAccountId = String(metaAccountId).replace(/^act_/, "");
+    }
     const actMatch = instruction.match(/\b(?:act_)?(\d{10,22})\b/i);
     if (actMatch) {
       metaAccountId = actMatch[1];
