@@ -165,27 +165,33 @@ const generateFallbackMarketingResponse = async ({
     }
   }
 
-  // 1. Check if user is asking to CREATE / LAUNCH / SETUP / UPLOAD an Ad, Ad Set, or Campaign (including using AI Context & SKILL.md)
+  // 1. Check if user is asking to CREATE / LAUNCH / SETUP / UPLOAD an Ad, Ad Set, or Campaign
+  const isQueryOrFetch =
+    /\b(?:fetch|get|list|show|count|how many|check|preview|read|view|kitna|kitne|batao|status|insights|metrics|performance|audit|breakdown)\b/i.test(lower);
+  const isExplicitCreateVerb =
+    /\b(?:create\s+(?:an?|the|new)?\s*(?:campaign|adset|ad\s*set|ad|ads)|launch\s+(?:an?|the|new)?\s*(?:campaign|adset|ad\s*set|ad|ads)|setup\s+(?:an?|the|new)?\s*(?:campaign|adset|ad\s*set|ad|ads)|banao)\b/i.test(lower);
+
   const isCreateRequest =
-    (lower.includes("create") && (lower.includes("campaign") || lower.includes("compaign") || lower.includes("ads") || lower.includes("ad") || lower.includes("set"))) ||
-    (lower.includes("launch") && (lower.includes("campaign") || lower.includes("compaign") || lower.includes("ads") || lower.includes("ad"))) ||
-    (lower.includes("upload") && (lower.includes("campaign") || lower.includes("ads") || lower.includes("ad") || lower.includes("row") || lower.includes("set"))) ||
-    (lower.includes("start") && (lower.includes("campaign") || lower.includes("ads") || lower.includes("ad"))) ||
-    (lower.includes("banao") && (lower.includes("campaign") || lower.includes("ad") || lower.includes("ads") || lower.includes("flow") || lower.includes("context") || lower.includes("add"))) ||
-    (lower.includes("setup") && (lower.includes("campaign") || lower.includes("ads") || lower.includes("ad") || lower.includes("kardo") || lower.includes("kar do"))) ||
-    (lower.includes("kardo") && (lower.includes("ad") || lower.includes("ads") || lower.includes("campaign") || lower.includes("flow") || lower.includes("add"))) ||
-    (lower.includes("kar do") && (lower.includes("ad") || lower.includes("ads") || lower.includes("campaign") || lower.includes("flow") || lower.includes("add"))) ||
-    (lower.includes("karta") && (lower.includes("add") || lower.includes("ad") || lower.includes("campaign"))) ||
-    (lower.includes("skill") && (lower.includes("add") || lower.includes("ad") || lower.includes("create") || lower.includes("campaign"))) ||
-    (lower.includes("campaign name") && (lower.includes("ad set name") || lower.includes("adset name") || lower.includes("ad set") || lower.includes("adset"))) ||
-    (lower.includes("campaign") && (lower.includes("ad set name") || lower.includes("adset name"))) ||
-    lower.includes("ad create") ||
-    lower.includes("add create") ||
-    lower.includes("create ad") ||
-    lower.includes("create ads") ||
-    lower.includes("create a google ads campaign") ||
-    lower.includes("create google campaign") ||
-    lower.includes("create meta campaign");
+    (!isQueryOrFetch || isExplicitCreateVerb) &&
+    !/\b(?:count|how many|kitna|kitne|list of|fetch all|show all|breakdown)\b/i.test(lower) &&
+    ((lower.includes("create") && !lower.includes("created") && (lower.includes("campaign") || lower.includes("compaign") || lower.includes("ads") || lower.includes("ad") || lower.includes("set"))) ||
+      (lower.includes("launch") && (lower.includes("campaign") || lower.includes("compaign") || lower.includes("ads") || lower.includes("ad"))) ||
+      (lower.includes("upload") && (lower.includes("campaign") || lower.includes("ads") || lower.includes("ad") || lower.includes("row") || lower.includes("set"))) ||
+      (lower.includes("start") && (lower.includes("campaign") || lower.includes("ads") || lower.includes("ad"))) ||
+      (lower.includes("banao") && (lower.includes("campaign") || lower.includes("ad") || lower.includes("ads") || lower.includes("flow") || lower.includes("context") || lower.includes("add"))) ||
+      (lower.includes("setup") && (lower.includes("campaign") || lower.includes("ads") || lower.includes("ad") || lower.includes("kardo") || lower.includes("kar do"))) ||
+      (lower.includes("kardo") && (lower.includes("ad") || lower.includes("ads") || lower.includes("campaign") || lower.includes("flow") || lower.includes("add"))) ||
+      (lower.includes("kar do") && (lower.includes("ad") || lower.includes("ads") || lower.includes("campaign") || lower.includes("flow") || lower.includes("add"))) ||
+      (lower.includes("karta") && (lower.includes("add") || lower.includes("ad") || lower.includes("campaign"))) ||
+      (lower.includes("campaign name") && (lower.includes("ad set name") || lower.includes("adset name") || lower.includes("ad set") || lower.includes("adset"))) ||
+      (lower.includes("campaign") && (lower.includes("ad set name") || lower.includes("adset name"))) ||
+      lower.includes("ad create") ||
+      lower.includes("add create") ||
+      lower.includes("create ad") ||
+      lower.includes("create ads") ||
+      lower.includes("create a google ads campaign") ||
+      lower.includes("create google campaign") ||
+      lower.includes("create meta campaign"));
 
   if (isCreateRequest) {
     // Attempt to load user's complete AI Context and connected Excel sheet data
