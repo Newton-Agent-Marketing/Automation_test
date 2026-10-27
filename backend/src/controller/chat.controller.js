@@ -2804,25 +2804,34 @@ ${lastAdSet ? `- **Ad Set Verified in Meta**: \`${lastAdSet.name}\` (ID: \`${las
       const GoogleAccount = (await import("../models/googleAccountModel.js")).default;
       const MetaAccount = (await import("../models/metaAccount.js")).default;
 
-      const [metaCamps, googleAcc, activeMetaAcc] = await Promise.all([
-        MetaCampaign.find({ userId }).lean().catch(() => []),
-        GoogleAccount.findOne({ userId, isActive: true }).lean().catch(() => null),
-        MetaAccount.findOne({ userId, isActive: true }).lean().catch(() => null),
-      ]);
+      // Check which platform or account is specifically targeted
+      const explicitMetaMatch = (userMessage || "").match(/\b(?:act_)?(\d{10,22})\b/i);
+      const isGoogleSpecific = promptLower.includes("google") && !promptLower.includes("meta") && !promptLower.includes("facebook");
+      const isMetaSpecific = (promptLower.includes("meta") || promptLower.includes("facebook") || explicitMetaMatch) && !promptLower.includes("google");
+
+      const targetMetaAccId = explicitMetaMatch
+        ? explicitMetaMatch[1]
+        : (metaAccountId || (accountId && /^(?:act_)?\d{10,22}$/.test(accountId) ? String(accountId).replace(/^act_/, "") : null));
+
+      let cleanMetaId = targetMetaAccId ? String(targetMetaAccId).replace(/^act_/, "") : null;
+      let activeMetaAcc = null;
+      if (!cleanMetaId && !isGoogleSpecific) {
+        activeMetaAcc = await MetaAccount.findOne({ userId, isActive: true }).lean().catch(() => null);
+        if (activeMetaAcc?.accountId) {
+          cleanMetaId = String(activeMetaAcc.accountId).replace(/^act_/, "");
+        }
+      }
 
       let campaignRows = [];
       const adsBreakdownList = [];
-      const explicitMetaMatch = (userMessage || "").match(/\b(?:act_)?(\d{10,22})\b/i);
-      const targetMetaAccId = explicitMetaMatch ? explicitMetaMatch[1] : (metaAccountId || accountId || activeMetaAcc?.accountId);
-
       let totalAdsInAccount = 0;
 
-      // 1. Query Live Meta API if account ID or connected Meta account is present
-      if (targetMetaAccId || activeMetaAcc) {
+      // 1. Query Meta API STRICTLY for target account (if Meta is requested or targeted)
+      if (cleanMetaId && !isGoogleSpecific) {
         try {
           const liveMeta = await executeAgentTool("fetch_live_meta_ads_mcp", {
             toolType: "get_live_campaigns_status",
-            accountId: targetMetaAccId || activeMetaAcc?.accountId,
+            accountId: cleanMetaId,
             userId,
           });
           totalAdsInAccount = liveMeta?.totalAdsInAccount || 0;
@@ -2846,33 +2855,41 @@ ${lastAdSet ? `- **Ad Set Verified in Meta**: \`${lastAdSet.name}\` (ID: \`${las
         } catch (mErr) {
           console.warn("[Live Meta Fetch in Campaign List Warning]:", mErr.message);
         }
-      }
 
-      // 2. Add campaigns saved in database if not already included
-      if (metaCamps && metaCamps.length > 0) {
-        metaCamps.forEach((c) => {
-          const cId = c.campaignId || c.id;
-          const exists = campaignRows.some((r) => r.includes(cId));
-          if (!exists) {
-            campaignRows.push(`| Meta Ads | **${c.name}** | \`${cId}\` | -- | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ACTIVE"} |`);
-          }
-        });
-      }
-
-      // 3. Query Google Ads if connected
-      if (googleAcc) {
-        try {
-          const liveGoogle = await executeAgentTool("fetch_live_google_ads_mcp", {
-            toolType: "get_live_campaigns_status",
-            accountId: accountId || googleAcc.selectedCustomerId || googleAcc.accountId,
+        // Only fallback to DB for THIS SPECIFIC account if live API returned 0 campaigns
+        if (campaignRows.length === 0) {
+          const localMetaCamps = await MetaCampaign.find({
             userId,
+            $or: [{ accountId: cleanMetaId }, { accountId: `act_${cleanMetaId}` }],
+          }).lean().catch(() => []);
+
+          localMetaCamps.forEach((c) => {
+            const cId = c.campaignId || c.id;
+            const exists = campaignRows.some((r) => r.includes(cId));
+            if (!exists) {
+              campaignRows.push(`| Meta Ads | **${c.name}** | \`${cId}\` | -- | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ACTIVE"} |`);
+            }
           });
-          const gCamps = liveGoogle.campaigns || [];
-          gCamps.forEach((c) => {
-            campaignRows.push(`| Google Ads | **${c.name}** | \`${c.id || c.campaignId}\` | -- | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ENABLED"} |`);
-          });
-        } catch (gErr) {
-          // ignore
+        }
+      }
+
+      // 2. Query Google Ads ONLY if Google Ads was explicitly requested or no specific Meta account was targeted
+      if (!isMetaSpecific && (!cleanMetaId || isGoogleSpecific)) {
+        const googleAcc = await GoogleAccount.findOne({ userId, isActive: true }).lean().catch(() => null);
+        if (googleAcc) {
+          try {
+            const liveGoogle = await executeAgentTool("fetch_live_google_ads_mcp", {
+              toolType: "get_live_campaigns_status",
+              accountId: accountId || googleAcc.selectedCustomerId || googleAcc.accountId,
+              userId,
+            });
+            const gCamps = liveGoogle.campaigns || [];
+            gCamps.forEach((c) => {
+              campaignRows.push(`| Google Ads | **${c.name}** | \`${c.id || c.campaignId}\` | -- | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ENABLED"} |`);
+            });
+          } catch (gErr) {
+            // ignore
+          }
         }
       }
 
