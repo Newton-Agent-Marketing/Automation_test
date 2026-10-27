@@ -238,6 +238,7 @@ export class CampaignPreparationService {
     metaAccountId = null,
     accountDoc = null,
     onProgress = null,
+    autoApprove = false,
   }) {
     const emit = (stageName) => {
       if (typeof onProgress === "function") {
@@ -813,6 +814,65 @@ export class CampaignPreparationService {
       });
       session.preview = preview;
       await session.save();
+
+      // AUTO-APPROVE: If called from an AI Automation workflow node, bypass manual approval prompt and CREATE NOW!
+      const isAutoApprove = autoApprove || conversationId?.startsWith("automation_");
+      if (isAutoApprove) {
+        emit("Auto-approved by AI Automation workflow. Starting immediate Meta Ads creation...");
+        session.status = "APPROVED";
+        session.contextNodeData = contextNodeData;
+        if (effectiveMetaAccountId) session.metaAccountId = effectiveMetaAccountId;
+        session.approval = {
+          status: "APPROVED",
+          approvedAt: new Date(),
+          approvedBy: userId,
+          snapshotDataFingerprint: session.source?.dataFingerprint,
+          snapshot: JSON.parse(JSON.stringify(session.preview || {})),
+        };
+        session.creationJob = {
+          status: "IN_PROGRESS",
+          startedAt: new Date(),
+          completedAt: null,
+          campaignName: session.campaignName,
+          metaCampaignId: null,
+          metaAdSetId: null,
+          adResults: [],
+          totalAds: session.preview?.adDetails?.length || 0,
+        };
+        session.auditHistory.push({
+          action: "AUTO_APPROVED_AUTOMATION_NODE",
+          performedBy: userEmail || "AI_AUTOMATION",
+          details: { previewVersion: session.preview?.version },
+          timestamp: new Date(),
+        });
+        await session.save();
+
+        const creationResult = await MetaAdsOrchestrator.executeApprovalCreation({
+          session,
+          userId,
+          userEmail,
+          onProgress,
+        });
+
+        const responseMd = MetaAdsOrchestrator.formatCreationResultMarkdown(
+          creationResult,
+          session.campaignName,
+          session.adSetName
+        );
+
+        return {
+          content: responseMd,
+          preparationSession: session,
+          toolCalls: [
+            {
+              toolName: "execute_meta_ads_creation",
+              toolArgs: { campaignName: session.campaignName, adSetName: session.adSetName },
+              toolResult: creationResult,
+              status: "SUCCESS",
+            },
+          ],
+        };
+      }
 
       outputMd += `\n\n` + PreviewBuilder.formatPreviewMarkdown(preview);
     }

@@ -493,6 +493,54 @@ export class MetaApiService {
     return response.data.data || [];
   }
 
+  static async getAccountAds(param1, param2) {
+    let accountId = param1;
+    let accessToken = param2;
+
+    if (param1 && typeof param1 === "object") {
+      accountId = param1.accountId || param1.effectiveAccountId || param1.id;
+      accessToken = param1.accessToken || param1.effectiveToken || param1.token;
+    }
+
+    if (!accessToken || accessToken === true) {
+      if (accountId) {
+        try {
+          const MetaAccount = (await import("../../models/metaAccount.js")).default;
+          const cleanId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
+          const rawId = String(accountId).replace(/^act_/, "");
+          const acc = await MetaAccount.findOne({
+            $or: [{ accountId }, { accountId: cleanId }, { accountId: rawId }],
+            isActive: true,
+            accessToken: { $exists: true, $ne: "" },
+          });
+          if (acc?.accessToken) {
+            accessToken = acc.accessToken;
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+
+    if (!accessToken || typeof accessToken !== "string" || !accessToken.trim()) return [];
+
+    const cleanId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
+    const url = `${META_GRAPH_URL}/${cleanId}/ads`;
+    try {
+      const response = await axios.get(url, {
+        params: {
+          access_token: accessToken,
+          fields: "id,name,status,effective_status,campaign_id,adset_id",
+          limit: 500,
+        },
+      });
+      return response.data.data || [];
+    } catch (err) {
+      console.warn("[MetaApiService getAccountAds Warning]:", err?.response?.data || err.message);
+      return [];
+    }
+  }
+
   // 8. Create Live Campaign on Meta Ads
   static async createCampaign(
     accountId,

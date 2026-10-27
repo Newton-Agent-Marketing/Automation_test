@@ -2872,6 +2872,8 @@ ${rowsContent}
       const explicitMetaMatch = (userMessage || "").match(/\b(?:act_)?(\d{10,22})\b/i);
       const targetMetaAccId = explicitMetaMatch ? explicitMetaMatch[1] : (metaAccountId || accountId || activeMetaAcc?.accountId);
 
+      let totalAdsInAccount = 0;
+
       // 1. Query Live Meta API if account ID or connected Meta account is present
       if (targetMetaAccId || activeMetaAcc) {
         try {
@@ -2880,13 +2882,15 @@ ${rowsContent}
             accountId: targetMetaAccId || activeMetaAcc?.accountId,
             userId,
           });
+          totalAdsInAccount = liveMeta?.totalAdsInAccount || 0;
           const mCamps = liveMeta?.campaigns || [];
           if (mCamps.length > 0) {
             mCamps.forEach((c) => {
               const cId = c.id || c.campaignId;
               const exists = campaignRows.some((r) => r.includes(cId));
               if (!exists) {
-                campaignRows.push(`| Meta Ads | **${c.name}** | \`${cId}\` | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ACTIVE"} |`);
+                const adsCountText = c.totalAds !== undefined ? `**${c.totalAds} Ads**` : "0 Ads";
+                campaignRows.push(`| Meta Ads | **${c.name}** | \`${cId}\` | ${adsCountText} | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ACTIVE"} |`);
               }
             });
           }
@@ -2901,7 +2905,7 @@ ${rowsContent}
           const cId = c.campaignId || c.id;
           const exists = campaignRows.some((r) => r.includes(cId));
           if (!exists) {
-            campaignRows.push(`| Meta Ads | **${c.name}** | \`${cId}\` | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ACTIVE"} |`);
+            campaignRows.push(`| Meta Ads | **${c.name}** | \`${cId}\` | -- | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ACTIVE"} |`);
           }
         });
       }
@@ -2916,7 +2920,7 @@ ${rowsContent}
           });
           const gCamps = liveGoogle.campaigns || [];
           gCamps.forEach((c) => {
-            campaignRows.push(`| Google Ads | **${c.name}** | \`${c.id || c.campaignId}\` | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ENABLED"} |`);
+            campaignRows.push(`| Google Ads | **${c.name}** | \`${c.id || c.campaignId}\` | -- | ₹${Number(c.dailyBudget || 0).toLocaleString("en-IN")} | 🟢 ${c.status || "ENABLED"} |`);
           });
         } catch (gErr) {
           // ignore
@@ -2932,15 +2936,16 @@ ${rowsContent}
 
       const totalCount = campaignRows.length;
       return {
-        content: `### 📋 List of Advertising Campaigns (Live from Ad Accounts & Database)
+        content: `### 📋 List of Advertising Campaigns & Ads Count (Live from Meta Ads API)
 
-**Total Campaigns Found:** ${totalCount}
+- **Total Campaigns:** ${totalCount}
+- **Total Ads Found in Account:** ${totalAdsInAccount > 0 ? totalAdsInAccount : "Available per campaign below"}
 
-| Platform | Campaign Name | Campaign ID | Daily Budget | Status |
-| :--- | :--- | :--- | :--- | :--- |
+| Platform | Campaign Name | Campaign ID | Total Ads | Daily Budget | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
 ${campaignRows.join("\n")}
 
-> 💡 *All campaigns listed above are synchronized with Meta Ads & Google Ads networks.*`,
+> 💡 *All campaigns and ad counts listed above are synchronized live with Meta Ads & Google Ads networks.*`,
         toolCalls: [],
       };
     } catch (err) {
@@ -3952,6 +3957,7 @@ export const runAgentChat = async ({
 
   if (isMetaPrepWorkflow) {
     try {
+      const isAutomationRun = Boolean(conversationId?.startsWith("automation_"));
       const prepResult = await CampaignPreparationService.handleWorkflow({
         userId: validUserId || userId,
         userEmail: resolvedUserEmail,
@@ -3959,6 +3965,7 @@ export const runAgentChat = async ({
         userMessage,
         metaAccountId: effectiveAccountId,
         onProgress: onEvent,
+        autoApprove: isAutomationRun,
       });
 
       result = {

@@ -228,19 +228,37 @@ export class MetaMcpClient {
 
       case "get_live_campaigns_status": {
         try {
-          const campaigns = await MetaApiService.getCampaigns(effectiveAccountId, effectiveToken);
+          const [campaigns, allAds] = await Promise.all([
+            MetaApiService.getCampaigns(effectiveAccountId, effectiveToken),
+            MetaApiService.getAccountAds(effectiveAccountId, effectiveToken).catch(() => []),
+          ]);
+
+          const adsByCampaign = {};
+          (allAds || []).forEach((ad) => {
+            if (ad.campaign_id) {
+              if (!adsByCampaign[ad.campaign_id]) adsByCampaign[ad.campaign_id] = [];
+              adsByCampaign[ad.campaign_id].push(ad);
+            }
+          });
+
           return {
             status: "LIVE_DATA_FROM_META",
             accountId: effectiveAccountId,
             accountName: account.accountName,
-            campaigns: campaigns.map((c) => ({
-              id: c.id,
-              name: c.name,
-              status: c.status,
-              effectiveStatus: c.effective_status,
-              dailyBudget: c.daily_budget ? Number(c.daily_budget) / 100 : 0,
-              objective: c.objective,
-            })),
+            totalAdsInAccount: (allAds || []).length,
+            campaigns: (campaigns || []).map((c) => {
+              const campAds = adsByCampaign[c.id] || [];
+              return {
+                id: c.id,
+                name: c.name,
+                status: c.status,
+                effectiveStatus: c.effective_status,
+                dailyBudget: c.daily_budget ? Number(c.daily_budget) / 100 : 0,
+                objective: c.objective,
+                totalAds: campAds.length,
+                ads: campAds.map((a) => ({ id: a.id, name: a.name, status: a.status })),
+              };
+            }),
           };
         } catch (err) {
           if (MetaApiService.isTokenRevokedOrExpired(err)) {
