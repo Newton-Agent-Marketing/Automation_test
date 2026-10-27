@@ -120,6 +120,104 @@ export class DynamicSheetFilter {
   }
 
   /**
+   * Extract dynamic Ad Name pattern / template from user prompt.
+   * Matches lines like:
+   *   - Ad name : "Creative Code+Nomenclature"
+   *   - Ad Name: Creative Code + Nomenclature
+   *   - Ad name: [Creative Code] - [Nomenclature]
+   *   - Ad Name should be {Temple Name} + {Creative Code}
+   *   - use columns Creative Code + Nomenclature as ad name
+   */
+  static parseAdNamePattern(msg) {
+    if (!msg || typeof msg !== "string") return null;
+
+    // 1. Explicit key-value declaration: "- Ad name : ...", "Ad name: ...", "Ad Name = ..."
+    const explicitPattern = /(?:^|[\n\r;•\-])\s*(?:ad\s*(?:names?|title|titled|label|called)?|ad_name)\s*[:=]\s*([^\n\r;]+)/i;
+    const explicitMatch = msg.match(explicitPattern);
+    if (explicitMatch && explicitMatch[1]) {
+      let rawVal = explicitMatch[1].trim().replace(/^["'\`]+|["'\`]+$/g, "").trim();
+      if (rawVal) {
+        return rawVal;
+      }
+    }
+
+    // 2. Phrasal declaration: "ad name should be ...", "use ... as ad name", "combine ... for ad name"
+    const phrasalMatch = msg.match(/(?:ad\s*names?\s*(?:should\s*be|will\s*be|is|as|to|named|called|pattern)?\s*[:=\-–—]?\s*|(?:use|combine|join|set)\s+)(["'\`][^"'\`\n\r]+["'\`]|[^\n\r,;.]+?)\s*(?:as\s*(?:the\s*)?ad\s*names?|\s+for\s*(?:the\s*)?ad\s*names?)/i);
+    if (phrasalMatch && phrasalMatch[1]) {
+      return phrasalMatch[1].trim().replace(/^["'\`]+|["'\`]+$/g, "").trim();
+    }
+
+    return null;
+  }
+
+  /**
+   * Evaluate dynamic Ad Name for a specific row using the user-defined pattern or column combination.
+   * Supports:
+   *   - Column arithmetic/join: "Creative Code+Nomenclature" -> "OD-26-2219 + NW_Rahu_..."
+   *   - Template placeholders: "[Temple Name] - [Creative Code]" -> "Rahu Paithani Temple - OD-26-2219"
+   *   - Custom delimiters: "+", "-", "_", "|", "and", " "
+   *   - Any arbitrary column name in the sheet
+   */
+  static evaluateAdNamePattern(pattern, rowVals = {}, headers = [], rowNo = 2) {
+    if (!pattern || typeof pattern !== "string") return null;
+    if (!rowVals || typeof rowVals !== "object") return pattern;
+
+    // Helper to find key in rowVals (case-insensitive & normalized)
+    const getVal = (col) => {
+      if (!col) return "";
+      const normTarget = this.normalize(col);
+      for (const [k, v] of Object.entries(rowVals)) {
+        if (this.normalize(k) === normTarget) {
+          return v !== undefined && v !== null ? String(v).trim() : "";
+        }
+      }
+      return "";
+    };
+
+    let evaluated = pattern;
+    let anyReplaced = false;
+
+    // 1. Template evaluation with brackets: {Column} or [Column]
+    if (/[{\[](.*?)[}\]]/.test(evaluated)) {
+      evaluated = evaluated.replace(/[{\[](.*?)[}\]]/g, (match, colName) => {
+        const val = getVal(colName);
+        if (val) {
+          anyReplaced = true;
+          return val;
+        }
+        return "";
+      });
+      if (anyReplaced) {
+        return evaluated.replace(/\s{2,}/g, " ").trim();
+      }
+    }
+
+    // 2. Tokenize by common delimiters like "+", " - ", "_", "|", " and "
+    const delimiterMatch = pattern.match(/\s*([+_|\/]|-(?=\s)|\band\b)\s*/i);
+    const delimiter = delimiterMatch ? (delimiterMatch[1] === "+" ? " + " : ` ${delimiterMatch[1].trim()} `) : " - ";
+
+    // Split pattern by delimiters to find column candidate names
+    const tokens = pattern.split(/\s*(?:[+_|\/]|-(?=\s)|\band\b)\s*/i).map((t) => t.trim().replace(/^["'\`]+|["'\`]+$/g, "")).filter(Boolean);
+
+    const resolvedValues = [];
+    for (const token of tokens) {
+      const val = getVal(token);
+      if (val) {
+        resolvedValues.push(val);
+      } else {
+        resolvedValues.push(token);
+      }
+    }
+
+    if (resolvedValues.length > 0) {
+      const joined = resolvedValues.join(delimiter).replace(/\s{2,}/g, " ").trim();
+      if (joined) return joined;
+    }
+
+    return pattern;
+  }
+
+  /**
    * Extract list of values from string.
    * Handles quoted values ("val1", 'val2'), unquoted comma lists, and "or" / "ya" delimiters.
    */
@@ -252,22 +350,29 @@ export class DynamicSheetFilter {
 
     let text = promptMessage;
 
-    // 1. Strip explicit campaign / ad set name declarations FIRST so quoted values with spaces are removed before token splitting
+    // 1. Strip explicit campaign / ad set / ad name declarations FIRST so quoted values with spaces are removed before token splitting
     text = text
       .replace(/\b(?:(?:(?:make|create|launch|set\s*up|build|banao|with|for|having|use)\s+)?(?:an?|the\s+)?(?:campaign\s*(?:names?|title|titled|label|called|ka\s*name)?|campaign_name|camp\s*(?:names?|title)?)\s*(?:is|will\s*be|as|named|called|titled|[:=\-–—])\s*(?:["'“«][^"'”»\r\n]*["'”»]|[^"'”»\s,;]+))/gi, " ")
       .replace(/\b(?:(?:(?:make|create|launch|set\s*up|build|banao|with|for|having|use)\s+)?(?:an?|the\s+)?(?:(?:adset|ad_set|ad\s*set|adgroup)\s*(?:names?|title|titled|label|called|ka\s*name)?|ad_set_name|adset_name)\s*(?:is|will\s*be|as|named|called|titled|[:=\-–—])\s*(?:["'“«][^"'”»\r\n]*["'”»]|[^"'”»\s,;]+))/gi, " ")
+      .replace(/(?:^|[\n\r;•\-])\s*(?:ad\s*(?:names?|title|titled|label|called)?|ad_name)\s*[:=]\s*(?:["'“«][^"'”»\r\n]*["'”»]|[^\n\r;]+)/gi, " ")
+      .replace(/(?:^|[\n\r;•\-])\s*(?:objective|mode|trigger|configuration|budget|daily\s*budget)\s*[:=]\s*(?:["'“«][^"'”»\r\n]*["'”»]|[^\n\r;]+)/gi, " ")
       .trim();
 
     const extractedCamp = this.parseNameFromMessage(promptMessage, "campaign");
     const extractedAdSet = this.parseNameFromMessage(promptMessage, "adset");
+    const extractedAdName = this.parseAdNamePattern(promptMessage);
 
     if (extractedCamp) {
       const escCamp = extractedCamp.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&");
-      text = text.replace(new RegExp("(?:\\b(?:campaign\\s*(?:names?|title|titled|label|called|ka\\s*name)?|campaign_name|camp\\s*(?:names?|title)?)\\s*(?:is|will\\s*be|as|named|called|titled|[:=\\-–—])?\\s*)?[\"\'\u201c\u201d\u2018\u2019\x60]?\\s*" + escCamp + "\\s*[\"\'\u201c\u201d\u2018\u2019\x60]?", "gi"), " ");
+      text = text.replace(new RegExp("(?:\\b(?:campaign\\s*(?:names?|title|titled|label|called|ka\s*name)?|campaign_name|camp\\s*(?:names?|title)?)\\s*(?:is|will\\s*be|as|named|called|titled|[:=\\-–—])?\\s*)?[\"\'\u201c\u201d\u2018\u2019\x60]?\\s*" + escCamp + "\\s*[\"\'\u201c\u201d\u2018\u2019\x60]?", "gi"), " ");
     }
     if (extractedAdSet) {
       const escAdSet = extractedAdSet.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&");
       text = text.replace(new RegExp("(?:\\b(?:(?:adset|ad_set|ad\\s*set|adgroup)\\s*(?:names?|title|titled|label|called|ka\\s*name)?|ad_set_name|adset_name)\\s*(?:is|will\\s*be|as|named|called|titled|[:=\\-–—])?\\s*)?[\"\'\u201c\u201d\u2018\u2019\x60]?\\s*" + escAdSet + "\\s*[\"\'\u201c\u201d\u2018\u2019\x60]?", "gi"), " ");
+    }
+    if (extractedAdName) {
+      const escAdName = extractedAdName.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&");
+      text = text.replace(new RegExp("(?:\\b(?:ad\\s*(?:names?|title|titled|label|called)?|ad_name)\\s*(?:is|will\\s*be|as|named|called|titled|[:=\\-–—])?\\s*)?[\"\'\u201c\u201d\u2018\u2019\x60]?\\s*" + escAdName + "\\s*[\"\'\u201c\u201d\u2018\u2019\x60]?", "gi"), " ");
     }
 
     // Strip explicit row ranges and row lists (e.g., "for rows 2 to 9", "rows 2, 4, 5, 8", "from row 5 to 15", "upload row 7 only")

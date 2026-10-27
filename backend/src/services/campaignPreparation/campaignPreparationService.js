@@ -374,6 +374,7 @@ export class CampaignPreparationService {
             sourceData: latestSource,
             userAnswers: session.userAnswers || {},
             contextNodeData,
+            adNamePattern: session?.adNamePattern || null,
           });
           session.source.dataFingerprint = latestSource.dataFingerprint;
           const newPreview = PreviewBuilder.buildPreview({
@@ -496,6 +497,7 @@ export class CampaignPreparationService {
           sourceData: sourceData || { headers: [], rows: [] },
           userAnswers: session.userAnswers || {},
           contextNodeData,
+          adNamePattern: session?.adNamePattern || null,
         });
 
         session.validationReport = {
@@ -598,6 +600,7 @@ export class CampaignPreparationService {
           sourceData,
           userAnswers: parsedAnswers,
           contextNodeData,
+          adNamePattern: session?.adNamePattern || null,
         });
 
         session.source.dataFingerprint = sourceData.dataFingerprint;
@@ -717,6 +720,7 @@ export class CampaignPreparationService {
     }
 
     const sourceData = filteredSource;
+    const adNamePattern = DynamicSheetFilter.parseAdNamePattern(msg) || session?.adNamePattern || null;
 
     // 3. Validate filtered sheet data across all levels
     emit("Validating fields at Campaign, Ad Set, Ad, and Media levels...");
@@ -727,6 +731,7 @@ export class CampaignPreparationService {
       accountDoc: effectiveAccountDoc,
       sourceData,
       contextNodeData,
+      adNamePattern,
     });
 
     // 4. Create or update preparation session in MongoDB
@@ -743,6 +748,7 @@ export class CampaignPreparationService {
           status: valResult.isValid ? "READY_FOR_REVIEW" : "NEEDS_USER_INPUT",
           campaignName,
           adSetName,
+          adNamePattern: adNamePattern || null,
           existingCampaignId,
           existingAdSetId,
           ...(existingCampaignId ? { "creationJob.metaCampaignId": existingCampaignId } : {}),

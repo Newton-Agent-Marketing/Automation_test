@@ -48,6 +48,7 @@ export class CampaignValidator {
     sourceData = {},
     userAnswers = {},
     contextNodeData = {},
+    adNamePattern = null,
   } = {}) {
     const { headers = [], rows = [], totalRows = 0, sourceType = "google_sheets", sheetUrl = null } = sourceData;
 
@@ -382,34 +383,43 @@ export class CampaignValidator {
       const rowNo = r.rowNumber || i + 2;
       const vals = r.values || {};
 
-      const rawAdName =
-        this.getFieldValue(vals, "adName") ||
-        `Ad Row #${rowNo}`;
+      let evaluatedCustomName = null;
+      if (adNamePattern) {
+        const { DynamicSheetFilter } = await import("../data/dynamicSheetFilter.js");
+        evaluatedCustomName = DynamicSheetFilter.evaluateAdNamePattern(adNamePattern, vals, headers, rowNo);
+      }
 
-      const rawPujaDate =
-        this.getFieldValue(vals, "pujaDate") ||
-        vals["Puja Date"] ||
-        vals["puja date"] ||
-        vals["PUJA DATE"] ||
-        vals["Puja_Date"] ||
-        vals["puja_date"] ||
-        vals["Tithi Date"] ||
-        vals["tithi date"] ||
-        vals["Tithi"] ||
-        vals["tithi"] ||
-        vals["Date"] ||
-        vals["date"];
+      let adName = evaluatedCustomName;
+      if (!adName) {
+        const rawAdName =
+          this.getFieldValue(vals, "adName") ||
+          `Ad Row #${rowNo}`;
 
-      let adName = rawAdName;
-      if (rawPujaDate && String(rawPujaDate).trim()) {
-        const cleanDate = String(rawPujaDate).trim();
-        const rawTithi = vals["Puja Tithi"] || vals["puja_tithi"] || vals["Tithi"] || vals["tithi"];
-        const prefix = rawTithi && String(rawTithi).trim() && !cleanDate.includes(String(rawTithi).trim())
-          ? `${cleanDate} ${String(rawTithi).trim()}`
-          : cleanDate;
+        const rawPujaDate =
+          this.getFieldValue(vals, "pujaDate") ||
+          vals["Puja Date"] ||
+          vals["puja date"] ||
+          vals["PUJA DATE"] ||
+          vals["Puja_Date"] ||
+          vals["puja_date"] ||
+          vals["Tithi Date"] ||
+          vals["tithi date"] ||
+          vals["Tithi"] ||
+          vals["tithi"] ||
+          vals["Date"] ||
+          vals["date"];
 
-        if (!rawAdName.startsWith(prefix) && !rawAdName.startsWith(cleanDate)) {
-          adName = `${prefix} - ${rawAdName}`;
+        adName = rawAdName;
+        if (rawPujaDate && String(rawPujaDate).trim()) {
+          const cleanDate = String(rawPujaDate).trim();
+          const rawTithi = vals["Puja Tithi"] || vals["puja_tithi"] || vals["Tithi"] || vals["tithi"];
+          const prefix = rawTithi && String(rawTithi).trim() && !cleanDate.includes(String(rawTithi).trim())
+            ? `${cleanDate} ${String(rawTithi).trim()}`
+            : cleanDate;
+
+          if (!rawAdName.startsWith(prefix) && !rawAdName.startsWith(cleanDate)) {
+            adName = `${prefix} - ${rawAdName}`;
+          }
         }
       }
 

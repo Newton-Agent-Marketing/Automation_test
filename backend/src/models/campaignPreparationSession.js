@@ -58,6 +58,10 @@ const campaignPreparationSessionSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    adNamePattern: {
+      type: String,
+      default: null,
+    },
     campaignType: {
       type: String,
       enum: ["WEBSITE", "APP_PROMOTION"],
