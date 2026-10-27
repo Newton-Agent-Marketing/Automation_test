@@ -541,6 +541,25 @@ export class MetaApiService {
     }
   }
 
+  static async getCampaignAds(campaignId, accessToken) {
+    if (!accessToken || !campaignId) return [];
+    const url = `${META_GRAPH_URL}/${campaignId}/ads`;
+    try {
+      const response = await axios.get(url, {
+        params: {
+          access_token: accessToken,
+          fields: "id,name,status,effective_status,campaign_id,adset_id",
+          limit: 100,
+        },
+        timeout: 10000,
+      });
+      return response.data.data || [];
+    } catch (err) {
+      console.warn(`[MetaApiService getCampaignAds Warning for ${campaignId}]:`, err?.response?.data || err.message);
+      return [];
+    }
+  }
+
   // 8. Create Live Campaign on Meta Ads
   static async createCampaign(
     accountId,

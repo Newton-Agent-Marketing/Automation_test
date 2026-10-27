@@ -2834,8 +2834,11 @@ ${lastAdSet ? `- **Ad Set Verified in Meta**: \`${lastAdSet.name}\` (ID: \`${las
             accountId: cleanMetaId,
             userId,
           });
-          totalAdsInAccount = liveMeta?.totalAdsInAccount || 0;
           const mCamps = liveMeta?.campaigns || [];
+          const computedTotalAds = mCamps.reduce((sum, c) => sum + (c.totalAds || (c.ads ? c.ads.length : 0)), 0);
+          totalAdsInAccount = (liveMeta?.totalAdsInAccount && liveMeta.totalAdsInAccount > 0)
+            ? liveMeta.totalAdsInAccount
+            : computedTotalAds;
           if (mCamps.length > 0) {
             mCamps.forEach((c) => {
               const cId = c.id || c.campaignId;

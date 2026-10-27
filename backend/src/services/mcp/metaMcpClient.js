@@ -228,37 +228,80 @@ export class MetaMcpClient {
 
       case "get_live_campaigns_status": {
         try {
-          const [campaigns, allAds] = await Promise.all([
-            MetaApiService.getCampaigns(effectiveAccountId, effectiveToken),
-            MetaApiService.getAccountAds(effectiveAccountId, effectiveToken).catch(() => []),
-          ]);
+          const campaigns = await MetaApiService.getCampaigns(effectiveAccountId, effectiveToken);
+          let allAds = [];
+
+          // 1. Attempt account-level ads fetch
+          try {
+            allAds = await MetaApiService.getAccountAds(effectiveAccountId, effectiveToken);
+          } catch (e) {
+            console.warn("[get_live_campaigns_status]: getAccountAds failed, will fetch per campaign:", e.message);
+            allAds = [];
+          }
 
           const adsByCampaign = {};
           (allAds || []).forEach((ad) => {
-            if (ad.campaign_id) {
-              if (!adsByCampaign[ad.campaign_id]) adsByCampaign[ad.campaign_id] = [];
-              adsByCampaign[ad.campaign_id].push(ad);
+            const cId = String(ad.campaign_id || "");
+            if (cId) {
+              if (!adsByCampaign[cId]) adsByCampaign[cId] = [];
+              adsByCampaign[cId].push(ad);
             }
           });
+
+          // 2. Direct per-campaign fetch fallback:
+          // If allAds is empty OR any campaign has 0 ads found, query campaign edge directly to ensure real-time accuracy
+          const campaignsNeedingFetch = (campaigns || []).filter(
+            (c) => !adsByCampaign[c.id] || adsByCampaign[c.id].length === 0
+          );
+
+          if (campaignsNeedingFetch.length > 0) {
+            const parallelResults = await Promise.all(
+              campaignsNeedingFetch.map(async (c) => {
+                try {
+                  const campAds = await MetaApiService.getCampaignAds(c.id, effectiveToken);
+                  return { campId: c.id, ads: campAds || [] };
+                } catch (err) {
+                  return { campId: c.id, ads: [] };
+                }
+              })
+            );
+
+            parallelResults.forEach(({ campId, ads }) => {
+              if (ads && ads.length > 0) {
+                adsByCampaign[campId] = ads;
+                ads.forEach((a) => {
+                  if (!allAds.some((existing) => existing.id === a.id)) {
+                    allAds.push({ ...a, campaign_id: campId });
+                  }
+                });
+              }
+            });
+          }
+
+          const mappedCampaigns = (campaigns || []).map((c) => {
+            const campAds = adsByCampaign[c.id] || [];
+            return {
+              id: c.id,
+              name: c.name,
+              status: c.status,
+              effectiveStatus: c.effective_status,
+              dailyBudget: c.daily_budget ? Number(c.daily_budget) / 100 : 0,
+              objective: c.objective,
+              totalAds: campAds.length,
+              ads: campAds.map((a) => ({ id: a.id, name: a.name, status: a.status })),
+            };
+          });
+
+          const totalAdsCount = allAds.length > 0
+            ? allAds.length
+            : mappedCampaigns.reduce((sum, c) => sum + (c.totalAds || 0), 0);
 
           return {
             status: "LIVE_DATA_FROM_META",
             accountId: effectiveAccountId,
             accountName: account.accountName,
-            totalAdsInAccount: (allAds || []).length,
-            campaigns: (campaigns || []).map((c) => {
-              const campAds = adsByCampaign[c.id] || [];
-              return {
-                id: c.id,
-                name: c.name,
-                status: c.status,
-                effectiveStatus: c.effective_status,
-                dailyBudget: c.daily_budget ? Number(c.daily_budget) / 100 : 0,
-                objective: c.objective,
-                totalAds: campAds.length,
-                ads: campAds.map((a) => ({ id: a.id, name: a.name, status: a.status })),
-              };
-            }),
+            totalAdsInAccount: totalAdsCount,
+            campaigns: mappedCampaigns,
           };
         } catch (err) {
           if (MetaApiService.isTokenRevokedOrExpired(err)) {
