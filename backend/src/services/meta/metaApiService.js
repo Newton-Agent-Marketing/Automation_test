@@ -2840,20 +2840,25 @@ export class MetaApiService {
   }
 
   // 16. Performance Insights (Spend, Clicks, ROAS) fetch karna
-  static async getInsights(accountId, accessToken, { datePreset = "last_30d" } = {}) {
+  static async getInsights(accountId, accessToken, { datePreset = "last_30d", timeRange = null, timeIncrement = 1 } = {}) {
     const cleanId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
     const url = `${META_GRAPH_URL}/${cleanId}/insights`;
-    const response = await axios.get(url, {
-      params: {
-        access_token: accessToken,
-        level: "campaign",
-        time_increment: 1,
-        date_preset: datePreset,
-        fields:
-          "campaign_id,campaign_name,date_start,spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,actions,action_values",
-        limit: 500,
-      },
-    });
+    const params = {
+      access_token: accessToken,
+      level: "campaign",
+      fields:
+        "campaign_id,campaign_name,date_start,date_stop,spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,actions,action_values,objective,account_currency",
+      limit: 500,
+    };
+    if (timeRange) {
+      params.time_range = typeof timeRange === "string" ? timeRange : JSON.stringify(timeRange);
+    } else if (datePreset) {
+      params.date_preset = datePreset;
+    }
+    if (timeIncrement !== null && timeIncrement !== undefined) {
+      params.time_increment = timeIncrement;
+    }
+    const response = await axios.get(url, { params });
     return response.data.data || [];
   }
 

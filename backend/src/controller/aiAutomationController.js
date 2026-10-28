@@ -653,7 +653,20 @@ export class AiAutomationController {
   static async runNow(req, res) {
     try {
       const userId = req.user._id;
-      const automation = await AiAutomation.findOne({ userId });
+      const { startNodeId = null, nodes = null, edges = null } = req.body || {};
+      let automation = await AiAutomation.findOne({ userId });
+
+      if (Array.isArray(nodes) && nodes.length > 0) {
+        if (!automation) {
+          automation = new AiAutomation({ userId, nodes, edges: Array.isArray(edges) ? edges : [] });
+        } else {
+          automation.nodes = nodes;
+          if (Array.isArray(edges)) {
+            automation.edges = edges;
+          }
+        }
+        await automation.save();
+      }
 
       if (!automation) {
         return res.status(404).json({
@@ -674,6 +687,7 @@ export class AiAutomationController {
           userId,
           automationId: automation._id,
           triggerType: "manual",
+          startNodeId,
         });
 
       // Wait for execution to finish (or resolve immediately for UI)

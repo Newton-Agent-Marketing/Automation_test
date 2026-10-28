@@ -129,9 +129,23 @@ export class AutomationExecutionController {
   static async startExecution(req, res) {
     try {
       const userId = req.user._id;
-      const { startNodeId = null } = req.body || {};
+      const { startNodeId = null, nodes = null, edges = null } = req.body || {};
 
-      const automation = await AiAutomation.findOne({ userId });
+      let automation = await AiAutomation.findOne({ userId });
+
+      // Automatically sync latest canvas state from frontend so newly added workflows are immediately isolated
+      if (Array.isArray(nodes) && nodes.length > 0) {
+        if (!automation) {
+          automation = new AiAutomation({ userId, nodes, edges: Array.isArray(edges) ? edges : [] });
+        } else {
+          automation.nodes = nodes;
+          if (Array.isArray(edges)) {
+            automation.edges = edges;
+          }
+        }
+        await automation.save();
+      }
+
       if (!automation || !automation.nodes || automation.nodes.length === 0) {
         return res.status(400).json({
           success: false,

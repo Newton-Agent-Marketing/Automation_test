@@ -242,9 +242,32 @@ export const buildExecutionOrder = (nodes = [], edges = [], startNodeId = null) 
 
   if (!workflowNodes.length) return [];
 
-  // Prelude nodes (action, date, time) are schedule/prelude nodes, NOT executable task nodes.
-  // They are validated once during the initial wire flow and must not execute as tasks.
-  const isTaskNode = (n) => n && n.type !== "action" && n.type !== "date" && n.type !== "time";
+  // Prelude nodes (date, time) are schedule/prelude nodes.
+  // An action node is prelude ONLY if it acts as an upstream configuration leading into the trigger node.
+  // Downstream action nodes (e.g. Send Notification after a task) are executable action tasks.
+  const isUpstreamOfTrigger = (nodeId) => {
+    if (!triggerNode || nodeId === triggerNode.id) return false;
+    const visited = new Set();
+    const q = [nodeId];
+    while (q.length > 0) {
+      const cur = q.shift();
+      if (cur === triggerNode.id) return true;
+      visited.add(cur);
+      for (const e of workflowEdges) {
+        if (e.source === cur && !visited.has(e.target)) {
+          q.push(e.target);
+        }
+      }
+    }
+    return false;
+  };
+
+  const isTaskNode = (n) => {
+    if (!n) return false;
+    if (n.type === "date" || n.type === "time") return false;
+    if (n.type === "action" && isUpstreamOfTrigger(n.id)) return false;
+    return true;
+  };
   const taskNodes = workflowNodes.filter(isTaskNode);
 
   if (!taskNodes.length) return [];

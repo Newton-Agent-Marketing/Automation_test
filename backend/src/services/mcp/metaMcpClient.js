@@ -226,6 +226,73 @@ export class MetaMcpClient {
         }
       }
 
+      case "get_live_campaign_insights": {
+        try {
+          const { datePreset, timeRange, timeIncrement } = args;
+          const [campaigns, insights] = await Promise.all([
+            MetaApiService.getCampaigns(effectiveAccountId, effectiveToken).catch(() => []),
+            MetaApiService.getInsights(effectiveAccountId, effectiveToken, {
+              datePreset: datePreset || (timeRange ? undefined : "last_7d"),
+              timeRange,
+              timeIncrement: timeIncrement ?? null,
+            }).catch(() => []),
+          ]);
+
+          const statusMap = new Map();
+          (campaigns || []).forEach((c) => {
+            statusMap.set(c.id, c.status || c.effective_status || "ACTIVE");
+          });
+
+          const mappedInsights = (insights || []).map((row) => {
+            const purchasesAction =
+              (row.actions || []).find((a) =>
+                ["purchase", "omni_purchase", "lead", "offsite_conversion.fb_pixel_purchase"].includes(a.action_type)
+              ) || (row.actions || [])[0];
+            const conversions = purchasesAction ? Number(purchasesAction.value || 0) : 0;
+
+            const valueAction =
+              (row.action_values || []).find((a) =>
+                ["purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase"].includes(a.action_type)
+              ) || (row.action_values || [])[0];
+            const conversionValue = valueAction ? Number(valueAction.value || 0) : 0;
+
+            const spend = Number(row.spend || 0);
+            const impressions = Number(row.impressions || 0);
+            const clicks = Number(row.clicks || 0);
+
+            return {
+              campaignId: row.campaign_id,
+              campaignName: row.campaign_name,
+              status: statusMap.get(row.campaign_id) || "ACTIVE",
+              spend,
+              impressions,
+              clicks,
+              conversions,
+              conversionValue,
+              currency: row.account_currency || account.currency || "INR",
+              dateStart: row.date_start,
+              dateStop: row.date_stop,
+            };
+          });
+
+          return {
+            status: "LIVE_DATA_FROM_META",
+            accountId: effectiveAccountId,
+            accountName: account.accountName,
+            currency: account.currency || "INR",
+            insights: mappedInsights,
+          };
+        } catch (err) {
+          if (MetaApiService.isTokenRevokedOrExpired(err)) {
+            await MetaAccount.updateOne({ _id: account._id }, { $set: { isActive: false } });
+            throw new Error(
+              "Meta authorization has expired or been revoked. Please reconnect your Meta Ads account in Channels."
+            );
+          }
+          throw err;
+        }
+      }
+
       case "get_live_campaigns_status": {
         try {
           const campaigns = await MetaApiService.getCampaigns(effectiveAccountId, effectiveToken);
