@@ -3817,9 +3817,11 @@ export const runAgentChat = async ({
     } catch (_) {}
   }
 
-  // 1. Resolve selected Meta Ads account from AI Context Channel Node (Strict Source of Truth)
+  const isAutomationTask = Boolean(conversationId?.startsWith("automation_"));
+
+  // 1. Resolve selected Meta Ads account from AI Context Channel Node (Strict Source of Truth for Chat only)
   let contextMetaAccountId = aiContextMetaAccountId ? String(aiContextMetaAccountId).trim() : null;
-  if (!contextMetaAccountId && (validUserId || userId)) {
+  if (!isAutomationTask && !contextMetaAccountId && (validUserId || userId)) {
     try {
       const AiContext = (await import("../models/aiContextModel.js")).default;
       const aiContextDoc = await AiContext.findOne({ userId: validUserId || userId }).lean().catch(() => null);
@@ -3885,10 +3887,51 @@ export const runAgentChat = async ({
       }
 
       // =========================================================================
-      // STRICT META ADS ACCOUNT LOCK ENFORCEMENT
+      // META ADS ACCOUNT RESOLUTION & ISOLATION
       // =========================================================================
-      if (isMetaIntent) {
-        // Requirement 1 & 5: Selected Meta Ads account ID MUST come from AI Context Channel Node
+      if (isAutomationTask) {
+        // In AI Automation: Directly target the account specified in the node instruction or node settings
+        const explicitMeta = (userMessage || "").match(/\b(?:act_)?(\d{10,22})\b/i);
+        let matchedMetaAcc = null;
+
+        if (explicitMeta) {
+          const cleanAutoId = explicitMeta[1];
+          matchedMetaAcc = (userMetaAccounts || []).find((m) => {
+            const rawId = String(m.accountId || "").replace(/^act_/, "");
+            return rawId === cleanAutoId;
+          });
+          if (!matchedMetaAcc) {
+            matchedMetaAcc = await MetaAccount.findOne({
+              userId: validUserId || userId,
+              $or: [{ accountId: cleanAutoId }, { accountId: `act_${cleanAutoId}` }],
+            });
+          }
+          effectiveAccountId = matchedMetaAcc ? matchedMetaAcc.accountId : `act_${cleanAutoId}`;
+          metaAccountId = effectiveAccountId;
+        } else {
+          // Check by account name in prompt or fallback to node config
+          const mentionedByName = (userMetaAccounts || []).find((m) => {
+            const name = (m.accountName || "").toLowerCase().trim();
+            return name.length > 2 && msgLower.includes(name);
+          });
+          if (mentionedByName) {
+            effectiveAccountId = mentionedByName.accountId;
+            metaAccountId = mentionedByName.accountId;
+          } else {
+            const autoTargetId = metaAccountId || accountId || contextMetaAccountId;
+            if (autoTargetId) {
+              const cleanAutoId = String(autoTargetId).replace(/^act_/, "");
+              matchedMetaAcc = (userMetaAccounts || []).find((m) => {
+                const rawId = String(m.accountId || "").replace(/^act_/, "");
+                return rawId === cleanAutoId;
+              });
+              effectiveAccountId = matchedMetaAcc ? matchedMetaAcc.accountId : `act_${cleanAutoId}`;
+              metaAccountId = effectiveAccountId;
+            }
+          }
+        }
+      } else if (isMetaIntent) {
+        // Standard Chat: Selected Meta Ads account ID MUST come from AI Context Channel Node
         const targetMetaAccountId = contextMetaAccountId || metaAccountId;
 
         if (!targetMetaAccountId) {
@@ -3951,9 +3994,9 @@ export const runAgentChat = async ({
           return { content: errorContent, toolCalls: [] };
         }
 
-        // Requirement 3: Check if user attempted to specify a different Meta account in prompt
+        // Requirement 3: Check if user attempted to specify a different Meta account in prompt (Chat only)
         const rawTargetId = String(selectedMetaAccount.accountId).replace(/^act_/, "");
-        if (userMetaAccounts?.length > 1) {
+        if (!isAutomationTask && userMetaAccounts?.length > 1) {
           const mentionedOtherAccount = userMetaAccounts.find((m) => {
             const otherRaw = String(m.accountId || "").replace(/^act_/, "");
             const otherName = (m.accountName || "").toLowerCase();
@@ -3986,8 +4029,6 @@ export const runAgentChat = async ({
       console.warn("[Account Lock Resolution Warning]:", e.message);
     }
   }
-
-  const isAutomationTask = Boolean(conversationId?.startsWith("automation_"));
 
   // Check if this conversation already has an existing title in MongoDB (Chat only, skip for AI Automation)
   let conversationTitle = null;

@@ -30,6 +30,7 @@ export const AiAutomationCanvas = ({
   nodeStatusMap = {},
   isWorkflowRunning = false,
   isWorkflowPaused = false,
+  activeWorkflowNodeIds = [],
   isWorkflowCompleted = false,
   allNodesBlue = false,
   onTogglePauseResume,
@@ -852,6 +853,7 @@ export const AiAutomationCanvas = ({
               nodeExecution={nodeStatusMap?.[node.id]}
               isWorkflowRunning={isWorkflowRunning}
               isWorkflowPaused={isWorkflowPaused}
+              activeWorkflowNodeIds={activeWorkflowNodeIds}
               onTogglePauseResume={onTogglePauseResume}
               onRetryNode={onRetryNode}
               onExecuteWorkflow={onExecuteWorkflow}

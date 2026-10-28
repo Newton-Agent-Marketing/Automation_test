@@ -36,6 +36,7 @@ export const AiAutomationNode = ({
   nodeExecution = null,
   isWorkflowRunning = false,
   isWorkflowPaused = false,
+  activeWorkflowNodeIds = [],
   onTogglePauseResume,
   onRetryNode,
   onExecuteWorkflow,
@@ -55,19 +56,25 @@ export const AiAutomationNode = ({
   const isTime = node.type === "time";
   const isCircular = isDate || isAction || isTime;
 
-  // Action node keeps running/loading indicator during the entire workflow execution
-  // until all nodes have completed their tasks!
-  const isActionExecuting = isAction && isWorkflowRunning && !isWorkflowPaused;
+  // Node belongs to the currently executing workflow run
+  const isBelongingToActiveRun =
+    Array.isArray(activeWorkflowNodeIds) && activeWorkflowNodeIds.length > 0
+      ? activeWorkflowNodeIds.includes(node.id)
+      : true;
+
+  // Action node keeps running/loading indicator during execution
+  // ONLY if this specific action node belongs to the active workflow run!
+  const isActionExecuting = isAction && isWorkflowRunning && !isWorkflowPaused && isBelongingToActiveRun;
 
   const execStatus =
     nodeExecution?.status ||
     (isExecuting || isActionExecuting ? "running" : isCompleted ? "completed" : "pending");
-  const isNodeRunning = execStatus === "running" || isActionExecuting;
+  const isNodeRunning = isBelongingToActiveRun && (execStatus === "running" || isActionExecuting);
   const isNodeCompleted =
     !isActionExecuting &&
     (execStatus === "completed" || (allNodesBlue && execStatus !== "failed"));
   const isNodeFailed = execStatus === "failed";
-  const isNodePaused = isWorkflowPaused && (execStatus === "paused" || (isAction && isWorkflowRunning));
+  const isNodePaused = isWorkflowPaused && isBelongingToActiveRun && (execStatus === "paused" || (isAction && isWorkflowRunning));
 
   // Accent colors per node type
   const getBranchAccent = () => {

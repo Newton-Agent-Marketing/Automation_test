@@ -192,6 +192,7 @@ export const AiAutomation = () => {
   const [isResultsPanelOpen, setIsResultsPanelOpen] = useState(false);
   const [currentExecution, setCurrentExecution] = useState(null);
   const [allNodesBlue, setAllNodesBlue] = useState(false);
+  const [activeWorkflowNodeIds, setActiveWorkflowNodeIds] = useState([]);
   const isExecutingWorkflowRef = useRef(false);
   const activeWorkflowRef = useRef(null);
   const lastScheduledRunKeyRef = useRef("");
@@ -482,6 +483,7 @@ export const AiAutomation = () => {
       }
 
       activeWorkflowRef.current = targetWorkflow;
+      setActiveWorkflowNodeIds(workflowNodes.map((n) => n.id));
       isExecutingWorkflowRef.current = true;
       setIsExecutingWorkflow(true);
       setIsWorkflowPaused(false);
@@ -635,7 +637,9 @@ export const AiAutomation = () => {
       // (This prelude only happens ONCE! Backend executes the Start Node task, then subsequent task nodes)
       try {
         const response = await aiAutomationApi.startExecution({
-          startNodeId: rootNode?.id || startNodeId,
+          startNodeId: actionNode?.id || rootNode?.id || startNodeId,
+          nodes,
+          edges,
         });
         if (response.data?.success) {
           const exec = response.data.execution;
@@ -660,6 +664,7 @@ export const AiAutomation = () => {
         console.error("[AiAutomation] Execution launch error:", err);
         setIsExecutingWorkflow(false);
         isExecutingWorkflowRef.current = false;
+        setActiveWorkflowNodeIds([]);
         setValidationBanner({
           type: "error",
           message: err.response?.data?.message || err.message || "Failed to execute workflow",
@@ -923,6 +928,7 @@ export const AiAutomation = () => {
         setIsWorkflowPaused(false);
         setExecutingNodeId(null);
         setExecutingEdgeIds([]);
+        setActiveWorkflowNodeIds([]);
 
         if (execution?.status === "completed") {
           // Glow all node borders in blue (#0081FB) for a few seconds upon completion, then return to normal
@@ -1067,9 +1073,20 @@ export const AiAutomation = () => {
   // Run Now (Execute immediately on real backend + visual sequential flow)
   const handleRunNow = async () => {
     setValidationBanner(null);
-    const actionNode = nodes.find((n) => n.type === "action") || nodes[0];
-    if (actionNode) {
-      handleExecuteWorkflow(actionNode.id);
+    let targetStartId = null;
+
+    if (selectedNodeId) {
+      const targetWf = getWorkflowSubgraph(nodes, edges, selectedNodeId);
+      targetStartId = targetWf.actionNode?.id || targetWf.rootNode?.id || selectedNodeId;
+    }
+
+    if (!targetStartId) {
+      const actionNode = nodes.find((n) => n.type === "action") || nodes[0];
+      targetStartId = actionNode?.id;
+    }
+
+    if (targetStartId) {
+      handleExecuteWorkflow(targetStartId);
     } else {
       const result = await dispatch(runNowAutomation());
       if (result.error) {
@@ -1519,6 +1536,7 @@ export const AiAutomation = () => {
             nodeStatusMap={nodeStatusMap}
             isWorkflowRunning={isExecutingWorkflow}
             isWorkflowPaused={isWorkflowPaused}
+            activeWorkflowNodeIds={activeWorkflowNodeIds}
             isWorkflowCompleted={currentExecution?.status === "completed"}
             allNodesBlue={allNodesBlue}
             onTogglePauseResume={handleTogglePauseResume}
@@ -1548,8 +1566,10 @@ export const AiAutomation = () => {
         isPaused={isWorkflowPaused}
         onPause={handleTogglePauseResume}
         onResume={handleTogglePauseResume}
-        onRetryNode={handleRetryNode}
-        onRunNow={() => handleExecuteWorkflow()}
+        onRunNow={() => {
+          const targetId = activeWorkflowRef.current?.actionNode?.id || activeWorkflowRef.current?.rootNode?.id;
+          handleExecuteWorkflow(targetId);
+        }}
       />
 
       {/* Execution History Modal */}
