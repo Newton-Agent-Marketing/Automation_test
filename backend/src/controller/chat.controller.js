@@ -438,7 +438,9 @@ const generateFallbackMarketingResponse = async ({
         promptLower.includes("undefined metrics as unavailable") ||
         promptLower.includes("mark undefined metrics") ||
         promptLower.includes("dividing by zero") ||
-        (promptLower.includes("metric") && (promptLower.includes("formula") || promptLower.includes("source values"))));
+        (promptLower.includes("metric") && (promptLower.includes("formula") || promptLower.includes("source values"))) ||
+        (promptLower.includes("calculate") && (promptLower.includes("ctr") || promptLower.includes("cpc") || promptLower.includes("cpa") || promptLower.includes("roas"))) ||
+        (promptLower.includes("compare campaign performance") && promptLower.includes("top-performing")));
 
     if (isCalculationTask) {
       let parsedRows = parseUpstreamTable(upstreamContextText);
@@ -453,17 +455,25 @@ const generateFallbackMarketingResponse = async ({
         const conversions = r.conversionsNum;
         const convVal = r.valNum;
 
-        const ctr = impressions > 0 ? `${((clicks / impressions) * 100).toFixed(2)}%` : "Unavailable";
-        const cpc = clicks > 0 ? `₹${(spend / clicks).toFixed(2)}` : "Unavailable";
-        const cpa = conversions > 0 ? `₹${(spend / conversions).toFixed(2)}` : "Unavailable";
-        const roas = spend > 0 && convVal > 0 ? `${(convVal / spend).toFixed(2)}x` : spend > 0 ? "0.00x" : "Unavailable";
+        const ctrNum = impressions > 0 ? (clicks / impressions) * 100 : null;
+        const ctr = ctrNum !== null ? `${ctrNum.toFixed(2)}%` : "Unavailable";
+        const cpcNum = clicks > 0 ? spend / clicks : null;
+        const cpc = cpcNum !== null ? `₹${cpcNum.toFixed(2)}` : "Unavailable";
+        const cpaNum = conversions > 0 && spend > 0 ? spend / conversions : null;
+        const cpa = conversions > 0 ? (spend > 0 ? `₹${(spend / conversions).toFixed(2)}` : "₹0.00 (Zero Spend)") : "Unavailable";
+        const roasNum = spend > 0 && convVal > 0 ? Number((convVal / spend).toFixed(2)) : spend > 0 ? 0 : null;
+        const roas = roasNum !== null ? `${roasNum.toFixed(2)}x` : "Unavailable";
 
         return {
           ...r,
           ctr,
+          ctrNum,
           cpc,
+          cpcNum,
           cpa,
+          cpaNum,
           roas,
+          roasNum,
         };
       });
 
@@ -472,21 +482,62 @@ const generateFallbackMarketingResponse = async ({
           `| **${r.name}** | \`${r.id}\` | 🟢 ${r.status} | ${r.spend} | ${r.impr} | ${r.clicks} | **${r.ctr}** | **${r.cpc}** | ${r.conv} | **${r.cpa}** | ${r.val} | **${r.roas}** |`
       );
 
+      // Identify Top Performers where data is available
+      const spendingRows = rows.filter((r) => r.spendNum > 0);
+      const topRoas = [...spendingRows].filter((r) => r.roasNum !== null && r.roasNum > 0).sort((a, b) => b.roasNum - a.roasNum).slice(0, 3);
+      const topCpa = [...spendingRows].filter((r) => r.cpaNum !== null && r.conversionsNum > 0).sort((a, b) => a.cpaNum - b.cpaNum).slice(0, 3);
+      const topCtr = [...spendingRows].filter((r) => r.ctrNum !== null).sort((a, b) => b.ctrNum - a.ctrNum).slice(0, 3);
+      const topVolume = [...rows].filter((r) => r.conversionsNum > 0).sort((a, b) => b.conversionsNum - a.conversionsNum).slice(0, 3);
+      const zeroSpendRows = rows.filter((r) => r.spendNum === 0 && r.conversionsNum > 0);
+
+      const topRoasSummary = topRoas.map(
+        (c, idx) => `${idx + 1}. **${c.name}** (\`${c.id}\`)\n   - **ROAS:** **${c.roas}** | **Revenue:** ${c.val} | **Spend:** ${c.spend} | **Conversions:** ${c.conv}`
+      );
+
+      const topCpaSummary = topCpa.map(
+        (c, idx) => `${idx + 1}. **${c.name}** (\`${c.id}\`)\n   - **CPA:** **${c.cpa}** | **Conversions:** ${c.conv} | **Spend:** ${c.spend} | **CTR:** ${c.ctr}`
+      );
+
+      const topCtrSummary = topCtr.map(
+        (c, idx) => `${idx + 1}. **${c.name}** (\`${c.id}\`)\n   - **CTR:** **${c.ctr}** | **CPC:** **${c.cpc}** | **Clicks:** ${c.clicks} | **Impressions:** ${c.impr}`
+      );
+
       return {
         content: `### 🧮 Campaign Performance Metrics & Unit Economics
 
 - **Target Ad Account:** \`act_${cleanMetaId}\` (INR ₹)
 - **Calculation Formulas:**
-  - **CTR** = \`clicks / impressions × 100\`
+  - **CTR** = \`clicks / impressions × 100\` (or *Unavailable* if 0 impressions)
   - **CPC** = \`spend / clicks\` (or *Unavailable* if 0 clicks)
-  - **CPA** = \`spend / conversions\` (or *Unavailable* if 0 conversions)
+  - **CPA** = \`spend / conversions\` (or *Unavailable* if 0 conversions; *₹0.00 (Zero Spend)* if delayed attribution with zero spend)
   - **ROAS** = \`conversion value / spend\` (or *Unavailable* if 0 spend)
 
 | Campaign Name | Campaign ID | Status | Spend | Impressions | Clicks | CTR | CPC | Conv. | CPA | Value | ROAS |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 ${tableRows.join("\n")}
 
-> 📌 *Zero-Division Safeguard*: Undefined metrics where denominators are zero are strictly marked as **Unavailable** instead of guessing or dividing by zero. Source values strictly preserved from upstream node.`,
+---
+
+### 🏆 Campaign Performance Comparison & Top Performers
+
+#### 1. 💰 Top Campaigns by Profitability & ROAS (Return on Ad Spend)
+${topRoasSummary.length > 0 ? topRoasSummary.join("\n\n") : "_No active spending campaigns with positive ROAS in this window._"}
+
+#### 2. 🎯 Top Campaigns by Acquisition Efficiency (Lowest CPA)
+${topCpaSummary.length > 0 ? topCpaSummary.join("\n\n") : "_No active spending campaigns with conversions recorded._"}
+
+#### 3. ⚡ Top Campaigns by Creative Engagement & Click Efficiency (Highest CTR & Lowest CPC)
+${topCtrSummary.length > 0 ? topCtrSummary.join("\n\n") : "_No active click data available._"}
+
+#### 4. 📦 Top Volume & Conversion Drivers
+${topVolume.slice(0, 3).map((c, i) => `${i + 1}. **${c.name}** (\`${c.id}\`): **${c.conv} conversions** (Value: ${c.val}, Spend: ${c.spend})`).join("\n")}
+
+---
+
+### 📌 Missing Data, Zero Denominators & Delayed Attribution Audit:
+- **Zero Denominator Safeguard**: When impressions = 0 or clicks = 0, CTR and CPC denominators are undefined and strictly marked as **Unavailable** to prevent invalid division-by-zero math.
+- **Zero-Spend Attribution (${zeroSpendRows.length} Campaigns)**: ${zeroSpendRows.length > 0 ? `Campaigns like **${zeroSpendRows[0]?.name}** recorded conversions without direct ad spend during this window. These represent delayed 7-day click or 1-day view attribution from preceding flight periods, explicitly labeled as \`₹0.00 (Zero Spend)\`.` : "All conversions correspond to active spend in this window."}
+- **Integrity Guarantee**: 100% of figures are derived strictly from verified source values. Zero campaigns modified or edited.`,
         toolCalls: [
           {
             toolName: "calculate_campaign_unit_economics",

@@ -441,7 +441,15 @@ ${skillsText}
      * CALL REAL LIVE TOOLS ("mcp__ads__fetch_live_meta_ads_mcp", "mcp__ads__query_database_metrics", etc.) whenever live performance, campaigns, ad sets, ads, or metrics are requested. Target the exact ad account specified in the task prompt.
      * When date ranges are requested (e.g. "last 7 complete days and the preceding 7 complete days"), query the live API for those exact date ranges and return the authentic source data with all requested fields (ID, name, status, spend, impressions, clicks, conversions, value, currency, dates).
      * If upstream context is passed under "[Context from previous step]", meticulously read and extract the real campaign names, IDs, numbers, and creative angles from that upstream context.
-     * For unit economics & metric calculations (CTR, CPC, CPA, ROAS): Compute them strictly with the formulas (CTR = clicks/impressions * 100, CPC = spend/clicks, CPA = spend/conversions, ROAS = value/spend). If a denominator is 0, mark the metric as "Unavailable" or "N/A" instead of dividing by zero or guessing.
+     * For unit economics & metric calculations (CTR, CPC, CPA, ROAS):
+       - Compute them strictly with formulas: CTR = (clicks / impressions) * 100, CPC = spend / clicks, CPA = spend / conversions, ROAS = conversion value / spend.
+       - If a denominator is 0, mark the metric as "Unavailable" or "N/A" instead of dividing by zero or guessing.
+       - When asked to compare campaign performance or identify top-performing campaigns, always provide a structured analysis highlighting:
+         1. Top ROAS / Profitability Leaders
+         2. Lowest Acquisition Cost (Lowest CPA) Leaders
+         3. Top Creative Engagement & Click Efficiency (Highest CTR & Lowest CPC) Leaders
+         4. Top Volume & Conversion Drivers
+         5. Clear explanation for campaigns with zero spend but positive conversions (delayed attribution).
      * For creative ranking tasks ("rank creatives by CTR and conversion efficiency", "identify strongest and weakest", "flag low-impression or low-conversion"):
        - Rank creatives strictly based on CTR and conversion efficiency (ROAS / CPA).
        - Identify the strongest and weakest creatives where data volume supports a statistically valid comparison.
