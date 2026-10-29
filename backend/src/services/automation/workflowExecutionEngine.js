@@ -204,8 +204,8 @@ export const getWorkflowSubgraph = (nodes = [], edges = [], startNodeId = null) 
   );
   taskCandidates.sort((a, b) => (a.position?.x ?? 0) - (b.position?.x ?? 0));
 
-  const rootTaskNode = triggerNode || directTaskNode || taskCandidates[0] || workflowNodes[0];
-  const rootNode = triggerNode || directTaskNode || actionNode || taskCandidates[0] || workflowNodes[0];
+  const rootTaskNode = directTaskNode || triggerNode || taskCandidates[0] || workflowNodes[0];
+  const rootNode = directTaskNode || triggerNode || actionNode || taskCandidates[0] || workflowNodes[0];
 
   // Derive human-readable workflow name from the Start/Trigger node or the first task node
   let workflowName = "Workflow";
@@ -328,9 +328,9 @@ export const buildExecutionOrder = (nodes = [], edges = [], startNodeId = null) 
   });
 
   const targetTaskNode =
-    (startNodeId && taskNodeMap.get(startNodeId)) ||
     (rootTaskNode && taskNodeMap.get(rootTaskNode.id)) ||
     (triggerNode && taskNodeMap.get(triggerNode.id)) ||
+    (startNodeId && taskNodeMap.get(startNodeId)) ||
     taskNodes[0];
 
   // Natural canvas orientation for task nodes:

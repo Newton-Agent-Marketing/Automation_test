@@ -1166,7 +1166,7 @@ export const AiAutomation = () => {
 
     if (selectedNodeId) {
       const targetWf = getWorkflowSubgraph(nodes, edges, selectedNodeId);
-      targetStartId = targetWf.actionNode?.id || targetWf.rootNode?.id || selectedNodeId;
+      targetStartId = targetWf.actionNode?.id || targetWf.rootTaskNode?.id || targetWf.rootNode?.id || selectedNodeId;
     }
 
     if (!targetStartId) {
@@ -1656,7 +1656,8 @@ export const AiAutomation = () => {
         onPause={handleTogglePauseResume}
         onResume={handleTogglePauseResume}
         onRunNow={() => {
-          const targetId = activeWorkflowRef.current?.actionNode?.id || activeWorkflowRef.current?.rootNode?.id;
+          const targetWf = (selectedNodeId && getWorkflowSubgraph(nodes, edges, selectedNodeId)) || activeWorkflowRef.current;
+          const targetId = targetWf?.actionNode?.id || targetWf?.rootTaskNode?.id || targetWf?.rootNode?.id;
           handleExecuteWorkflow(targetId);
         }}
       />
