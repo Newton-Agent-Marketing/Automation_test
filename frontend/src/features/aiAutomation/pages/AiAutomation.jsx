@@ -101,6 +101,12 @@ export const getWorkflowSubgraph = (nodes = [], edges = [], startNodeId = null) 
     (e) => connectedIds.has(e.source) && connectedIds.has(e.target)
   );
 
+  const circularIds = new Set(
+    workflowNodes
+      .filter((n) => n.type === "action" || n.type === "date" || n.type === "time")
+      .map((n) => n.id)
+  );
+
   const actionNode =
     workflowNodes.find((n) => n.id === startNodeId && n.type === "action") ||
     workflowNodes.find((n) => n.type === "action") ||
@@ -108,15 +114,47 @@ export const getWorkflowSubgraph = (nodes = [], edges = [], startNodeId = null) 
     workflowNodes[0];
 
   const triggerNode = workflowNodes.find((n) => n.type === "trigger");
-  const rootNode =
-    triggerNode ||
-    workflowNodes.find((n) => n.id !== actionNode?.id && n.type !== "date" && n.type !== "time") ||
-    workflowNodes[0];
+
+  // Determine the primary task node directly connected to actionNode, triggerNode, dateNode, or timeNode
+  let directTaskNode = null;
+  const preludeSeedIds = [actionNode?.id, triggerNode?.id].filter(Boolean);
+
+  for (const edge of workflowEdges) {
+    if (preludeSeedIds.includes(edge.source) && !circularIds.has(edge.target)) {
+      directTaskNode = workflowNodes.find((n) => n.id === edge.target);
+      if (directTaskNode) break;
+    }
+    if (preludeSeedIds.includes(edge.target) && !circularIds.has(edge.source)) {
+      directTaskNode = workflowNodes.find((n) => n.id === edge.source);
+      if (directTaskNode) break;
+    }
+  }
+
+  // If not found from action/trigger, check date or time nodes
+  if (!directTaskNode) {
+    for (const edge of workflowEdges) {
+      if (circularIds.has(edge.source) && !circularIds.has(edge.target)) {
+        directTaskNode = workflowNodes.find((n) => n.id === edge.target);
+        if (directTaskNode) break;
+      }
+      if (circularIds.has(edge.target) && !circularIds.has(edge.source)) {
+        directTaskNode = workflowNodes.find((n) => n.id === edge.source);
+        if (directTaskNode) break;
+      }
+    }
+  }
+
+  const taskCandidates = workflowNodes.filter((n) => !circularIds.has(n.id));
+  taskCandidates.sort((a, b) => (a.position?.x ?? 0) - (b.position?.x ?? 0));
+
+  const rootTaskNode = directTaskNode || triggerNode || taskCandidates[0] || workflowNodes[0];
+  const rootNode = directTaskNode || triggerNode || actionNode || taskCandidates[0] || workflowNodes[0];
 
   return {
     nodes: workflowNodes,
     edges: workflowEdges,
     rootNode,
+    rootTaskNode,
     actionNode,
     triggerNode,
   };
@@ -480,6 +518,7 @@ export const AiAutomation = () => {
         nodes: workflowNodes,
         edges: workflowEdges,
         rootNode,
+        rootTaskNode,
         actionNode,
       } = targetWorkflow;
 
@@ -601,44 +640,45 @@ export const AiAutomation = () => {
         setExecutingEdgeIds([]);
       }
 
-      // --- STEP 4: Blue line flows to Start Node (Arrives at Start Node) ---
-      if (rootNode && actionNode && rootNode.id !== actionNode.id) {
+      // --- STEP 4: Blue line flows to Start Node (First Task Node) ---
+      const firstTaskNode = rootTaskNode || rootNode;
+      if (firstTaskNode && actionNode && firstTaskNode.id !== actionNode.id) {
         const lastPassedId =
           timeNodes[timeNodes.length - 1]?.id ||
           dateNodes[dateNodes.length - 1]?.id ||
           actionNode.id;
 
         const edgeToRoot =
-          findEdge(lastPassedId, rootNode.id) ||
-          findEdge(actionNode.id, rootNode.id) ||
+          findEdge(lastPassedId, firstTaskNode.id) ||
+          findEdge(actionNode.id, firstTaskNode.id) ||
           workflowEdges.find(
             (e) =>
-              (e.source === rootNode.id && [lastPassedId, actionNode.id].includes(e.target)) ||
-              (e.target === rootNode.id && [lastPassedId, actionNode.id].includes(e.source))
+              (e.source === firstTaskNode.id && [lastPassedId, actionNode.id].includes(e.target)) ||
+              (e.target === firstTaskNode.id && [lastPassedId, actionNode.id].includes(e.source))
           );
 
         if (edgeToRoot) {
-          const fromId = edgeToRoot.target === rootNode.id ? edgeToRoot.source : edgeToRoot.target;
+          const fromId = edgeToRoot.target === firstTaskNode.id ? edgeToRoot.source : edgeToRoot.target;
           setExecutingEdgeIds([
             {
               edgeId: edgeToRoot.id,
               fromNodeId: fromId,
-              toNodeId: rootNode.id,
+              toNodeId: firstTaskNode.id,
             },
           ]);
         }
         await new Promise((r) => setTimeout(r, 950)); // Arrive at Start node
 
         // Arrive at Start Node
-        setExecutingNodeId(rootNode.id);
+        setExecutingNodeId(firstTaskNode.id);
         if (edgeToRoot) {
           const nextCompletedEdges = [...new Set([...completedEdgeIdsRef.current, edgeToRoot.id])];
           completedEdgeIdsRef.current = nextCompletedEdges;
           setCompletedEdgeIds(nextCompletedEdges);
         }
         await new Promise((r) => setTimeout(r, 450));
-      } else if (rootNode) {
-        setExecutingNodeId(rootNode.id);
+      } else if (firstTaskNode) {
+        setExecutingNodeId(firstTaskNode.id);
       }
 
       // Mark Action, Date, and Time nodes as validated/completed for this run
@@ -649,10 +689,10 @@ export const AiAutomation = () => {
       completedNodeIdsRef.current = nextCompletedNodes;
       setCompletedNodeIds(nextCompletedNodes);
 
-      // All edges from circular prelude nodes to rootNode marked completed solid blue
+      // All edges from circular prelude nodes to firstTaskNode marked completed solid blue
       const preludeEdges = workflowEdges.filter(
-        (e) => (preludeIds.includes(e.source) && e.target === rootNode?.id) ||
-               (preludeIds.includes(e.target) && e.source === rootNode?.id)
+        (e) => (preludeIds.includes(e.source) && e.target === firstTaskNode?.id) ||
+               (preludeIds.includes(e.target) && e.source === firstTaskNode?.id)
       );
       if (preludeEdges.length > 0) {
         const nextEdgeIds = [...new Set([...completedEdgeIdsRef.current, ...preludeEdges.map((e) => e.id)])];
@@ -664,7 +704,7 @@ export const AiAutomation = () => {
       // (This prelude only happens ONCE! Backend executes the Start Node task, then subsequent task nodes)
       try {
         const response = await aiAutomationApi.startExecution({
-          startNodeId: actionNode?.id || rootNode?.id || startNodeId,
+          startNodeId: firstTaskNode?.id || rootNode?.id || startNodeId,
           nodes,
           edges,
         });

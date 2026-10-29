@@ -161,27 +161,69 @@ export const getWorkflowSubgraph = (nodes = [], edges = [], startNodeId = null) 
   // Identify root Trigger or Action node for this specific workflow
   const triggerNode = workflowNodes.find((n) => n.type === "trigger");
   const actionNode = workflowNodes.find((n) => n.type === "action");
-  const rootNode = triggerNode || actionNode || workflowNodes[0];
+
+  // If triggerNode exists, it is the root!
+  // If not, find task node directly connected to actionNode, dateNode, or timeNode:
+  let directTaskNode = null;
+  if (!triggerNode) {
+    const circularIds = new Set(
+      workflowNodes
+        .filter((n) => n.type === "action" || n.type === "date" || n.type === "time")
+        .map((n) => n.id)
+    );
+
+    const preludeSeedIds = [actionNode?.id].filter(Boolean);
+
+    for (const edge of workflowEdges) {
+      if (preludeSeedIds.includes(edge.source) && !circularIds.has(edge.target)) {
+        directTaskNode = workflowNodes.find((n) => n.id === edge.target);
+        if (directTaskNode) break;
+      }
+      if (preludeSeedIds.includes(edge.target) && !circularIds.has(edge.source)) {
+        directTaskNode = workflowNodes.find((n) => n.id === edge.source);
+        if (directTaskNode) break;
+      }
+    }
+
+    if (!directTaskNode) {
+      for (const edge of workflowEdges) {
+        if (circularIds.has(edge.source) && !circularIds.has(edge.target)) {
+          directTaskNode = workflowNodes.find((n) => n.id === edge.target);
+          if (directTaskNode) break;
+        }
+        if (circularIds.has(edge.target) && !circularIds.has(edge.source)) {
+          directTaskNode = workflowNodes.find((n) => n.id === edge.source);
+          if (directTaskNode) break;
+        }
+      }
+    }
+  }
+
+  const taskCandidates = workflowNodes.filter(
+    (n) => n.type !== "action" && n.type !== "date" && n.type !== "time"
+  );
+  taskCandidates.sort((a, b) => (a.position?.x ?? 0) - (b.position?.x ?? 0));
+
+  const rootTaskNode = triggerNode || directTaskNode || taskCandidates[0] || workflowNodes[0];
+  const rootNode = triggerNode || directTaskNode || actionNode || taskCandidates[0] || workflowNodes[0];
 
   // Derive human-readable workflow name from the Start/Trigger node or the first task node
   let workflowName = "Workflow";
-  if (triggerNode?.text && triggerNode.text.trim()) {
+  if (rootTaskNode?.text && rootTaskNode.text.trim()) {
+    workflowName = rootTaskNode.text.trim().split("\n")[0].substring(0, 45);
+  } else if (rootTaskNode?.label && rootTaskNode.label.trim()) {
+    workflowName = rootTaskNode.label.trim().substring(0, 45);
+  } else if (triggerNode?.text && triggerNode.text.trim()) {
     workflowName = triggerNode.text.trim().split("\n")[0].substring(0, 45);
-  } else if (triggerNode?.label && triggerNode.label.trim()) {
-    workflowName = triggerNode.label.trim().substring(0, 45);
-  } else {
-    const firstTask = workflowNodes.find((n) => n.type === "generic" && n.text?.trim());
-    if (firstTask) {
-      workflowName = firstTask.text.trim().split("\n")[0].substring(0, 45);
-    } else if (actionNode?.label) {
-      workflowName = actionNode.label;
-    }
+  } else if (actionNode?.label) {
+    workflowName = actionNode.label;
   }
 
   return {
     nodes: workflowNodes,
     edges: workflowEdges,
     rootNode,
+    rootTaskNode,
     triggerNode,
     actionNode,
     workflowName,
@@ -234,43 +276,47 @@ export const buildExecutionOrder = (nodes = [], edges = [], startNodeId = null) 
   if (!nodes.length) return [];
 
   // Isolate the connected workflow subgraph
-  const { nodes: workflowNodes, edges: workflowEdges, rootNode, triggerNode } = getWorkflowSubgraph(
-    nodes,
-    edges,
-    startNodeId
-  );
+  const {
+    nodes: workflowNodes,
+    edges: workflowEdges,
+    rootNode,
+    rootTaskNode,
+    triggerNode,
+    actionNode,
+  } = getWorkflowSubgraph(nodes, edges, startNodeId);
 
   if (!workflowNodes.length) return [];
 
-  // Prelude nodes (date, time) are schedule/prelude nodes.
-  // An action node is prelude ONLY if it acts as an upstream configuration leading into the trigger node.
-  // Downstream action nodes (e.g. Send Notification after a task) are executable action tasks.
-  const isUpstreamOfTrigger = (nodeId) => {
-    if (!triggerNode || nodeId === triggerNode.id) return false;
-    const visited = new Set();
-    const q = [nodeId];
-    while (q.length > 0) {
-      const cur = q.shift();
-      if (cur === triggerNode.id) return true;
-      visited.add(cur);
-      for (const e of workflowEdges) {
-        if (e.source === cur && !visited.has(e.target)) {
-          q.push(e.target);
-        }
+  // Prelude nodes (date, time, action) when positioned upstream or as triggers
+  // An action node is prelude ONLY if it acts as a trigger/upstream connected to task nodes.
+  // Downstream action nodes (e.g. task -> action) are executable action tasks.
+  const isDownstreamAction = (node) => {
+    if (!node || node.type !== "action") return false;
+    // If it's connected to rootTaskNode and positioned to the left of rootTaskNode, it's UPSTREAM trigger!
+    if (rootTaskNode && rootTaskNode.id !== node.id && node.position && rootTaskNode.position) {
+      if ((node.position.x ?? 0) < (rootTaskNode.position.x ?? 0)) {
+        return false;
       }
     }
-    return false;
+    const hasIncomingTaskEdge = workflowEdges.some((e) => {
+      if (e.target !== node.id) return false;
+      const src = workflowNodes.find((n) => n.id === e.source);
+      return src && src.type !== "date" && src.type !== "time" && src.type !== "action";
+    });
+    return hasIncomingTaskEdge;
   };
 
   const isTaskNode = (n) => {
     if (!n) return false;
     if (n.type === "date" || n.type === "time") return false;
-    if (n.type === "action" && isUpstreamOfTrigger(n.id)) return false;
+    if (n.type === "action" && !isDownstreamAction(n)) return false;
     return true;
   };
-  const taskNodes = workflowNodes.filter(isTaskNode);
 
-  if (!taskNodes.length) return [];
+  const taskNodes = workflowNodes.filter(isTaskNode);
+  if (!taskNodes.length) {
+    return workflowNodes.filter((n) => n.type === "action" || n.type === "trigger");
+  }
 
   const taskNodeMap = new Map(taskNodes.map((n) => [n.id, n]));
   const adj = new Map();
@@ -281,26 +327,49 @@ export const buildExecutionOrder = (nodes = [], edges = [], startNodeId = null) 
     inDegree.set(n.id, 0);
   });
 
+  const targetTaskNode =
+    (startNodeId && taskNodeMap.get(startNodeId)) ||
+    (rootTaskNode && taskNodeMap.get(rootTaskNode.id)) ||
+    (triggerNode && taskNodeMap.get(triggerNode.id)) ||
+    taskNodes[0];
+
+  // Natural canvas orientation for task nodes:
+  // 1. If edge connects to targetTaskNode, flow is ALWAYS from targetTaskNode -> otherNode!
+  // 2. Otherwise, flow is left-to-right (smaller x -> larger x)
   workflowEdges.forEach((e) => {
     if (taskNodeMap.has(e.source) && taskNodeMap.has(e.target)) {
-      adj.get(e.source).push(e.target);
-      inDegree.set(e.target, (inDegree.get(e.target) || 0) + 1);
+      const nodeA = taskNodeMap.get(e.source);
+      const nodeB = taskNodeMap.get(e.target);
+
+      let fromId = e.source;
+      let toId = e.target;
+
+      if (nodeA?.position && nodeB?.position) {
+        if (targetTaskNode && nodeA.id === targetTaskNode.id) {
+          fromId = nodeA.id;
+          toId = nodeB.id;
+        } else if (targetTaskNode && nodeB.id === targetTaskNode.id) {
+          fromId = nodeB.id;
+          toId = nodeA.id;
+        } else if ((nodeA.position.x ?? 0) <= (nodeB.position.x ?? 0)) {
+          fromId = nodeA.id;
+          toId = nodeB.id;
+        } else {
+          fromId = nodeB.id;
+          toId = nodeA.id;
+        }
+      } else {
+        // Fallback for tests without explicit positions: preserve edge.source -> edge.target
+        fromId = e.source;
+        toId = e.target;
+      }
+
+      adj.get(fromId).push(toId);
+      inDegree.set(toId, (inDegree.get(toId) || 0) + 1);
     }
   });
 
-  // Determine initial task node (strictly prefer Start/Trigger node, else root task node)
-  let initialTaskNode = null;
-  if (startNodeId && taskNodeMap.has(startNodeId)) {
-    initialTaskNode = taskNodeMap.get(startNodeId);
-  } else if (triggerNode && taskNodeMap.has(triggerNode.id)) {
-    initialTaskNode = triggerNode;
-  } else if (rootNode && taskNodeMap.has(rootNode.id)) {
-    initialTaskNode = rootNode;
-  } else {
-    initialTaskNode = taskNodes[0];
-  }
-
-  const queue = [initialTaskNode.id];
+  const queue = [targetTaskNode.id];
   const order = [];
   const visited = new Set();
 
@@ -315,7 +384,11 @@ export const buildExecutionOrder = (nodes = [], edges = [], startNodeId = null) 
     const neighbors = (adj.get(currId) || []).slice().sort((a, b) => {
       const nodeA = taskNodeMap.get(a);
       const nodeB = taskNodeMap.get(b);
-      return (nodeA?.position?.x ?? 0) - (nodeB?.position?.x ?? 0);
+      // Sort by x first, then by y (top to bottom)
+      if ((nodeA?.position?.x ?? 0) !== (nodeB?.position?.x ?? 0)) {
+        return (nodeA?.position?.x ?? 0) - (nodeB?.position?.x ?? 0);
+      }
+      return (nodeA?.position?.y ?? 0) - (nodeB?.position?.y ?? 0);
     });
 
     for (const nxt of neighbors) {
@@ -326,12 +399,18 @@ export const buildExecutionOrder = (nodes = [], edges = [], startNodeId = null) 
     }
   }
 
-  // Any remaining downstream task nodes that were not reached by strictly directed BFS
-  for (const n of taskNodes) {
-    if (!visited.has(n.id)) {
-      order.push(n);
-      visited.add(n.id);
+  // Any remaining task nodes that were not reached by strictly directed BFS
+  const remainingNodes = taskNodes.filter((n) => !visited.has(n.id));
+  remainingNodes.sort((a, b) => {
+    if ((a.position?.x ?? 0) !== (b.position?.x ?? 0)) {
+      return (a.position?.x ?? 0) - (b.position?.x ?? 0);
     }
+    return (a.position?.y ?? 0) - (b.position?.y ?? 0);
+  });
+
+  for (const n of remainingNodes) {
+    order.push(n);
+    visited.add(n.id);
   }
 
   return order;
@@ -537,7 +616,7 @@ ${formattedPrev}`;
 
     // Isolate the specific workflow connected to startNodeId (prevents other workflows on the canvas from running)
     const workflow = getWorkflowSubgraph(nodes, edges, startNodeId);
-    const rootNodeId = workflow.rootNode?.id || startNodeId || null;
+    const rootNodeId = workflow.rootTaskNode?.id || workflow.rootNode?.id || startNodeId || null;
 
     // Guard: Prevent multiple simultaneous runs of the exact same workflow component
     const runningQuery = {
