@@ -533,7 +533,7 @@ export class WorkflowExecutionEngine {
     if (metaAccountId) {
       metaAccountId = String(metaAccountId).replace(/^act_/, "");
     }
-    const actMatch = instruction.match(/\b(?:act_)?(\d{10,22})\b/i);
+    const actMatch = instruction.match(/\bact_(\d{10,22})\b/i) || instruction.match(/^\s*(\d{10,22})\s*[,:]/);
     if (actMatch) {
       metaAccountId = actMatch[1];
     }

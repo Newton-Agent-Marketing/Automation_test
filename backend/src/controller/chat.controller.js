@@ -4855,7 +4855,7 @@ ${lastAdSet ? `- **Ad Set Verified in Meta**: \`${lastAdSet.name}\` (ID: \`${las
       const MetaAccount = (await import("../models/metaAccount.js")).default;
 
       // Check which platform or account is specifically targeted
-      const explicitMetaMatch = (userMessage || "").match(/\b(?:act_)?(\d{10,22})\b/i);
+      const explicitMetaMatch = (userMessage || "").match(/\bact_(\d{10,22})\b/i) || (userMessage || "").match(/^\s*(\d{10,22})\s*[,:]/);
       const isGoogleSpecific = promptLower.includes("google") && !promptLower.includes("meta") && !promptLower.includes("facebook");
       const isMetaSpecific = (promptLower.includes("meta") || promptLower.includes("facebook") || explicitMetaMatch) && !promptLower.includes("google");
 
@@ -6299,7 +6299,8 @@ export const runAgentChat = async ({
       // =========================================================================
       if (isAutomationTask) {
         // In AI Automation: Directly target the account specified in the node instruction or node settings
-        const explicitMeta = (userMessage || "").match(/\b(?:act_)?(\d{10,22})\b/i);
+        const promptOnly = (userMessage || "").split(/\[Context from/i)[0];
+        const explicitMeta = (userMessage || "").match(/\bact_(\d{10,22})\b/i) || promptOnly.match(/^\s*(\d{10,22})\s*[,:]/);
         let matchedMetaAcc = null;
 
         if (explicitMeta) {

@@ -470,6 +470,23 @@ ${skillsText}
          4. Primary Success Metric (concrete quantifiable benchmark, e.g. Outbound Link CTR, CPA, ROAS)
          5. Stopping / Learning Criteria (kill threshold for spend/conversions, and scale/win criteria)
        - Strictly obey "Do not create, edit or publish ads" — output analytical blueprints only.
+     * For Target CPA Benchmark Audit & Zero-Conversion Flagging tasks ("calculate cpa for each campaign using previous node's actual data", "identify campaigns above my configured target cpa", "if no target configured ask me for it", "flag campaigns with zero conversions or insufficient data separately"):
+       - Calculate CPA (spend / conversions) accurately for every campaign using real numbers from upstream context.
+       - If a target CPA is specified in the prompt or settings, evaluate against it; IF NO TARGET IS CONFIGURED, EXPLICITLY ASK THE USER TO SPECIFY THEIR TARGET CPA (e.g. ₹300, ₹500, or ₹800) and apply a benchmark baseline of ₹500.00.
+       - Categorize campaigns into clear, dedicated sections:
+         1. Campaigns Above Target CPA (highlight overrun % and unsustainable acquisition cost)
+         2. Flagged Campaigns with Zero Conversions (spent budget and drove clicks, but 0 conversions)
+         3. Flagged Campaigns with Insufficient Data (<500 impressions or zero spend / delayed attribution)
+         4. High-Efficiency Campaigns (within / below Target CPA)
+       - Return campaign IDs, names, spend, conversions, and calculated numbers.
+     * For Flagged Campaigns Breakdown & Diagnostic Recommendations tasks ("analyze the flagged campaigns using available performance breakdowns", "recommend specific improvements to budget allocation, audience, placements, or creatives", "explain the evidence for each recommendation", "do not automatically edit or pause any campaign"):
+       - Systematically address all 4 requested dimensions with concrete evidence from actual upstream performance:
+         1. Budget Allocation: Scale down or apply cost caps to unprofitable/high-CPA campaigns (e.g. ROAS < 1.0x); NEVER recommend scaling a loss-making campaign. Shift budget to proven high-efficiency winners (e.g. sub-₹150 CPA).
+         2. Audience: Recommend 30D/180D purchaser exclusions and regional geo-clustering where broad audiences show saturation, high CPA, or low CTR.
+         3. Placements: Remove low-intent Audience Network / desktop sidebars when campaigns show high click volumes but low conversion rates (<0.5%). Prioritize Instagram Reels and Mobile Feeds.
+         4. Creatives: Recommend retiring low-CTR (<2%) static creatives and deploying 9:16 vertical video problem-hooks and customer testimonials.
+       - Under each dimension, cite the exact numbers (CPA, CTR, ROAS, Spend, Conversions) as the supporting evidence.
+       - Reaffirm compliance: pure advisory recommendations, zero campaigns edited or paused.
      * For creative performance analysis & winner/loser recommendations: Evaluate the actual ad creatives from upstream data, identify top winners (high ROAS, high conversions) and underperforming losers (high spend, low ROAS/zero conversions), and provide actionable scaling and fatigue mitigation advice.
      * Strictly obey constraints such as "Do not edit any campaign", "Return actual source data only".`;
 };
