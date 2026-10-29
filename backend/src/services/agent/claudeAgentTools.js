@@ -133,22 +133,40 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
 
   const fetchLiveMetaAds = tool(
     "fetch_live_meta_ads_mcp",
-    "Fetch CURRENT, LIVE, REAL-TIME Meta Ads data: today's spend or live campaign status. Use for live/today/right now questions on Meta.",
+    "Fetch CURRENT, LIVE, REAL-TIME Meta Ads data: campaign performance insights (spend, impressions, clicks, conversions, conversion value, ROAS) across date ranges, live campaigns & ads status, or today's spend directly from Meta Ads.",
     {
       accountId: z
         .string()
         .optional()
-        .describe("Meta ad account ID. Defaults to the active account."),
+        .describe("Meta ad account ID e.g. 'act_517557233790148'. Defaults to active account."),
       toolType: z
-        .enum(["get_live_today_insights", "get_live_campaigns_status"])
-        .describe("Which live Meta tool to call"),
+        .enum(["get_live_campaign_insights", "get_live_campaigns_status", "get_live_today_insights"])
+        .describe("Which live Meta tool to call: 'get_live_campaign_insights' for performance/spend/clicks/conversions/ROAS across date ranges; 'get_live_campaigns_status' for campaigns and ads hierarchy; 'get_live_today_insights' for today's spend."),
+      datePreset: z
+        .string()
+        .optional()
+        .describe("Optional preset: 'last_7d', 'last_14d', 'last_30d', 'today'"),
+      timeRange: z
+        .object({
+          since: z.string().describe("Start date YYYY-MM-DD"),
+          until: z.string().describe("End date YYYY-MM-DD"),
+        })
+        .optional()
+        .describe("Custom date range { since: 'YYYY-MM-DD', until: 'YYYY-MM-DD' }"),
+      startDate: z.string().optional().describe("Start date YYYY-MM-DD"),
+      endDate: z.string().optional().describe("End date YYYY-MM-DD"),
     },
     async (args) => {
       try {
         const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const resolvedTimeRange =
+          args.timeRange ||
+          (args.startDate && args.endDate ? { since: args.startDate, until: args.endDate } : undefined);
         const result = await executeAgentTool("fetch_live_meta_ads_mcp", {
+          ...args,
           toolType: args.toolType,
           accountId: effectiveMetaAccountId,
+          timeRange: resolvedTimeRange,
           userId,
         });
         return toToolResult(result);

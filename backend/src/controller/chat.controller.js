@@ -4071,19 +4071,19 @@ ${rowsContent}
   const isContextQuery =
     !isAutomation &&
     !hasUpstreamContext &&
-    lower === "what is my context" ||
-    lower === "context" ||
-    lower.includes("context") ||
-    lower.includes("workflow") ||
-    lower.includes("connection flow") ||
-    lower.includes("marketing flow") ||
-    lower.includes("business unit") ||
-    lower.includes("marketing brief") ||
-    lower.includes("product catalog") ||
-    lower.includes("data warehouse") ||
-    lower.includes("nodes detail") ||
-    lower.includes("nodes data") ||
-    (lower.includes("node") && (lower.includes("data") || lower.includes("detail") || lower.includes("kya") || lower.includes("show") || lower.includes("batao") || lower.includes("list")));
+    (lower === "what is my context" ||
+      lower === "context" ||
+      lower.includes("context") ||
+      lower.includes("workflow") ||
+      lower.includes("connection flow") ||
+      lower.includes("marketing flow") ||
+      lower.includes("business unit") ||
+      lower.includes("marketing brief") ||
+      lower.includes("product catalog") ||
+      lower.includes("data warehouse") ||
+      lower.includes("nodes detail") ||
+      lower.includes("nodes data") ||
+      (lower.includes("node") && (lower.includes("data") || lower.includes("detail") || lower.includes("kya") || lower.includes("show") || lower.includes("batao") || lower.includes("list"))));
 
   if (isContextQuery) {
     try {

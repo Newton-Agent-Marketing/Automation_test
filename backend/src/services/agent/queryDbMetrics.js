@@ -59,15 +59,25 @@ export const AGENT_TOOLS_DEFINITIONS = [
     type: "function",
     function: {
       name: "fetch_live_meta_ads_mcp",
-      description: "Use this when the user asks for CURRENT, LIVE, REAL-TIME data, today's spend, or instant campaign status directly from Meta Ads.",
+      description: "Use this to fetch CURRENT, LIVE, REAL-TIME Meta Ads performance insights (spend, impressions, clicks, conversions, conversion value, ROAS) across date ranges, live campaign status, or today's spend directly from Meta Ads.",
       parameters: {
         type: "object",
         properties: {
-          accountId: { type: "string", description: "Meta Account ID" },
+          accountId: { type: "string", description: "Meta Account ID e.g. 'act_517557233790148'" },
           toolType: {
             type: "string",
-            enum: ["get_live_today_insights", "get_live_campaigns_status"],
-            description: "Which live MCP tool to call",
+            enum: ["get_live_campaign_insights", "get_live_campaigns_status", "get_live_today_insights"],
+            description: "Which live MCP tool to call: 'get_live_campaign_insights' for performance/spend/clicks/conversions/ROAS across date ranges; 'get_live_campaigns_status' for campaigns and ads status; 'get_live_today_insights' for today's spend.",
+          },
+          datePreset: { type: "string", description: "Preset: 'last_7d', 'last_14d', 'last_30d', 'today'" },
+          startDate: { type: "string", description: "Start date YYYY-MM-DD" },
+          endDate: { type: "string", description: "End date YYYY-MM-DD" },
+          timeRange: {
+            type: "object",
+            properties: {
+              since: { type: "string" },
+              until: { type: "string" },
+            },
           },
         },
         required: ["accountId", "toolType"],
