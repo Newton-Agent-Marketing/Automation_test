@@ -747,6 +747,7 @@ ${formattedPrev}`;
       let failedCount = 0;
       let previousNodeOutput = null;
       let workflowFailed = false;
+      const completedNodeOutputs = new Map();
 
       try {
         for (let i = 0; i < orderedNodes.length; i++) {
@@ -942,17 +943,67 @@ ${formattedPrev}`;
               case "generic":
               default: {
                 const instructionText = node.text || node.label || "Custom Task Step";
+                const instructionLower = instructionText.toLowerCase();
+
+                // Determine context from predecessors in workflow graph
+                const incomingEdges = (workflow.edges || []).filter(
+                  (e) => (e.target === node.id || e.source === node.id)
+                );
+
+                const directParentOutputs = [];
+                for (const edge of incomingEdges) {
+                  const otherId = edge.target === node.id ? edge.source : edge.target;
+                  if (completedNodeOutputs.has(otherId)) {
+                    directParentOutputs.push(completedNodeOutputs.get(otherId));
+                  }
+                }
+
+                let effectiveInputContext = null;
+                const needsMultipleContexts =
+                  instructionLower.includes("previous nodes") ||
+                  instructionLower.includes("combine") ||
+                  instructionLower.includes("both") ||
+                  directParentOutputs.length > 1;
+
+                if (needsMultipleContexts && completedNodeOutputs.size > 1) {
+                  const parts = [];
+                  let pIdx = 1;
+                  for (const [cId, cData] of completedNodeOutputs.entries()) {
+                    const cResult =
+                      typeof cData.output?.result === "string"
+                        ? cData.output.result
+                        : JSON.stringify(cData.output, null, 2);
+                    parts.push(`[Context from Step #${pIdx} (${cData.name})]:\n${cResult}`);
+                    pIdx++;
+                  }
+                  effectiveInputContext = parts.join("\n\n---\n\n");
+                } else if (directParentOutputs.length > 0) {
+                  if (directParentOutputs.length === 1) {
+                    const single = directParentOutputs[0];
+                    effectiveInputContext =
+                      typeof single.output?.result === "string"
+                        ? single.output.result
+                        : JSON.stringify(single.output, null, 2);
+                  } else {
+                    effectiveInputContext = directParentOutputs
+                      .map((p, idx) => `[Context from Step #${idx + 1} (${p.name})]:\n${typeof p.output?.result === "string" ? p.output.result : JSON.stringify(p.output, null, 2)}`)
+                      .join("\n\n---\n\n");
+                  }
+                } else {
+                  effectiveInputContext = previousNodeOutput;
+                }
+
                 resolvedInput = {
                   task: instructionText,
                   config: node.config || {},
-                  inputContext: previousNodeOutput,
+                  inputContext: effectiveInputContext,
                 };
 
                 // Execute with actual AI Agent passing context from previous nodes
                 const aiResult = await WorkflowExecutionEngine.executeWithAiAgent({
                   instruction: instructionText,
                   node,
-                  previousNodeOutput,
+                  previousNodeOutput: effectiveInputContext,
                   userId,
                   executionId,
                 });
@@ -971,6 +1022,11 @@ ${formattedPrev}`;
             execution.markModified("nodes");
 
             previousNodeOutput = resolvedOutput;
+            completedNodeOutputs.set(node.id, {
+              id: node.id,
+              name: node.label || node.text?.slice(0, 35) || node.type,
+              output: resolvedOutput,
+            });
             successfulCount++;
             execution.successfulNodes = preludeNodeExecutions.length + successfulCount;
 

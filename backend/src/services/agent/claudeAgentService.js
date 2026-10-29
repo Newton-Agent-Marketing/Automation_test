@@ -437,6 +437,7 @@ ${skillsText}
 
 9. AI Automation Workflow Execution Engine (MANDATORY INSTRUCTIONS FOR AUTOMATION NODE TASKS):
    - When executing a task from an AI Automation canvas node (indicated by conversation ID starting with "automation_" or when prompt contains "[Context from previous step]"):
+     * NEVER call campaign or ad creation tools (create_meta_campaign, create_meta_ad, create_google_campaign, etc.) during an analytical automation task.
      * FULLY READ AND ANALYZE THE ENTIRE USER TASK AND ALL ITS REQUIREMENTS BEFORE EXECUTING TOOLS OR RESPONDING. You must address EVERY single instruction, constraint, and detail in the prompt.
      * CALL REAL LIVE TOOLS ("mcp__ads__fetch_live_meta_ads_mcp", "mcp__ads__query_database_metrics", etc.) whenever live performance, campaigns, ad sets, ads, or metrics are requested. Target the exact ad account specified in the task prompt.
      * When date ranges are requested (e.g. "last 7 complete days and the preceding 7 complete days"), query the live API for those exact date ranges and return the authentic source data with all requested fields (ID, name, status, spend, impressions, clicks, conversions, value, currency, dates).
