@@ -7,15 +7,20 @@ import { AgentStreamHandler } from "./agentStream.js";
 import { ADS_ALLOWED_TOOLS, createAdsMcpServer } from "./claudeAgentTools.js";
 
 const getLastClaudeSessionId = async (conversationId) => {
-  const last = await ChatMessage.findOne({
-    conversationId,
-    claudeSessionId: { $ne: null },
-  })
-    .sort({ createdAt: -1 })
-    .select("claudeSessionId")
-    .lean();
+  if (!conversationId || conversationId.startsWith("automation_")) return null;
+  try {
+    const last = await ChatMessage.findOne({
+      conversationId,
+      claudeSessionId: { $ne: null },
+    })
+      .sort({ createdAt: -1 })
+      .select("claudeSessionId")
+      .lean();
 
-  return last?.claudeSessionId || null;
+    return last?.claudeSessionId || null;
+  } catch (_) {
+    return null;
+  }
 };
 
 import { getUserAiContext } from "./queryDbMetrics.js";
@@ -428,7 +433,17 @@ Capabilities & Exact Execution Guidelines:
 
 8. Available Workspace Skills & Workflows:
 ${skillsText}
-   - When executing tasks related to an available skill (especially "meta-ads-campaign-creator" for Website Campaigns or "meta-ads-app-campaign" for App Promotion Campaigns), follow its specific runbook and best practices. Use "get_skill_details" to fetch full guidelines if needed.`;
+   - When executing tasks related to an available skill (especially "meta-ads-campaign-creator" for Website Campaigns or "meta-ads-app-campaign" for App Promotion Campaigns), follow its specific runbook and best practices. Use "get_skill_details" to fetch full guidelines if needed.
+
+9. AI Automation Workflow Execution Engine (MANDATORY INSTRUCTIONS FOR AUTOMATION NODE TASKS):
+   - When executing a task from an AI Automation canvas node (indicated by conversation ID starting with "automation_" or when prompt contains "[Context from previous step]"):
+     * FULLY READ AND ANALYZE THE ENTIRE USER TASK AND ALL ITS REQUIREMENTS BEFORE EXECUTING TOOLS OR RESPONDING. You must address EVERY single instruction, constraint, and detail in the prompt.
+     * CALL REAL LIVE TOOLS ("mcp__ads__fetch_live_meta_ads_mcp", "mcp__ads__query_database_metrics", etc.) whenever live performance, campaigns, ad sets, ads, or metrics are requested. Target the exact ad account specified in the task prompt.
+     * When date ranges are requested (e.g. "last 7 complete days and the preceding 7 complete days"), query the live API for those exact date ranges and return the authentic source data with all requested fields (ID, name, status, spend, impressions, clicks, conversions, value, currency, dates).
+     * If upstream context is passed under "[Context from previous step]", meticulously read and extract the real campaign names, IDs, numbers, and creative angles from that upstream context.
+     * For unit economics & metric calculations (CTR, CPC, CPA, ROAS): Compute them strictly with the formulas (CTR = clicks/impressions * 100, CPC = spend/clicks, CPA = spend/conversions, ROAS = value/spend). If a denominator is 0, mark the metric as "Unavailable" or "N/A" instead of dividing by zero or guessing.
+     * For creative performance analysis & winner/loser recommendations: Evaluate the actual ad creatives from upstream data, identify top winners (high ROAS, high conversions) and underperforming losers (high spend, low ROAS/zero conversions), and provide actionable scaling and fatigue mitigation advice.
+     * Strictly obey constraints such as "Do not edit any campaign", "Return actual source data only".`;
 };
 
 export class ClaudeAgentService {
