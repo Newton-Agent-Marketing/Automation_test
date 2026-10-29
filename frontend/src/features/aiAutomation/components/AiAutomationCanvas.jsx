@@ -11,6 +11,7 @@ import {
   Calendar,
   Play,
   Clock,
+  Sparkles,
 } from "lucide-react";
 import {
   AiAutomationNode,
@@ -47,6 +48,7 @@ export const AiAutomationCanvas = ({
   onConnect,
   onDeleteEdge,
   onAddNode,
+  onCursorMove,
 }) => {
   const containerRef = useRef(null);
   const rafRef = useRef(null);
@@ -55,6 +57,7 @@ export const AiAutomationCanvas = ({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [dragNodeState, setDragNodeState] = useState(null);
+  const [contextMenu, setContextMenu] = useState(null);
 
   // Connection dragging state
   const [connectingSourceId, setConnectingSourceId] = useState(null);
@@ -140,6 +143,58 @@ export const AiAutomationCanvas = ({
     });
   };
 
+  // Close context menu on any outside click
+  useEffect(() => {
+    const handleCloseMenu = () => setContextMenu(null);
+    window.addEventListener("click", handleCloseMenu);
+    return () => window.removeEventListener("click", handleCloseMenu);
+  }, []);
+
+  // Track cursor position inside canvas coordinates
+  const handleCanvasMouseMove = useCallback(
+    (e) => {
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        const canvasX = Math.round((e.clientX - rect.left - pan.x) / zoom);
+        const canvasY = Math.round((e.clientY - rect.top - pan.y) / zoom);
+        if (typeof onCursorMove === "function") {
+          onCursorMove({ x: canvasX, y: canvasY });
+        }
+      }
+    },
+    [pan, zoom, onCursorMove]
+  );
+
+  // Right-click context menu on empty canvas space
+  const handleCanvasContextMenu = useCallback(
+    (e) => {
+      if (
+        e.target.closest(".ai-automation-node-card") ||
+        e.target.closest(".canvas-floating-controls") ||
+        e.target.closest(".edge-delete-btn") ||
+        e.target.closest(".connection-alert-banner")
+      ) {
+        return;
+      }
+      e.preventDefault();
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        const canvasX = Math.round((e.clientX - rect.left - pan.x) / zoom);
+        const canvasY = Math.round((e.clientY - rect.top - pan.y) / zoom);
+        if (typeof onCursorMove === "function") {
+          onCursorMove({ x: canvasX, y: canvasY });
+        }
+        setContextMenu({
+          screenX: e.clientX,
+          screenY: e.clientY,
+          canvasX,
+          canvasY,
+        });
+      }
+    },
+    [pan, zoom, onCursorMove]
+  );
+
   // Canvas Pan Handler
   const handleCanvasMouseDown = (e) => {
     if (
@@ -151,6 +206,16 @@ export const AiAutomationCanvas = ({
       return;
     }
     onSelectNode(null);
+
+    // Record cursor position on click
+    if (containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      const canvasX = Math.round((e.clientX - rect.left - pan.x) / zoom);
+      const canvasY = Math.round((e.clientY - rect.top - pan.y) / zoom);
+      if (typeof onCursorMove === "function") {
+        onCursorMove({ x: canvasX, y: canvasY });
+      }
+    }
 
     // If we were connecting and clicked empty canvas, cancel connecting
     if (connectingSourceId) {
@@ -318,6 +383,23 @@ export const AiAutomationCanvas = ({
   // Mouse Move
   const handleMouseMove = useCallback(
     (e) => {
+      // Record cursor coordinates whenever mouse is over canvas
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        if (
+          e.clientX >= rect.left &&
+          e.clientX <= rect.right &&
+          e.clientY >= rect.top &&
+          e.clientY <= rect.bottom
+        ) {
+          const canvasX = Math.round((e.clientX - rect.left - pan.x) / zoom);
+          const canvasY = Math.round((e.clientY - rect.top - pan.y) / zoom);
+          if (typeof onCursorMove === "function") {
+            onCursorMove({ x: canvasX, y: canvasY });
+          }
+        }
+      }
+
       // Track connecting line
       if (connectingSourceId && containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
@@ -371,7 +453,7 @@ export const AiAutomationCanvas = ({
         });
       }
     },
-    [zoom, pan, connectingSourceId, onMoveNode]
+    [zoom, pan, connectingSourceId, onMoveNode, onCursorMove]
   );
 
   // Mouse Up
@@ -546,6 +628,8 @@ export const AiAutomationCanvas = ({
           : "default",
       }}
       onMouseDown={handleCanvasMouseDown}
+      onMouseMove={handleCanvasMouseMove}
+      onContextMenu={handleCanvasContextMenu}
     >
       {/* Keyframes for flowing blue wire beam and pulsing executing glow */}
       <style>{`
@@ -1138,6 +1222,143 @@ export const AiAutomationCanvas = ({
             }}
           >
             <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {/* Right-click Canvas Context Menu to Add Node directly at cursor */}
+      {contextMenu && (
+        <div
+          style={{
+            position: "fixed",
+            left: contextMenu.screenX,
+            top: contextMenu.screenY,
+            backgroundColor: "#FFFFFF",
+            borderRadius: 12,
+            border: "1px solid #E2E8F0",
+            boxShadow: "0 10px 25px rgba(15, 23, 42, 0.16)",
+            padding: "6px",
+            zIndex: 9999,
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+            minWidth: 175,
+            animation: "fadeIn 0.12s ease-out",
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              color: "#94A3B8",
+              padding: "4px 8px 2px 8px",
+              textTransform: "uppercase",
+              letterSpacing: "0.5px",
+            }}
+          >
+            Add Node Here
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              onAddNode("date", { x: contextMenu.canvasX, y: contextMenu.canvasY });
+              setContextMenu(null);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "7px 10px",
+              borderRadius: 6,
+              border: "none",
+              backgroundColor: "transparent",
+              color: "#2563EB",
+              fontSize: 12.5,
+              fontWeight: 600,
+              cursor: "pointer",
+              textAlign: "left",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#EFF6FF")}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+          >
+            <Calendar size={14} color="#2563EB" /> + Date Node
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onAddNode("action", { x: contextMenu.canvasX, y: contextMenu.canvasY });
+              setContextMenu(null);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "7px 10px",
+              borderRadius: 6,
+              border: "none",
+              backgroundColor: "transparent",
+              color: "#059669",
+              fontSize: 12.5,
+              fontWeight: 600,
+              cursor: "pointer",
+              textAlign: "left",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#ECFDF5")}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+          >
+            <Play size={14} color="#059669" /> + Action Node
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onAddNode("time", { x: contextMenu.canvasX, y: contextMenu.canvasY });
+              setContextMenu(null);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "7px 10px",
+              borderRadius: 6,
+              border: "none",
+              backgroundColor: "transparent",
+              color: "#D97706",
+              fontSize: 12.5,
+              fontWeight: 600,
+              cursor: "pointer",
+              textAlign: "left",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#FFFBEB")}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+          >
+            <Clock size={14} color="#D97706" /> + Time Node
+          </button>
+          <div style={{ height: 1, backgroundColor: "#F1F5F9", margin: "2px 0" }} />
+          <button
+            type="button"
+            onClick={() => {
+              onAddNode("generic", { x: contextMenu.canvasX, y: contextMenu.canvasY });
+              setContextMenu(null);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "7px 10px",
+              borderRadius: 6,
+              border: "none",
+              backgroundColor: "transparent",
+              color: "#475569",
+              fontSize: 12.5,
+              fontWeight: 600,
+              cursor: "pointer",
+              textAlign: "left",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#F8FAFC")}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+          >
+            <Sparkles size={14} color="#6366F1" /> + Custom Task
           </button>
         </div>
       )}

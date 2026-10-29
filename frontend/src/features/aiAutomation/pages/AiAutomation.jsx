@@ -244,6 +244,14 @@ export const AiAutomation = () => {
   const completedEdgeIdsRef = useRef(completedEdgeIds);
   completedEdgeIdsRef.current = completedEdgeIds;
 
+  // Track user's live cursor position inside canvas coordinates
+  const lastCursorPosRef = useRef(null);
+  const handleCursorMove = useCallback((pos) => {
+    if (pos && typeof pos.x === "number" && typeof pos.y === "number") {
+      lastCursorPosRef.current = pos;
+    }
+  }, []);
+
   // Close dropdown menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -324,7 +332,7 @@ export const AiAutomation = () => {
   const existingTriggerNode = nodes.find((n) => n.type === "trigger");
 
   // Handler for creating specific node types
-  const handleCreateTypedNode = (type) => {
+  const handleCreateTypedNode = (type, customPos = null) => {
     setIsTriggerMenuOpen(false);
 
     // Rule: Exactly one Trigger node allowed
@@ -337,30 +345,38 @@ export const AiAutomation = () => {
       return;
     }
 
-    // Determine smart default positioning
-    let posX = 120;
-    let posY = 200;
+    // Determine smart positioning: Always spawn where the user's cursor is on the canvas!
+    const cursor = customPos || lastCursorPosRef.current;
+    let posX, posY;
 
-    if (type === "trigger") {
-      posX = 120;
-      posY = 220;
+    if (cursor && typeof cursor.x === "number" && typeof cursor.y === "number") {
+      posX = Math.round(cursor.x);
+      posY = Math.round(cursor.y);
+
+      // If user adds Date / Action / Time near each other, arrange them naturally:
+      const nearbyNodes = nodes.filter(
+        (n) => Math.hypot((n.position?.x ?? 0) - posX, (n.position?.y ?? 0) - posY) < 85
+      );
+
+      if (type === "date" && nearbyNodes.some((n) => n.type === "action")) {
+        posY -= 85;
+      } else if (type === "time" && nearbyNodes.some((n) => n.type === "action" || n.type === "date")) {
+        posY += 85;
+      } else if (nearbyNodes.length > 0) {
+        posY += 75;
+      }
+
+      // Update cursor reference so subsequent clicks stack cleanly without direct pixel overlap
+      lastCursorPosRef.current = { x: posX, y: posY + 75 };
     } else {
-      // Place child nodes to the right of the trigger
-      const triggerX = existingTriggerNode ? existingTriggerNode.position?.x : 120;
-      const triggerY = existingTriggerNode ? existingTriggerNode.position?.y : 220;
-
-      if (type === "date") {
-        posX = triggerX + 380;
-        posY = triggerY - 140;
-      } else if (type === "action") {
-        posX = triggerX + 380;
-        posY = triggerY ;
-      } else if (type === "time") {
-        posX = triggerX + 380;
-        posY = triggerY + 140;
+      // Fallback if cursor position hasn't hovered canvas yet:
+      if (nodes.length > 0) {
+        const lastNode = nodes[nodes.length - 1];
+        posX = (lastNode.position?.x ?? 200) + 50;
+        posY = (lastNode.position?.y ?? 300) + 75;
       } else {
-        posX = triggerX + 380;
-        posY = triggerY + (nodes.length * 60);
+        posX = 260;
+        posY = 320;
       }
     }
 
@@ -1642,6 +1658,7 @@ export const AiAutomation = () => {
             onConnect={handleConnect}
             onDeleteEdge={handleDeleteEdge}
             onAddNode={handleCreateTypedNode}
+            onCursorMove={handleCursorMove}
           />
         )}
       </div>
