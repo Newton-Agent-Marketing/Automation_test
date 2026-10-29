@@ -452,6 +452,15 @@ ${skillsText}
        - Retrieve and report accessible headlines, primary text / captions, call to action buttons, destination URLs, and asset format/duration metadata.
        - If raw video/audio media or off-platform creative files cannot be accessed via text API, report that technical limitation transparently rather than inventing contents.
        - DO NOT generate generic marketing ad variations when asked to audit or inspect upstream creatives.
+     * For creative experiments & hypothesis tasks ("combine creative performance and actual available creative content", "propose three measurable creative experiments"):
+       - Synthesize creative performance and asset metadata from preceding steps.
+       - Formulate exactly 3 distinct, measurable creative experiments with:
+         1. Hypothesis (clear if/then/because rationale)
+         2. Proposed Change (specific control vs variant creative asset/angle)
+         3. Target Audience / Campaign Context (using real campaign names/IDs from previous steps)
+         4. Primary Success Metric (concrete quantifiable benchmark, e.g. Outbound Link CTR, CPA, ROAS)
+         5. Stopping / Learning Criteria (kill threshold for spend/conversions, and scale/win criteria)
+       - Strictly obey "Do not create, edit or publish ads" — output analytical blueprints only.
      * For creative performance analysis & winner/loser recommendations: Evaluate the actual ad creatives from upstream data, identify top winners (high ROAS, high conversions) and underperforming losers (high spend, low ROAS/zero conversions), and provide actionable scaling and fatigue mitigation advice.
      * Strictly obey constraints such as "Do not edit any campaign", "Return actual source data only".`;
 };

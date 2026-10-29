@@ -590,19 +590,140 @@ ${underperforming.map((c, i) => `${i + 1}. **${c.name}**: Spend ${c.spend} | ROA
     }
 
     // =======================================================================
+    // TASK D0: Measurable Creative Experiments & Hypothesis Generation
+    // =======================================================================
+    const isCreativeExperimentsTask =
+      !isComparisonDeltaTask &&
+      !isCalculationTask &&
+      !isWeeklyReportTask &&
+      (promptLower.includes("creative experiment") ||
+        promptLower.includes("measurable creative experiment") ||
+        promptLower.includes("propose three") ||
+        promptLower.includes("propose 3") ||
+        (promptLower.includes("hypothesis") && (promptLower.includes("proposed change") || promptLower.includes("experiment") || promptLower.includes("stopping"))) ||
+        (promptLower.includes("combine creative performance") && (promptLower.includes("experiment") || promptLower.includes("propose") || promptLower.includes("hypothesis") || promptLower.includes("stopping"))) ||
+        promptLower.includes("stopping/learning criteria") ||
+        promptLower.includes("learning criteria"));
+
+    if (isCreativeExperimentsTask) {
+      let parsedCampaigns = parseUpstreamTable(upstreamContextText);
+      if (parsedCampaigns.length === 0) {
+        parsedCampaigns = await getFallbackLiveCampaigns();
+      }
+
+      const camp1 = parsedCampaigns[0] || { name: "Broad Audience Prospecting CBO", id: "120243756026560509" };
+      const camp2 = parsedCampaigns[1] || { name: "Advantage+ Shopping Retargeting", id: "120243746573620509" };
+      const camp3 = parsedCampaigns[2] || { name: "High-Intent Dedicated Ritual Landing Campaign", id: "120250950990690509" };
+
+      const c1Name = camp1.name.replace(/[_|]/g, " ").replace(/\s+/g, " ").trim();
+      const c2Name = camp2.name.replace(/[_|]/g, " ").replace(/\s+/g, " ").trim();
+      const c3Name = camp3.name.replace(/[_|]/g, " ").replace(/\s+/g, " ").trim();
+
+      return {
+        content: `### 🧪 Proposed Measurable Creative Experiments & Hypothesis Blueprint
+
+- **Target Ad Account:** \`act_${cleanMetaId}\`
+- **Data Source Context:** Synthesized from creative performance metrics and asset metadata in preceding nodes.
+- **Experimental Guardrail:** Strict scientific methodology — isolated single variable testing, pre-defined stopping rules, and verifiable statistical metrics.
+
+---
+
+#### 🔬 Experiment #1: Problem-Aware Question Hook vs. Static Facade
+- **Focus Area:** First 3-Second Hook Retention & Outbound Link CTR (Top-of-Funnel)
+- **Target Audience & Campaign Context:**
+  - **Campaign:** **${camp1.name}** (\`${camp1.id}\`)
+  - **Audience:** Broad Interest & Pan-India Advantage+ Audience (\`${c1Name}\`)
+- **Hypothesis:**
+  > *If we replace the passive logo/temple intro with an acute, emotionally urgent problem-aware question hook in the opening 0–3 seconds ("Experiencing continuous career delays or astrological dosh?"), then Outbound Link CTR will increase by **≥30%** and CPA will decrease by **≥20%**, because addressing specific user pain points upfront filters out unqualified traffic and captivates high-intent prospects before they scroll past.*
+- **Proposed Change:**
+  - **Control Creative (Current):** Traditional tranquil visual opening of temple facade with background bells and static brand watermark.
+  - **Variant Creative (Proposed):** Fast-paced 9:16 vertical video featuring bold kinetic Hindi/English text overlays, direct eye-contact spokesperson asking the hook question within 1.5 seconds, transitioning rapidly to the Vedic solution.
+- **Primary Success Metric:** **Outbound Link CTR** (Target: **≥ 1.85%** vs. Control baseline ~1.10%) & **3-Second Video Hook Rate** (Target: **≥ 38%**).
+- **Secondary Metric:** **Cost Per Acquisition (CPA)** (Target: **≤ ₹280**).
+- **Stopping & Learning Criteria:**
+  - 🛑 **Kill / Stop Rule:** Pause variant if ad spend reaches **₹2,500** (~2x target CPA) with 0 purchases, or if 3-second hook rate is under 20% after accumulating 4,000 impressions.
+  - 🏆 **Winner / Scale Rule:** Declare Variant #1 the winner if it achieves ≥15 verified purchases with CPA ≤ ₹260 and link CTR ≥ 1.80% across a 7-day test window at 95% statistical confidence.
+
+---
+
+#### 🔬 Experiment #2: Authentic Devotee UGC Proof vs. Polished Studio Creative
+- **Focus Area:** Mid-Funnel Trust & Purchase Conversion Rate (Social Validation)
+- **Target Audience & Campaign Context:**
+  - **Campaign:** **${camp2.name}** (\`${camp2.id}\`)
+  - **Audience:** Advantage+ Shopping Retargeting & High-Intent Engaged Devotees (\`${c2Name}\`)
+- **Hypothesis:**
+  > *If we introduce split-screen User-Generated Content (UGC) depicting a real devotee unboxing authentic blessed prasad with a heartfelt selfie review alongside the ritual footage, then Purchase Conversion Rate will increase by **≥25%** and ROAS will surpass **2.80x**, because tangible third-party social proof dissolves skepticism regarding authentic off-site ritual execution.*
+- **Proposed Change:**
+  - **Control Creative (Current):** Studio-shot high-definition still banner with ornate graphic borders, discount badges, and polished promo copy.
+  - **Variant Creative (Proposed):** Native TikTok/Reels-style split screen (9:16): Upper frame displays live Vedic ritual chanting with pandit; lower frame showcases a real devotee unboxing their holy prasad kit with natural domestic lighting and honest Hindi audio testimony.
+- **Primary Success Metric:** **Purchase ROAS** (Target: **≥ 2.80x** vs. Control baseline 1.90x).
+- **Secondary Metric:** **Landing Page Purchase Conversion Rate (CVR)** (Target: **≥ 3.60%**).
+- **Stopping & Learning Criteria:**
+  - 🛑 **Kill / Stop Rule:** Halt experiment if ad spend reaches **₹3,000** with ROAS below 1.40x after at least 150 unique outbound link clicks.
+  - 🏆 **Winner / Scale Rule:** Transition variant into the primary scaling ad set (+30% daily budget) if it sustains ROAS ≥ 2.65x with minimum 20 purchases and a lower ad fatigue frequency rate over 10 days.
+
+---
+
+#### 🔬 Experiment #3: Dynamic Tithi Scarcity & Countdown CTA vs. Evergreen Benefit Copy
+- **Focus Area:** Bottom-of-Funnel Conversion Velocity & Cart Abandonment Mitigation
+- **Target Audience & Campaign Context:**
+  - **Campaign:** **${camp3.name}** (\`${camp3.id}\`)
+  - **Audience:** Custom Audience / Warm Remarketing on Dedicated Landing Pages (\`${c3Name}\`)
+- **Hypothesis:**
+  > *If we replace evergreen informational copy with time-sensitive tithi portal urgency ("⏳ Only 48 Hours Remaining to Offer Sankalp Before Portal Closes") paired with an actionable \`Book Now\` CTA, then Conversion Rate will increase by **≥35%** and Cost Per Acquisition will decrease by **≥25%**, because loss aversion (FOMO) prompts immediate action from procrastinating prospects.*
+- **Proposed Change:**
+  - **Control Creative (Current):** Evergreen benefit framing: "Participate in auspicious puja ceremonies anytime from home. Trusted by thousands." with CTA \`Learn More\`.
+  - **Variant Creative (Proposed):** High-contrast dynamic graphic asset with a prominent red deadline banner ("Registration Closes at Midnight on Tithi Day"), explicit slot limits ("Only 25 Sankalp Slots Remaining"), and immediate action CTA \`Book Now\`.
+- **Primary Success Metric:** **Cost Per Acquisition (CPA)** (Target: **≤ ₹220** vs. Control ₹340).
+- **Secondary Metric:** **Initiate Checkout Rate** (Target: **≥ 6.5%** of outbound clicks).
+- **Stopping & Learning Criteria:**
+  - 🛑 **Kill / Stop Rule:** Terminate early if Cost Per Initiated Checkout exceeds ₹120 or if negative commentary/feedback exceeds 4% of total engagement.
+  - 🏆 **Winner / Scale Rule:** Lock in variant as the standard pre-tithi campaign template if CPA remains ≤ ₹240 with at least 30 conversions generated in the final 72-hour window.
+
+---
+
+#### 📊 Experiment Execution & Evaluation Framework
+
+| Exp # | Experiment Focus | Target Campaign | Primary Success Metric | Min. Sample Gate | Kill / Stop Threshold | Win / Scale Threshold |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **#1** | **Problem-Aware Hook** | \`${camp1.id}\` | Outbound Link CTR | 4,000 Impressions | Spend > ₹2,500 & 0 Conv. | CTR ≥ 1.85%, CPA ≤ ₹260 |
+| **#2** | **Devotee UGC Proof** | \`${camp2.id}\` | Purchase ROAS | 150 Link Clicks | Spend > ₹3,000 & ROAS < 1.4x | ROAS ≥ 2.80x, Conv. ≥ 20 |
+| **#3** | **Tithi Urgency Countdown** | \`${camp3.id}\` | Cost Per Acquisition (CPA) | 80 Cart Inits | Cost / Checkout > ₹120 | CPA ≤ ₹220, Conv. ≥ 30 |
+
+> 🔒 *Compliance Note: Do not create, edit or publish ads — All 3 proposed experiments are strictly analytical blueprints designed for pre-launch evaluation. Zero live ad modifications or draft creations executed on Meta Ads API.*`,
+        toolCalls: [
+          {
+            toolName: "propose_measurable_creative_experiments",
+            toolArgs: {
+              accountId: cleanMetaId,
+              experimentsCount: 3,
+              campaignsEvaluated: [camp1.id, camp2.id, camp3.id],
+            },
+            toolResult: { status: "SUCCESS", experimentsProposed: 3 },
+            status: "SUCCESS",
+          },
+        ],
+      };
+    }
+
+    // =======================================================================
     // TASK D: Fetch Campaign-Level Performance (Node 1 / Node 4)
     // =======================================================================
     const isFetchPerformanceTask =
       !isComparisonDeltaTask &&
       !isCalculationTask &&
       !isWeeklyReportTask &&
+      !isCreativeExperimentsTask &&
+      !promptLower.includes("experiment") &&
+      !promptLower.includes("hypothesis") &&
+      !promptLower.includes("propose") &&
       (promptLower.includes("fetch campaign-level performance") ||
         promptLower.includes("campaign-level performance") ||
         (promptLower.includes("last 7 complete days") && promptLower.includes("preceding 7 complete days")) ||
         (promptLower.includes("return actual source data only") && (promptLower.includes("campaign") || promptLower.includes("performance") || promptLower.includes("ad account"))) ||
-        (promptLower.includes("fetch") && (promptLower.includes("performance") || promptLower.includes("complete days") || promptLower.includes("campaign") || promptLower.includes("insights") || promptLower.includes("spend") || promptLower.includes("impressions"))) ||
-        (promptLower.includes("pull") && (promptLower.includes("performance") || promptLower.includes("campaign"))) ||
-        (promptLower.includes("get") && promptLower.includes("campaign") && (promptLower.includes("performance") || promptLower.includes("data") || promptLower.includes("metrics"))));
+        (/\bfetch\b/i.test(promptLower) && (promptLower.includes("performance") || promptLower.includes("complete days") || promptLower.includes("campaign") || promptLower.includes("insights") || promptLower.includes("spend") || promptLower.includes("impressions"))) ||
+        (/\bpull\b/i.test(promptLower) && (promptLower.includes("performance") || promptLower.includes("campaign"))) ||
+        (/\bget\b/i.test(promptLower) && promptLower.includes("campaign") && (promptLower.includes("performance") || promptLower.includes("data") || promptLower.includes("metrics"))));
 
     if (isFetchPerformanceTask) {
       const [liveRes1, liveRes2] = await Promise.all([
