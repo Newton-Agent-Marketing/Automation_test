@@ -442,6 +442,16 @@ ${skillsText}
      * When date ranges are requested (e.g. "last 7 complete days and the preceding 7 complete days"), query the live API for those exact date ranges and return the authentic source data with all requested fields (ID, name, status, spend, impressions, clicks, conversions, value, currency, dates).
      * If upstream context is passed under "[Context from previous step]", meticulously read and extract the real campaign names, IDs, numbers, and creative angles from that upstream context.
      * For unit economics & metric calculations (CTR, CPC, CPA, ROAS): Compute them strictly with the formulas (CTR = clicks/impressions * 100, CPC = spend/clicks, CPA = spend/conversions, ROAS = value/spend). If a denominator is 0, mark the metric as "Unavailable" or "N/A" instead of dividing by zero or guessing.
+     * For creative ranking tasks ("rank creatives by CTR and conversion efficiency", "identify strongest and weakest", "flag low-impression or low-conversion"):
+       - Rank creatives strictly based on CTR and conversion efficiency (ROAS / CPA).
+       - Identify the strongest and weakest creatives where data volume supports a statistically valid comparison.
+       - Explicitly flag low-impression (<1,000) or low-conversion (<3) creatives as "Insufficient Data" instead of treating them as proven failures.
+       - Clearly explain the ranking criteria and methodology.
+       - NEVER trigger campaign creation or deployment when asked to rank or evaluate creatives.
+     * For creative metadata & asset inspection tasks ("retrieve accessible headlines, primary text, calls to action, destination URLs and asset metadata", "analyze only content actually returned"):
+       - Retrieve and report accessible headlines, primary text / captions, call to action buttons, destination URLs, and asset format/duration metadata.
+       - If raw video/audio media or off-platform creative files cannot be accessed via text API, report that technical limitation transparently rather than inventing contents.
+       - DO NOT generate generic marketing ad variations when asked to audit or inspect upstream creatives.
      * For creative performance analysis & winner/loser recommendations: Evaluate the actual ad creatives from upstream data, identify top winners (high ROAS, high conversions) and underperforming losers (high spend, low ROAS/zero conversions), and provide actionable scaling and fatigue mitigation advice.
      * Strictly obey constraints such as "Do not edit any campaign", "Return actual source data only".`;
 };
