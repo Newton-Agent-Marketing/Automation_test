@@ -549,6 +549,14 @@ export const AiAutomationCanvas = ({
     >
       {/* Keyframes for flowing blue wire beam and pulsing executing glow */}
       <style>{`
+        @keyframes nodeBorderLineMove {
+          from {
+            stroke-dashoffset: 0;
+          }
+          to {
+            stroke-dashoffset: -100;
+          }
+        }
         @keyframes flowingDash {
           from {
             stroke-dashoffset: 0;
@@ -729,6 +737,17 @@ export const AiAutomationCanvas = ({
                     style={{
                       animation: "flowingDash 0.75s linear infinite",
                       filter: "drop-shadow(0 0 5px #0081FB)",
+                    }}
+                  />
+                  {/* Intense inner electric cyan laser */}
+                  <path
+                    d={curveD}
+                    fill="none"
+                    stroke="#38BDF8"
+                    strokeWidth={2}
+                    strokeDasharray="10 6"
+                    style={{
+                      animation: "flowingDash 0.75s linear infinite",
                     }}
                   />
                 </g>

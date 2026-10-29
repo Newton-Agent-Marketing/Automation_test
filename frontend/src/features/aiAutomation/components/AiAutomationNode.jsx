@@ -84,7 +84,7 @@ export const AiAutomationNode = ({
       case "date":
         return "#2563EB";
       case "action":
-        return "#059669";
+        return "#0081FB";
       case "time":
         return "#D97706";
       default:
@@ -115,12 +115,12 @@ export const AiAutomationNode = ({
         return <Loader2 size={24} color="#0081FB" className="animate-spin" />;
       }
       if (isNodeCompleted) {
-        return <Check size={26} color="#059669" strokeWidth={3} />;
+        return <Check size={26} color="#0081FB" strokeWidth={3} />;
       }
       if (isNodeFailed) {
         return <AlertCircle size={24} color="#DC2626" strokeWidth={2.2} />;
       }
-      return <Play size={24} fill="#059669" color="#059669" style={{ marginLeft: 2 }} />;
+      return <Play size={24} fill="#0081FB" color="#0081FB" style={{ marginLeft: 2 }} />;
     };
 
     return (
@@ -136,12 +136,8 @@ export const AiAutomationNode = ({
           height: CIRCULAR_NODE_SIZE,
           backgroundColor: "#FFFFFF",
           borderRadius: "50%",
-          border: allNodesBlue
+          border: (allNodesBlue || isNodeRunning || isNodeCompleted)
             ? "3px solid #0081FB"
-            : isNodeRunning
-            ? "3px solid #0081FB"
-            : isNodeCompleted
-            ? "3px solid #10B981"
             : isNodeFailed
             ? "3px solid #EF4444"
             : isNodePaused
@@ -153,12 +149,10 @@ export const AiAutomationNode = ({
             : isConnectSource
             ? `2.5px dashed ${accentColor}`
             : `2px solid ${accentColor}`,
-          boxShadow: allNodesBlue
-            ? "0 0 0 5px rgba(0, 129, 251, 0.4), 0 0 24px rgba(0, 129, 251, 0.4)"
-            : isNodeRunning
+          boxShadow: (allNodesBlue || isNodeRunning)
             ? "0 0 0 5px rgba(0, 129, 251, 0.4), 0 0 24px rgba(0, 129, 251, 0.4)"
             : isNodeCompleted
-            ? "0 0 0 4px rgba(16, 185, 129, 0.35), 0 0 20px rgba(16, 185, 129, 0.35)"
+            ? "0 0 0 4px rgba(0, 129, 251, 0.35), 0 0 20px rgba(0, 129, 251, 0.35)"
             : isNodeFailed
             ? "0 0 0 4px rgba(239, 68, 68, 0.35)"
             : isNodePaused
@@ -247,8 +241,51 @@ export const AiAutomationNode = ({
             ? "Click or release to connect to this node"
             : `Click to configure ${node.type} node • Drag to reposition`
         }
-
       >
+        {/* Moving Blue Border Line Beam when circular node is running */}
+        {isNodeRunning && (
+          <svg
+            style={{
+              position: "absolute",
+              top: -2.5,
+              left: -2.5,
+              width: CIRCULAR_NODE_SIZE + 5,
+              height: CIRCULAR_NODE_SIZE + 5,
+              pointerEvents: "none",
+              borderRadius: "50%",
+              overflow: "visible",
+              zIndex: 15,
+            }}
+          >
+            <circle
+              cx={(CIRCULAR_NODE_SIZE + 5) / 2}
+              cy={(CIRCULAR_NODE_SIZE + 5) / 2}
+              r={CIRCULAR_NODE_SIZE / 2}
+              fill="none"
+              stroke="#0081FB"
+              strokeWidth="3"
+              strokeOpacity="0.45"
+              style={{
+                filter: "drop-shadow(0 0 6px #0081FB)",
+              }}
+            />
+            <circle
+              className="node-border-moving-beam"
+              cx={(CIRCULAR_NODE_SIZE + 5) / 2}
+              cy={(CIRCULAR_NODE_SIZE + 5) / 2}
+              r={CIRCULAR_NODE_SIZE / 2}
+              fill="none"
+              stroke="#38BDF8"
+              strokeWidth="3.5"
+              strokeDasharray="60 40"
+              style={{
+                animation: "nodeBorderLineMove 0.95s linear infinite",
+                filter: "drop-shadow(0 0 8px #0081FB) drop-shadow(0 0 14px #38BDF8)",
+              }}
+            />
+          </svg>
+        )}
+
         {/* Left Connector Handle */}
         <div
           className="automation-target-handle"
@@ -403,7 +440,7 @@ export const AiAutomationNode = ({
     <div
       className={`ai-automation-node-card ${isSelected ? "is-selected-card" : ""} ${
         isDragging ? "is-dragging" : ""
-      } ${isConnectTarget ? "is-connect-target" : ""} ${isExecuting ? "is-executing-node" : ""}`}
+      } ${isConnectTarget ? "is-connect-target" : ""} ${isNodeRunning ? "is-executing-node" : ""}`}
       style={{
         position: "absolute",
         left: node.position?.x ?? 100,
@@ -412,12 +449,8 @@ export const AiAutomationNode = ({
         height: NODE_HEIGHT,
         backgroundColor: "#FFFFFF",
         borderRadius: 22,
-        border: allNodesBlue
+        border: (allNodesBlue || isNodeRunning || isNodeCompleted)
           ? "2.5px solid #0081FB"
-          : isNodeRunning
-          ? "2.5px solid #0081FB"
-          : isNodeCompleted
-          ? "2.5px solid #10B981"
           : isNodeFailed
           ? "2.5px solid #EF4444"
           : isNodePaused
@@ -429,12 +462,10 @@ export const AiAutomationNode = ({
           : isConnectSource
           ? `2px dashed ${accentColor}`
           : "1.5px solid #E2E8F0",
-        boxShadow: allNodesBlue
-          ? "0 0 0 4.5px rgba(0, 129, 251, 0.4), 0 10px 28px rgba(0, 129, 251, 0.3)"
-          : isNodeRunning
+        boxShadow: (allNodesBlue || isNodeRunning)
           ? "0 0 0 4.5px rgba(0, 129, 251, 0.35), 0 10px 28px rgba(0, 129, 251, 0.28)"
           : isNodeCompleted
-          ? "0 0 0 3.5px rgba(16, 185, 129, 0.25), 0 6px 18px rgba(16, 185, 129, 0.15)"
+          ? "0 0 0 3.5px rgba(0, 129, 251, 0.25), 0 6px 18px rgba(0, 129, 251, 0.15)"
           : isNodeFailed
           ? "0 0 0 4px rgba(239, 68, 68, 0.25), 0 6px 18px rgba(239, 68, 68, 0.18)"
           : isNodePaused
@@ -494,6 +525,56 @@ export const AiAutomationNode = ({
           : "Drag to move • Click pencil to write text • Click trash to delete"
       }
     >
+      {/* Moving Blue Border Line Beam when rectangular node is running */}
+      {isNodeRunning && (
+        <svg
+          style={{
+            position: "absolute",
+            top: -2.5,
+            left: -2.5,
+            width: NODE_WIDTH + 5,
+            height: NODE_HEIGHT + 5,
+            pointerEvents: "none",
+            borderRadius: 24,
+            overflow: "visible",
+            zIndex: 15,
+          }}
+        >
+          <rect
+            x="2.5"
+            y="2.5"
+            width={NODE_WIDTH}
+            height={NODE_HEIGHT}
+            rx="22"
+            ry="22"
+            fill="none"
+            stroke="#0081FB"
+            strokeWidth="3"
+            strokeOpacity="0.45"
+            style={{
+              filter: "drop-shadow(0 0 6px #0081FB)",
+            }}
+          />
+          <rect
+            className="node-border-moving-beam"
+            x="2.5"
+            y="2.5"
+            width={NODE_WIDTH}
+            height={NODE_HEIGHT}
+            rx="22"
+            ry="22"
+            fill="none"
+            stroke="#38BDF8"
+            strokeWidth="3.5"
+            strokeDasharray="60 40"
+            style={{
+              animation: "nodeBorderLineMove 1.1s linear infinite",
+              filter: "drop-shadow(0 0 8px #0081FB) drop-shadow(0 0 14px #38BDF8)",
+            }}
+          />
+        </svg>
+      )}
+
       {/* Left Circular Connector Port */}
       <div
         className="automation-target-handle"

@@ -197,6 +197,15 @@ export const AiAutomation = () => {
   const activeWorkflowRef = useRef(null);
   const lastScheduledRunKeyRef = useRef("");
 
+  const edgesRef = useRef(edges);
+  edgesRef.current = edges;
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+  const completedNodeIdsRef = useRef(completedNodeIds);
+  completedNodeIdsRef.current = completedNodeIds;
+  const completedEdgeIdsRef = useRef(completedEdgeIds);
+  completedEdgeIdsRef.current = completedEdgeIds;
+
   // Close dropdown menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -493,8 +502,12 @@ export const AiAutomation = () => {
       const wfNodeIds = new Set(workflowNodes.map((n) => n.id));
       const wfEdgeIds = new Set(workflowEdges.map((e) => e.id));
 
-      setCompletedNodeIds((prev) => prev.filter((id) => !wfNodeIds.has(id)));
-      setCompletedEdgeIds((prev) => prev.filter((id) => !wfEdgeIds.has(id)));
+      const initialCompleted = completedNodeIdsRef.current.filter((id) => !wfNodeIds.has(id));
+      const initialCompletedEdges = completedEdgeIdsRef.current.filter((id) => !wfEdgeIds.has(id));
+      completedNodeIdsRef.current = initialCompleted;
+      completedEdgeIdsRef.current = initialCompletedEdges;
+      setCompletedNodeIds(initialCompleted);
+      setCompletedEdgeIds(initialCompletedEdges);
       setExecutingEdgeIds([]);
       setIsResultsPanelOpen(true);
 
@@ -619,10 +632,11 @@ export const AiAutomation = () => {
         // Arrive at Start Node
         setExecutingNodeId(rootNode.id);
         if (edgeToRoot) {
-          setCompletedEdgeIds((prev) => [...new Set([...prev, edgeToRoot.id])]);
+          const nextCompletedEdges = [...new Set([...completedEdgeIdsRef.current, edgeToRoot.id])];
+          completedEdgeIdsRef.current = nextCompletedEdges;
+          setCompletedEdgeIds(nextCompletedEdges);
         }
         await new Promise((r) => setTimeout(r, 450));
-        setExecutingEdgeIds([]);
       } else if (rootNode) {
         setExecutingNodeId(rootNode.id);
       }
@@ -631,7 +645,20 @@ export const AiAutomation = () => {
       const preludeIds = [actionNode?.id, ...dateNodes.map((d) => d.id), ...timeNodes.map((t) => t.id)].filter(
         Boolean
       );
-      setCompletedNodeIds((prev) => [...new Set([...prev, ...preludeIds])]);
+      const nextCompletedNodes = [...new Set([...completedNodeIdsRef.current, ...preludeIds])];
+      completedNodeIdsRef.current = nextCompletedNodes;
+      setCompletedNodeIds(nextCompletedNodes);
+
+      // All edges from circular prelude nodes to rootNode marked completed solid blue
+      const preludeEdges = workflowEdges.filter(
+        (e) => (preludeIds.includes(e.source) && e.target === rootNode?.id) ||
+               (preludeIds.includes(e.target) && e.source === rootNode?.id)
+      );
+      if (preludeEdges.length > 0) {
+        const nextEdgeIds = [...new Set([...completedEdgeIdsRef.current, ...preludeEdges.map((e) => e.id)])];
+        completedEdgeIdsRef.current = nextEdgeIds;
+        setCompletedEdgeIds(nextEdgeIds);
+      }
 
       // --- STEP 5: Start Node executes its task and moves forward to next nodes on backend ---
       // (This prelude only happens ONCE! Backend executes the Start Node task, then subsequent task nodes)
@@ -778,7 +805,9 @@ export const AiAutomation = () => {
         const completedFromExec = (execution?.nodes || [])
           .filter((n) => n.status === "completed")
           .map((n) => n.nodeId);
-        setCompletedNodeIds((prev) => [...new Set([...prev, ...completedFromExec])]);
+        const mergedCompleted = [...new Set([...completedNodeIdsRef.current, ...completedFromExec])];
+        completedNodeIdsRef.current = mergedCompleted;
+        setCompletedNodeIds(mergedCompleted);
         setExecutingNodeId(null);
         setExecutingEdgeIds([]);
       } else if (event === "node_started") {
@@ -787,23 +816,21 @@ export const AiAutomation = () => {
         setExecutingNodeId(nodeId);
 
         // Animate wire leading to this node from the upstream completed node
-        const incomingEdge =
-          edges.find((e) => e.target === nodeId && completedNodeIds.includes(e.source)) ||
-          edges.find((e) => e.source === nodeId && completedNodeIds.includes(e.target)) ||
-          edges.find((e) => e.target === nodeId) ||
-          edges.find((e) => e.source === nodeId);
+        const allEdges = edgesRef.current || [];
+        const completedIds = completedNodeIdsRef.current || [];
+        const incomingEdges = allEdges.filter((e) => {
+          return (e.target === nodeId && completedIds.includes(e.source)) ||
+                 (e.source === nodeId && completedIds.includes(e.target));
+        });
 
-        if (incomingEdge) {
-          const fromNodeId = incomingEdge.target === nodeId ? incomingEdge.source : incomingEdge.target;
-          setExecutingEdgeIds([
-            {
-              edgeId: incomingEdge.id,
-              fromNodeId: fromNodeId,
+        if (incomingEdges.length > 0) {
+          setExecutingEdgeIds(
+            incomingEdges.map((e) => ({
+              edgeId: e.id,
+              fromNodeId: e.target === nodeId ? e.source : e.target,
               toNodeId: nodeId,
-            },
-          ]);
-        } else {
-          setExecutingEdgeIds([]);
+            }))
+          );
         }
 
         setNodeStatusMap((prev) => ({
@@ -839,18 +866,43 @@ export const AiAutomation = () => {
           },
         }));
 
-        setCompletedNodeIds((prev) => [...new Set([...prev, nodeId])]);
+        const newCompleted = [...new Set([...completedNodeIdsRef.current, nodeId])];
+        completedNodeIdsRef.current = newCompleted;
+        setCompletedNodeIds(newCompleted);
 
-        // Transition wire to completed solid blue
-        const incomingEdge =
-          edges.find((e) => e.target === nodeId && completedNodeIds.includes(e.source)) ||
-          edges.find((e) => e.source === nodeId && completedNodeIds.includes(e.target)) ||
-          edges.find((e) => e.target === nodeId) ||
-          edges.find((e) => e.source === nodeId);
-        if (incomingEdge) {
-          setCompletedEdgeIds((prev) => [...new Set([...prev, incomingEdge.id])]);
+        const allEdges = edgesRef.current || [];
+
+        // Transition incoming wire(s) to completed solid blue
+        const incomingEdges = allEdges.filter((e) => {
+          return (e.target === nodeId && newCompleted.includes(e.source)) ||
+                 (e.source === nodeId && newCompleted.includes(e.target)) ||
+                 e.target === nodeId ||
+                 e.source === nodeId;
+        });
+        if (incomingEdges.length > 0) {
+          const incomingIds = incomingEdges.map((e) => e.id);
+          const newCompletedEdges = [...new Set([...completedEdgeIdsRef.current, ...incomingIds])];
+          completedEdgeIdsRef.current = newCompletedEdges;
+          setCompletedEdgeIds(newCompletedEdges);
         }
-        setExecutingEdgeIds([]);
+
+        // IMMEDIATELY activate outgoing wire(s) leading to the next uncompleted node(s) with moving blue line!
+        const outgoingEdges = allEdges.filter((e) => {
+          const otherId = e.source === nodeId ? e.target : e.source;
+          return (e.source === nodeId || e.target === nodeId) && !newCompleted.includes(otherId) && otherId !== nodeId;
+        });
+
+        if (outgoingEdges.length > 0) {
+          setExecutingEdgeIds(
+            outgoingEdges.map((e) => ({
+              edgeId: e.id,
+              fromNodeId: nodeId,
+              toNodeId: e.source === nodeId ? e.target : e.source,
+            }))
+          );
+        } else {
+          setExecutingEdgeIds([]);
+        }
 
         setCurrentExecution((prev) => {
           if (!prev) return prev;
@@ -931,20 +983,17 @@ export const AiAutomation = () => {
         setActiveWorkflowNodeIds([]);
 
         if (execution?.status === "completed") {
-          // Glow all node borders in blue (#0081FB) for a few seconds upon completion, then return to normal
-          setAllNodesBlue(true);
-          setTimeout(() => {
-            setAllNodesBlue(false);
-          }, 3500);
-
-          // Turn ONLY this workflow's connection wires to solid blue
-          const wfEdges = activeWorkflowRef.current?.edges || [];
+          // Keep all executed workflow edges in solid blue
+          const wfEdges = activeWorkflowRef.current?.edges || edgesRef.current || [];
           if (wfEdges.length > 0) {
-            setCompletedEdgeIds((prev) => [...new Set([...prev, ...wfEdges.map((e) => e.id)])]);
+            const edgeIds = wfEdges.map((e) => e.id);
+            const nextCompletedEdges = [...new Set([...completedEdgeIdsRef.current, ...edgeIds])];
+            completedEdgeIdsRef.current = nextCompletedEdges;
+            setCompletedEdgeIds(nextCompletedEdges);
           }
           setValidationBanner({
             type: "success",
-            message: `Workflow completed successfully! ${execution.successfulNodes || 0} nodes executed.`,
+            message: `Workflow completed successfully! ${execution?.successfulNodes || 0} nodes executed.`,
           });
         }
       }
@@ -970,7 +1019,7 @@ export const AiAutomation = () => {
       socket.off("automation:scheduled_start", handleScheduledRun);
       socket.off("automation:scheduled_run", handleScheduledRun);
     };
-  }, [edges, handleExecuteWorkflow]);
+  }, [handleExecuteWorkflow]);
 
   // Automatic Client-side Scheduler: Checks every 4 seconds if the configured Date & Time match current time
   useEffect(() => {
