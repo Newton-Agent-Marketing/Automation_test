@@ -160,41 +160,40 @@ export const getWorkflowSubgraph = (nodes = [], edges = [], startNodeId = null) 
 
   // Identify root Trigger or Action node for this specific workflow
   const triggerNode = workflowNodes.find((n) => n.type === "trigger");
-  const actionNode = workflowNodes.find((n) => n.type === "action");
+  const actionNode =
+    workflowNodes.find((n) => n.id === startNodeId && n.type === "action") ||
+    workflowNodes.find((n) => n.type === "action");
 
-  // If triggerNode exists, it is the root!
-  // If not, find task node directly connected to actionNode, dateNode, or timeNode:
+  // Determine the primary task node directly connected to actionNode, dateNode, or timeNode
   let directTaskNode = null;
-  if (!triggerNode) {
-    const circularIds = new Set(
-      workflowNodes
-        .filter((n) => n.type === "action" || n.type === "date" || n.type === "time")
-        .map((n) => n.id)
-    );
+  const circularIds = new Set(
+    workflowNodes
+      .filter((n) => n.type === "action" || n.type === "date" || n.type === "time")
+      .map((n) => n.id)
+  );
 
-    const preludeSeedIds = [actionNode?.id].filter(Boolean);
+  const preludeSeedIds = [actionNode?.id].filter(Boolean);
 
+  for (const edge of workflowEdges) {
+    if (preludeSeedIds.includes(edge.source) && !circularIds.has(edge.target)) {
+      directTaskNode = workflowNodes.find((n) => n.id === edge.target);
+      if (directTaskNode) break;
+    }
+    if (preludeSeedIds.includes(edge.target) && !circularIds.has(edge.source)) {
+      directTaskNode = workflowNodes.find((n) => n.id === edge.source);
+      if (directTaskNode) break;
+    }
+  }
+
+  if (!directTaskNode) {
     for (const edge of workflowEdges) {
-      if (preludeSeedIds.includes(edge.source) && !circularIds.has(edge.target)) {
+      if (circularIds.has(edge.source) && !circularIds.has(edge.target)) {
         directTaskNode = workflowNodes.find((n) => n.id === edge.target);
         if (directTaskNode) break;
       }
-      if (preludeSeedIds.includes(edge.target) && !circularIds.has(edge.source)) {
+      if (circularIds.has(edge.target) && !circularIds.has(edge.source)) {
         directTaskNode = workflowNodes.find((n) => n.id === edge.source);
         if (directTaskNode) break;
-      }
-    }
-
-    if (!directTaskNode) {
-      for (const edge of workflowEdges) {
-        if (circularIds.has(edge.source) && !circularIds.has(edge.target)) {
-          directTaskNode = workflowNodes.find((n) => n.id === edge.target);
-          if (directTaskNode) break;
-        }
-        if (circularIds.has(edge.target) && !circularIds.has(edge.source)) {
-          directTaskNode = workflowNodes.find((n) => n.id === edge.source);
-          if (directTaskNode) break;
-        }
       }
     }
   }
@@ -224,6 +223,7 @@ export const getWorkflowSubgraph = (nodes = [], edges = [], startNodeId = null) 
     edges: workflowEdges,
     rootNode,
     rootTaskNode,
+    directTaskNode,
     triggerNode,
     actionNode,
     workflowName,
@@ -281,6 +281,7 @@ export const buildExecutionOrder = (nodes = [], edges = [], startNodeId = null) 
     edges: workflowEdges,
     rootNode,
     rootTaskNode,
+    directTaskNode,
     triggerNode,
     actionNode,
   } = getWorkflowSubgraph(nodes, edges, startNodeId);
@@ -329,6 +330,7 @@ export const buildExecutionOrder = (nodes = [], edges = [], startNodeId = null) 
 
   const targetTaskNode =
     (rootTaskNode && taskNodeMap.get(rootTaskNode.id)) ||
+    (directTaskNode && taskNodeMap.get(directTaskNode.id)) ||
     (triggerNode && taskNodeMap.get(triggerNode.id)) ||
     (startNodeId && taskNodeMap.get(startNodeId)) ||
     taskNodes[0];

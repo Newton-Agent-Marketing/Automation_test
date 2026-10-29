@@ -155,6 +155,7 @@ export const getWorkflowSubgraph = (nodes = [], edges = [], startNodeId = null) 
     edges: workflowEdges,
     rootNode,
     rootTaskNode,
+    directTaskNode,
     actionNode,
     triggerNode,
   };
@@ -246,9 +247,25 @@ export const AiAutomation = () => {
 
   // Track user's live cursor position inside canvas coordinates
   const lastCursorPosRef = useRef(null);
+  const lastCanvasClickRef = useRef(null);
+  const viewportCenterRef = useRef({ x: 300, y: 300 });
+
   const handleCursorMove = useCallback((pos) => {
     if (pos && typeof pos.x === "number" && typeof pos.y === "number") {
       lastCursorPosRef.current = pos;
+    }
+  }, []);
+
+  const handleCanvasClick = useCallback((pos) => {
+    if (pos && typeof pos.x === "number" && typeof pos.y === "number") {
+      lastCanvasClickRef.current = pos;
+      lastCursorPosRef.current = pos;
+    }
+  }, []);
+
+  const handleViewportChange = useCallback((vp) => {
+    if (vp?.center && typeof vp.center.x === "number" && typeof vp.center.y === "number") {
+      viewportCenterRef.current = vp.center;
     }
   }, []);
 
@@ -345,19 +362,30 @@ export const AiAutomation = () => {
       return;
     }
 
-    // Determine smart positioning: Always spawn where the user's cursor is on the canvas!
-    const cursor = customPos || lastCursorPosRef.current;
-    let posX, posY;
+    // Determine smart positioning:
+    // 1. If customPos is explicitly provided (e.g. from right-click context menu), use it!
+    // 2. Else if user explicitly clicked on the canvas (lastCanvasClickRef), use that!
+    // 3. Else, use the current visible viewport center (viewportCenterRef) so it ALWAYS
+    //    spawns right in the visible center of what the user is currently viewing on the screen!
+    const targetBase =
+      customPos ||
+      lastCanvasClickRef.current ||
+      viewportCenterRef.current || { x: 300, y: 300 };
 
-    if (cursor && typeof cursor.x === "number" && typeof cursor.y === "number") {
-      posX = Math.round(cursor.x);
-      posY = Math.round(cursor.y);
+    let posX = Math.round(targetBase.x);
+    let posY = Math.round(targetBase.y);
 
-      // If user adds Date / Action / Time near each other, arrange them naturally:
+    const isFromMenu = !customPos && !lastCanvasClickRef.current;
+    if (isFromMenu) {
+      // Natural viewport placement for prelude nodes
+      if (type === "date") posY -= 85;
+      else if (type === "time") posY += 85;
+      else if (type === "generic") posX += 160;
+    } else {
+      // Natural spacing if near other nodes
       const nearbyNodes = nodes.filter(
         (n) => Math.hypot((n.position?.x ?? 0) - posX, (n.position?.y ?? 0) - posY) < 85
       );
-
       if (type === "date" && nearbyNodes.some((n) => n.type === "action")) {
         posY -= 85;
       } else if (type === "time" && nearbyNodes.some((n) => n.type === "action" || n.type === "date")) {
@@ -365,20 +393,10 @@ export const AiAutomation = () => {
       } else if (nearbyNodes.length > 0) {
         posY += 75;
       }
-
-      // Update cursor reference so subsequent clicks stack cleanly without direct pixel overlap
-      lastCursorPosRef.current = { x: posX, y: posY + 75 };
-    } else {
-      // Fallback if cursor position hasn't hovered canvas yet:
-      if (nodes.length > 0) {
-        const lastNode = nodes[nodes.length - 1];
-        posX = (lastNode.position?.x ?? 200) + 50;
-        posY = (lastNode.position?.y ?? 300) + 75;
-      } else {
-        posX = 260;
-        posY = 320;
-      }
     }
+
+    lastCanvasClickRef.current = null;
+    lastCursorPosRef.current = { x: posX, y: posY + 75 };
 
     // Default configuration objects
     let defaultLabel = type === "trigger" ? "Start Node" : "Normal Node";
@@ -535,6 +553,7 @@ export const AiAutomation = () => {
         edges: workflowEdges,
         rootNode,
         rootTaskNode,
+        directTaskNode,
         actionNode,
       } = targetWorkflow;
 
@@ -657,7 +676,7 @@ export const AiAutomation = () => {
       }
 
       // --- STEP 4: Blue line flows to Start Node (First Task Node) ---
-      const firstTaskNode = rootTaskNode || rootNode;
+      const firstTaskNode = directTaskNode || rootTaskNode || rootNode;
       if (firstTaskNode && actionNode && firstTaskNode.id !== actionNode.id) {
         const lastPassedId =
           timeNodes[timeNodes.length - 1]?.id ||
@@ -1182,7 +1201,7 @@ export const AiAutomation = () => {
 
     if (selectedNodeId) {
       const targetWf = getWorkflowSubgraph(nodes, edges, selectedNodeId);
-      targetStartId = targetWf.actionNode?.id || targetWf.rootTaskNode?.id || targetWf.rootNode?.id || selectedNodeId;
+      targetStartId = targetWf.actionNode?.id || targetWf.directTaskNode?.id || targetWf.rootTaskNode?.id || targetWf.rootNode?.id || selectedNodeId;
     }
 
     if (!targetStartId) {
@@ -1659,6 +1678,8 @@ export const AiAutomation = () => {
             onDeleteEdge={handleDeleteEdge}
             onAddNode={handleCreateTypedNode}
             onCursorMove={handleCursorMove}
+            onCanvasClick={handleCanvasClick}
+            onViewportChange={handleViewportChange}
           />
         )}
       </div>
@@ -1674,7 +1695,7 @@ export const AiAutomation = () => {
         onResume={handleTogglePauseResume}
         onRunNow={() => {
           const targetWf = (selectedNodeId && getWorkflowSubgraph(nodes, edges, selectedNodeId)) || activeWorkflowRef.current;
-          const targetId = targetWf?.actionNode?.id || targetWf?.rootTaskNode?.id || targetWf?.rootNode?.id;
+          const targetId = targetWf?.actionNode?.id || targetWf?.directTaskNode?.id || targetWf?.rootTaskNode?.id || targetWf?.rootNode?.id;
           handleExecuteWorkflow(targetId);
         }}
       />

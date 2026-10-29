@@ -49,6 +49,8 @@ export const AiAutomationCanvas = ({
   onDeleteEdge,
   onAddNode,
   onCursorMove,
+  onViewportChange,
+  onCanvasClick,
 }) => {
   const containerRef = useRef(null);
   const rafRef = useRef(null);
@@ -150,15 +152,31 @@ export const AiAutomationCanvas = ({
     return () => window.removeEventListener("click", handleCloseMenu);
   }, []);
 
-  // Track cursor position inside canvas coordinates
+  // Report viewport changes (pan, zoom, and visible center in canvas coordinates)
+  useEffect(() => {
+    if (containerRef.current && typeof onViewportChange === "function") {
+      const rect = containerRef.current.getBoundingClientRect();
+      const centerX = Math.round((rect.width / 2 - pan.x) / zoom);
+      const centerY = Math.round((rect.height / 2 - pan.y) / zoom);
+      onViewportChange({
+        pan,
+        zoom,
+        center: { x: centerX, y: centerY },
+      });
+    }
+  }, [pan, zoom, onViewportChange]);
+
+  // Track cursor position inside canvas coordinates (ignore top 60px header margin)
   const handleCanvasMouseMove = useCallback(
     (e) => {
       if (containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
-        const canvasX = Math.round((e.clientX - rect.left - pan.x) / zoom);
-        const canvasY = Math.round((e.clientY - rect.top - pan.y) / zoom);
-        if (typeof onCursorMove === "function") {
-          onCursorMove({ x: canvasX, y: canvasY });
+        if (e.clientY >= rect.top + 60 && e.clientY <= rect.bottom) {
+          const canvasX = Math.round((e.clientX - rect.left - pan.x) / zoom);
+          const canvasY = Math.round((e.clientY - rect.top - pan.y) / zoom);
+          if (typeof onCursorMove === "function") {
+            onCursorMove({ x: canvasX, y: canvasY });
+          }
         }
       }
     },
@@ -184,6 +202,9 @@ export const AiAutomationCanvas = ({
         if (typeof onCursorMove === "function") {
           onCursorMove({ x: canvasX, y: canvasY });
         }
+        if (typeof onCanvasClick === "function") {
+          onCanvasClick({ x: canvasX, y: canvasY });
+        }
         setContextMenu({
           screenX: e.clientX,
           screenY: e.clientY,
@@ -192,7 +213,7 @@ export const AiAutomationCanvas = ({
         });
       }
     },
-    [pan, zoom, onCursorMove]
+    [pan, zoom, onCursorMove, onCanvasClick]
   );
 
   // Canvas Pan Handler
@@ -207,11 +228,14 @@ export const AiAutomationCanvas = ({
     }
     onSelectNode(null);
 
-    // Record cursor position on click
+    // Record intentional cursor position on click
     if (containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
       const canvasX = Math.round((e.clientX - rect.left - pan.x) / zoom);
       const canvasY = Math.round((e.clientY - rect.top - pan.y) / zoom);
+      if (typeof onCanvasClick === "function") {
+        onCanvasClick({ x: canvasX, y: canvasY });
+      }
       if (typeof onCursorMove === "function") {
         onCursorMove({ x: canvasX, y: canvasY });
       }
@@ -383,13 +407,13 @@ export const AiAutomationCanvas = ({
   // Mouse Move
   const handleMouseMove = useCallback(
     (e) => {
-      // Record cursor coordinates whenever mouse is over canvas
+      // Record cursor coordinates whenever mouse is over canvas (ignore top 60px header margin)
       if (containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
         if (
           e.clientX >= rect.left &&
           e.clientX <= rect.right &&
-          e.clientY >= rect.top &&
+          e.clientY >= rect.top + 60 &&
           e.clientY <= rect.bottom
         ) {
           const canvasX = Math.round((e.clientX - rect.left - pan.x) / zoom);
