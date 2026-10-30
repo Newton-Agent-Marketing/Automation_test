@@ -710,6 +710,114 @@ class SheetsService {
   }
 
   /**
+   * Append data rows to the bottom of a specific worksheet tab using Google Sheets API v4
+   */
+  async appendRowsToWorksheet({ spreadsheetIdOrUrl, sheetTitle = "Sheet1", values = [] }) {
+    const spreadsheetId = this.extractSpreadsheetId(spreadsheetIdOrUrl);
+    if (!spreadsheetId) throw new Error("No valid Google Sheet ID or URL provided.");
+    if (!Array.isArray(values) || values.length === 0) {
+      return { success: true, updatedRows: 0, updatedCells: 0 };
+    }
+
+    const auth = await googleOAuth.getAuthenticatedClient();
+    const safeTitle = (sheetTitle || "Sheet1").replace(/'/g, "\\'");
+    const appendRange = `'${safeTitle}'!A1:append`;
+    const endpoint = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(appendRange)}?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+
+    const payload = {
+      range: `'${safeTitle}'!A1:append`,
+      majorDimension: "ROWS",
+      values,
+    };
+
+    const res = await auth.axiosInstance.post(endpoint, payload);
+
+    return {
+      success: true,
+      spreadsheetId,
+      sheetTitle,
+      updatedRange: res.data?.updates?.updatedRange,
+      updatedRows: res.data?.updates?.updatedRows || values.length,
+      updatedCells: res.data?.updates?.updatedCells || 0,
+      raw: res.data,
+    };
+  }
+
+  /**
+   * Get column headers and top rows for a worksheet tab
+   */
+  async getWorksheetHeaders({ spreadsheetIdOrUrl, sheetTitle = "Sheet1", gid = null }) {
+    const spreadsheetId = this.extractSpreadsheetId(spreadsheetIdOrUrl);
+    if (!spreadsheetId) throw new Error("No valid Google Sheet ID or URL provided.");
+
+    try {
+      const auth = await googleOAuth.getAuthenticatedClient();
+      const safeTitle = (sheetTitle || "Sheet1").replace(/'/g, "\\'");
+      const endpoint = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/'${encodeURIComponent(safeTitle)}'!1:5`;
+      const res = await auth.axiosInstance.get(endpoint);
+      const rows = res.data?.values || [];
+      if (rows.length > 0 && rows[0] && rows[0].length > 0) {
+        return {
+          spreadsheetId,
+          sheetTitle,
+          headers: rows[0].map((h) => String(h || "").trim()).filter(Boolean),
+          sampleRows: rows.slice(1),
+          hasHeaders: true,
+        };
+      }
+    } catch (apiErr) {
+      console.warn(`[SheetsService] getWorksheetHeaders API call fallback notice: ${apiErr.message}`);
+    }
+
+    // Fallback using fetchWorksheetData
+    try {
+      const sheetData = await this.fetchWorksheetData({
+        spreadsheetIdOrUrl,
+        sheetTitle,
+        sheetId: gid,
+        maxRows: 5,
+      });
+
+      return {
+        spreadsheetId,
+        sheetTitle: sheetData.tabName || sheetTitle,
+        headers: sheetData.columns || [],
+        sampleRows: (sheetData.rows || []).slice(0, 3),
+        hasHeaders: (sheetData.columns || []).length > 0,
+      };
+    } catch (fbErr) {
+      return {
+        spreadsheetId,
+        sheetTitle,
+        headers: [],
+        sampleRows: [],
+        hasHeaders: false,
+        error: fbErr.message,
+      };
+    }
+  }
+
+  /**
+   * Set headers for an empty worksheet tab
+   */
+  async initializeWorksheetHeaders({ spreadsheetIdOrUrl, sheetTitle = "Sheet1", headers = [] }) {
+    const spreadsheetId = this.extractSpreadsheetId(spreadsheetIdOrUrl);
+    if (!spreadsheetId) throw new Error("No valid Google Sheet ID or URL provided.");
+    if (!headers || headers.length === 0) return { success: true };
+
+    return await this.batchUpdateValues({
+      spreadsheetIdOrUrl,
+      sheetTitle,
+      data: [
+        {
+          range: "A1",
+          values: [headers],
+        },
+      ],
+    });
+  }
+
+  /**
    * Discover all worksheet tabs dynamically for a connected Google Spreadsheet
    */
   async discoverWorksheetTabs({ spreadsheetIdOrUrl }) {

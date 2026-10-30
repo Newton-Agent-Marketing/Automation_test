@@ -17,6 +17,21 @@ export const AGENT_TOOLS_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "sync_meta_ads_to_sheet",
+      description: "Automated daily reporting sync: queries Meta Ads performance insights for yesterday (Asia/Kolkata), dynamically detects Google Sheet headers, maps fields, prevents duplicate rows, and appends records to the target worksheet tab (e.g. BGMI, Free Fire, GPRC).",
+      parameters: {
+        type: "object",
+        properties: {
+          instruction: { type: "string", description: "The reporting instruction or workflow action text" },
+          targetTab: { type: "string", description: "The target worksheet tab title (e.g. BGMI, FreeFire, GPRC)" },
+          metaAccountId: { type: "string", description: "The connected Meta Ad Account ID" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_user_ai_context",
       description: "Fetch the user's structured marketing AI Context workflow hierarchy from MongoDB (including Business Units, Ad Channels, Marketing Briefs, Products, Data Warehouses, and their node connections).",
       parameters: {
@@ -1401,6 +1416,18 @@ export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedCh
 
 // 2. Tool Execution Router
 export async function executeAgentTool(toolName, args) {
+  if (toolName === "sync_meta_ads_to_sheet") {
+    const { default: MetaAdsSheetSyncService } = await import("../automation/metaAdsSheetSyncService.js");
+    return await MetaAdsSheetSyncService.syncMetaAdsToSheet({
+      userId: args.userId,
+      instruction: args.instruction || args.userMessage || "",
+      node: args.node || {},
+      context: args.context || {},
+      executionId: args.executionId || null,
+      onProgress: args.onProgress || null,
+    });
+  }
+
   if (toolName === "get_user_ai_context") {
     return await getUserAiContext({ userId: args.userId });
   }

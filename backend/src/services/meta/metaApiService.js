@@ -2840,15 +2840,30 @@ export class MetaApiService {
   }
 
   // 16. Performance Insights (Spend, Clicks, ROAS) fetch karna
-  static async getInsights(accountId, accessToken, { datePreset = "last_30d", timeRange = null, timeIncrement = 1 } = {}) {
+  static async getInsights(
+    accountId,
+    accessToken,
+    {
+      datePreset = "last_30d",
+      timeRange = null,
+      timeIncrement = 1,
+      level = "campaign",
+      fields = null,
+      limit = 500,
+    } = {}
+  ) {
     const cleanId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
-    const url = `${META_GRAPH_URL}/${cleanId}/insights`;
+    let url = `${META_GRAPH_URL}/${cleanId}/insights`;
+    const defaultFields =
+      level === "ad"
+        ? "campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,date_start,date_stop,spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,actions,action_values,objective,account_currency,purchase_roas"
+        : "campaign_id,campaign_name,date_start,date_stop,spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,actions,action_values,objective,account_currency,purchase_roas";
+
     const params = {
       access_token: accessToken,
-      level: "campaign",
-      fields:
-        "campaign_id,campaign_name,date_start,date_stop,spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,actions,action_values,objective,account_currency",
-      limit: 500,
+      level: level || "campaign",
+      fields: fields || defaultFields,
+      limit: Math.min(limit || 500, 500),
     };
     if (timeRange) {
       params.time_range = typeof timeRange === "string" ? timeRange : JSON.stringify(timeRange);
@@ -2858,8 +2873,25 @@ export class MetaApiService {
     if (timeIncrement !== null && timeIncrement !== undefined) {
       params.time_increment = timeIncrement;
     }
-    const response = await axios.get(url, { params });
-    return response.data.data || [];
+
+    let allRecords = [];
+    let currentUrl = url;
+    let currentParams = params;
+
+    while (currentUrl) {
+      const response = await axios.get(currentUrl, { params: currentParams });
+      const rows = response.data?.data || [];
+      allRecords.push(...rows);
+
+      if (response.data?.paging?.next && allRecords.length < 2000) {
+        currentUrl = response.data.paging.next;
+        currentParams = null;
+      } else {
+        break;
+      }
+    }
+
+    return allRecords;
   }
 
   // Helper: Chunked Resumable Video Upload for Meta Graph API (Bypasses HTTP 413 Payload Too Large limits)

@@ -661,8 +661,89 @@ export const NodeDetailsDrawer = () => {
                 <option value="create_reminder">Create Reminder / Task</option>
                 <option value="ai_agent_task">Execute AI Agent Task</option>
                 <option value="generate_report">Generate Marketing / Ads Report</option>
+                <option value="meta_ads_sheet_sync">Sync Meta Ads Data to Google Sheet (Daily Reporting)</option>
               </select>
             </div>
+
+            {config.actionType === "meta_ads_sheet_sync" && (
+              <div
+                style={{
+                  backgroundColor: "#F0FDF4",
+                  border: "1px solid #BBF7D0",
+                  borderRadius: 8,
+                  padding: "10px 12px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 8,
+                }}
+              >
+                <div style={{ fontSize: "11.5px", fontWeight: 700, color: "#166534" }}>
+                  📊 Daily Meta Ads Reporting Setup
+                </div>
+                <div style={{ fontSize: "11px", color: "#15803D", lineHeight: 1.4 }}>
+                  Automatically queries Meta Marketing API for yesterday (Asia/Kolkata), matches Google Sheet headers dynamically, protects against duplicates, and appends rows.
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 2 }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateConfigField("worksheetName", "BGMI");
+                      updateConfigField("message", "Fetch Meta Ads performance data and append it to the BGMI worksheet.");
+                    }}
+                    style={{
+                      fontSize: "10.5px",
+                      padding: "4px 8px",
+                      borderRadius: 6,
+                      backgroundColor: "#DCFCE7",
+                      border: "1px solid #86EFAC",
+                      color: "#166534",
+                      cursor: "pointer",
+                      fontWeight: 600,
+                    }}
+                  >
+                    + BGMI Template
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateConfigField("worksheetName", "Free Fire");
+                      updateConfigField("message", "Fetch Meta Ads performance data and append it to the Free Fire worksheet.");
+                    }}
+                    style={{
+                      fontSize: "10.5px",
+                      padding: "4px 8px",
+                      borderRadius: 6,
+                      backgroundColor: "#DCFCE7",
+                      border: "1px solid #86EFAC",
+                      color: "#166534",
+                      cursor: "pointer",
+                      fontWeight: 600,
+                    }}
+                  >
+                    + Free Fire Template
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateConfigField("worksheetName", "GPRC");
+                      updateConfigField("message", "Fetch Meta Ads performance data and append it to the GPRC worksheet.");
+                    }}
+                    style={{
+                      fontSize: "10.5px",
+                      padding: "4px 8px",
+                      borderRadius: 6,
+                      backgroundColor: "#DCFCE7",
+                      border: "1px solid #86EFAC",
+                      color: "#166534",
+                      cursor: "pointer",
+                      fontWeight: 600,
+                    }}
+                  >
+                    + GPRC Template
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div>
               <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#334155", marginBottom: 6 }}>

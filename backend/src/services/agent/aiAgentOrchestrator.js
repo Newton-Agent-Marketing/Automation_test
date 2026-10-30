@@ -180,6 +180,23 @@ export class AiAgentOrchestrator {
       };
     }
 
+    // 1.5. Automated Daily Meta Ads to Google Sheet Sync
+    const isMetaAdsSheetSync =
+      /(sync|append|export|write|push|report|record)\s*.*(?:meta\s*ads?|facebook\s*ads?|ads?\s*data|performance|metrics)\s*.*(?:to|in|into)?\s*(?:sheet|spreadsheet|google\s*sheet|worksheet|tab|bgmi|freefire|free\s*fire|gprc)/i.test(text) ||
+      /(fetch|get)\s*.*(?:meta\s*ads?|facebook\s*ads?|ads?\s*data|performance)\s*.*(?:append|write|sync|push|record|add)\s*.*(?:to|in|into)?\s*(?:sheet|spreadsheet|google\s*sheet|worksheet|tab|bgmi|freefire|free\s*fire|gprc)/i.test(text) ||
+      /(meta\s*ads?|facebook\s*ads?|ads?\s*data)\s*.*(?:daily\s*)?(?:reporting|sync|export)\s*.*(?:sheet|spreadsheet|google\s*sheet|bgmi|freefire|free\s*fire|gprc)/i.test(text) ||
+      /(daily\s*meta\s*ads?\s*reporting)/i.test(text) ||
+      /(bgmi|free\s*fire|freefire|gprc)\s*.*(?:meta\s*ads?|reporting|sync)/i.test(text);
+
+    if (isMetaAdsSheetSync) {
+      return {
+        intent: "META_ADS_SHEET_SYNC",
+        requiresTools: true,
+        tools: ["sync_meta_ads_to_sheet"],
+        description: "Fetch yesterday's Meta Ads performance insights and append rows to designated Google Sheet worksheet tab",
+      };
+    }
+
     // 2. Google Sheets / Excel Fetch
     const isSheetFetch =
       /fetch.*(sheet|spreadsheet|excel|rows|data\s*warehouse)|get.*(sheet|spreadsheet|excel|rows)|read.*(sheet|spreadsheet|excel)|connected\s*google\s*sheet|load.*(sheet|spreadsheet)/i.test(text) &&
@@ -380,6 +397,38 @@ export class AiAgentOrchestrator {
       }
     }
 
+    // --- TOOL: sync_meta_ads_to_sheet ---
+    if (intentObj.intent === "META_ADS_SHEET_SYNC" || intentObj.tools.includes("sync_meta_ads_to_sheet")) {
+      emitStatus("sync_meta_ads_to_sheet", "Syncing Meta Ads performance data to Google Sheet...");
+      const startTime = Date.now();
+      try {
+        const { default: MetaAdsSheetSyncService } = await import("../automation/metaAdsSheetSyncService.js");
+        const syncResult = await MetaAdsSheetSyncService.syncMetaAdsToSheet({
+          userId: context.userId,
+          instruction,
+          node: context.node || {},
+          context,
+          onProgress: (tool, msg) => emitStatus("sync_meta_ads_to_sheet", msg),
+        });
+
+        executedTools.push({
+          toolName: "sync_meta_ads_to_sheet",
+          toolArgs: { instruction, targetTab: syncResult.targetTab, metaAccountId: syncResult.metaAccountId },
+          toolResult: syncResult,
+          status: syncResult.success ? "SUCCESS" : "FAILED",
+          durationMs: Date.now() - startTime,
+        });
+      } catch (err) {
+        executedTools.push({
+          toolName: "sync_meta_ads_to_sheet",
+          toolArgs: { instruction },
+          toolResult: { success: false, error: err.message },
+          status: "FAILED",
+          durationMs: Date.now() - startTime,
+        });
+      }
+    }
+
     // --- TOOL: fetch_live_meta_ads_mcp / query_database_metrics ---
     if (
       intentObj.intent === "META_ADS_METRICS" ||
@@ -555,6 +604,35 @@ export class AiAgentOrchestrator {
           sampleRows: rows.slice(0, 5),
           fullRows: rows,
           status: "success",
+        };
+        break;
+      }
+
+      case "META_ADS_SHEET_SYNC": {
+        const syncTool = executedTools.find((t) => t.toolName === "sync_meta_ads_to_sheet");
+        if (!syncTool || syncTool.status !== "SUCCESS" || !syncTool.toolResult?.success) {
+          isPassed = false;
+          status = "failed";
+          failureReason = syncTool?.toolResult?.error || "Failed to execute Meta Ads daily sync to Google Sheet.";
+          checks.push({ name: "Daily Meta Ads Sheet Sync", passed: false, detail: failureReason });
+          break;
+        }
+
+        const res = syncTool.toolResult;
+        checks.push({ name: "Meta Account Verified", passed: true, detail: `act_${res.metaAccountId} (${res.metaAccountName})` });
+        checks.push({ name: "Worksheet Target", passed: true, detail: `Tab "${res.targetTab}" on sheet ${res.spreadsheetId}` });
+        checks.push({ name: "Data Ingestion & Duplicate Protection", passed: true, detail: `${res.totalInsightsFetched} fetched, ${res.duplicatesSkipped} skipped, ${res.recordsAppended} appended` });
+
+        verifiedOutputData = {
+          type: "meta_ads_sheet_sync",
+          status: "success",
+          metaAccountId: res.metaAccountId,
+          targetTab: res.targetTab,
+          targetDate: res.targetDate,
+          recordsAppended: res.recordsAppended,
+          duplicatesSkipped: res.duplicatesSkipped,
+          totalInsightsFetched: res.totalInsightsFetched,
+          auditLogs: res.auditLogs,
         };
         break;
       }
@@ -745,6 +823,45 @@ ${tableRows}
 ${activeTabsList ? `- **Worksheet Tab Isolation:** Ingested from selected tabs (${activeTabsList}). Unselected tabs were excluded from the execution context.` : ""}
 - **Detected Columns:** \`${columns.join("`, `")}\`
 - **Lineage Integrity:** Data verified from authorized source. The structured payload has been validated and packaged for downstream execution nodes.`;
+    }
+
+    // 2.5. Daily Meta Ads Google Sheet Sync Response
+    if (intentObj.intent === "META_ADS_SHEET_SYNC") {
+      const syncTool = executedTools.find((t) => t.toolName === "sync_meta_ads_to_sheet");
+      const res = syncTool?.toolResult || {};
+      const logs = res.auditLogs || [];
+
+      const logsMarkdown = logs
+        .map((l) => `- **[Step ${l.step}/9] ${l.name}:** ${l.detail} (${l.status === "SUCCESS" ? "✅" : "⚠️"})`)
+        .join("\n");
+
+      return `### 📊 Daily Meta Ads Reporting Sync Completed
+
+> **Node Instruction:** *"${instruction}"*  
+> **Connected Meta Account:** **act_${res.metaAccountId}** (${res.metaAccountName || "Meta Ads"})  
+> **Spreadsheet ID:** \`${res.spreadsheetId}\`  
+> **Worksheet Tab:** **${res.targetTab}**  
+> **Reporting Period:** **${res.targetDate}** (${res.timeZone || "Asia/Kolkata"})  
+> **Verification Status:** **✅ VERIFIED (${res.recordsAppended || 0} rows appended)**  
+
+---
+
+#### 📋 Execution & Audit Trail (9-Step Pipeline)
+${logsMarkdown}
+
+---
+
+#### 📈 Sync Summary
+| Metric | Value |
+|---|---|
+| **Target Worksheet Tab** | \`${res.targetTab}\` |
+| **Previous Completed Day** | \`${res.targetDate}\` |
+| **Total Meta Insights Fetched** | \`${res.totalInsightsFetched || 0}\` records |
+| **Duplicate Records Skipped** | \`${res.duplicatesSkipped || 0}\` records |
+| **New Records Appended** | **${res.recordsAppended || 0}** rows |
+| **Execution Duration** | \`${res.durationMs || 0}ms\` |
+
+*All performance metrics have been appended to the bottom of worksheet **${res.targetTab}** without overwriting existing data.*`;
     }
 
     // 3. Google Sheets Write Response

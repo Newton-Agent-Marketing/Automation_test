@@ -63,12 +63,24 @@ const aiAutomationSchema = new Schema(
       type: Schema.Types.ObjectId,
       ref: "User",
       required: true,
-      unique: true,
+      unique: false,
       index: true,
     },
     name: {
       type: String,
       default: "AI Automation Workspace",
+    },
+    metaAccountId: {
+      type: String,
+      default: "",
+    },
+    spreadsheetId: {
+      type: String,
+      default: "",
+    },
+    targetTab: {
+      type: String,
+      default: "",
     },
     isActive: {
       type: Boolean,
