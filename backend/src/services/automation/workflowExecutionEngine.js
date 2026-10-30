@@ -540,10 +540,18 @@ export class WorkflowExecutionEngine {
 
     let userMessage = instruction;
     if (previousNodeOutput) {
-      const formattedPrev =
-        typeof previousNodeOutput === "string"
-          ? previousNodeOutput
-          : JSON.stringify(previousNodeOutput, null, 2);
+      let formattedPrev = "";
+      if (typeof previousNodeOutput === "string") {
+        formattedPrev = previousNodeOutput;
+      } else if (previousNodeOutput?.result && typeof previousNodeOutput.result === "string") {
+        formattedPrev = previousNodeOutput.result;
+      } else if (previousNodeOutput?.output?.result && typeof previousNodeOutput.output.result === "string") {
+        formattedPrev = previousNodeOutput.output.result;
+      } else if (previousNodeOutput?.content && typeof previousNodeOutput.content === "string") {
+        formattedPrev = previousNodeOutput.content;
+      } else {
+        formattedPrev = JSON.stringify(previousNodeOutput, null, 2);
+      }
 
       userMessage = `${instruction}
 
@@ -577,7 +585,12 @@ ${formattedPrev}`;
       streamedText.trim() ||
       agentResult?.content ||
       agentResult?.result ||
-      "Task processed successfully by AI Agent.";
+      "";
+
+    // Strict validation: Do not mark node completed or proceed to next node if AI agent failed to return a valid response
+    if (!finalResult || finalResult.length < 15 || finalResult.includes("couldn't process your request right now")) {
+      throw new Error(`AI Agent failed to produce a complete response for node "${node.label || node.type}". Halting execution to prevent passing empty state.`);
+    }
 
     return {
       status: "completed",
@@ -965,14 +978,25 @@ ${formattedPrev}`;
                   instructionLower.includes("both") ||
                   directParentOutputs.length > 1;
 
+                const extractTextOutput = (data) => {
+                  if (!data) return "";
+                  if (typeof data === "string") return data;
+                  if (typeof data.result === "string") return data.result;
+                  if (typeof data.content === "string") return data.content;
+                  if (typeof data.output?.result === "string") return data.output.result;
+                  if (typeof data.output?.content === "string") return data.output.content;
+                  try {
+                    return JSON.stringify(data, null, 2);
+                  } catch (_) {
+                    return String(data);
+                  }
+                };
+
                 if (needsMultipleContexts && completedNodeOutputs.size > 1) {
                   const parts = [];
                   let pIdx = 1;
                   for (const [cId, cData] of completedNodeOutputs.entries()) {
-                    const cResult =
-                      typeof cData.output?.result === "string"
-                        ? cData.output.result
-                        : JSON.stringify(cData.output, null, 2);
+                    const cResult = extractTextOutput(cData.output);
                     parts.push(`[Context from Step #${pIdx} (${cData.name})]:\n${cResult}`);
                     pIdx++;
                   }
@@ -980,17 +1004,14 @@ ${formattedPrev}`;
                 } else if (directParentOutputs.length > 0) {
                   if (directParentOutputs.length === 1) {
                     const single = directParentOutputs[0];
-                    effectiveInputContext =
-                      typeof single.output?.result === "string"
-                        ? single.output.result
-                        : JSON.stringify(single.output, null, 2);
+                    effectiveInputContext = extractTextOutput(single.output);
                   } else {
                     effectiveInputContext = directParentOutputs
-                      .map((p, idx) => `[Context from Step #${idx + 1} (${p.name})]:\n${typeof p.output?.result === "string" ? p.output.result : JSON.stringify(p.output, null, 2)}`)
+                      .map((p, idx) => `[Context from Step #${idx + 1} (${p.name})]:\n${extractTextOutput(p.output)}`)
                       .join("\n\n---\n\n");
                   }
                 } else {
-                  effectiveInputContext = previousNodeOutput;
+                  effectiveInputContext = extractTextOutput(previousNodeOutput);
                 }
 
                 resolvedInput = {
@@ -1021,7 +1042,12 @@ ${formattedPrev}`;
             execution.nodes[nodeIndex].output = sanitizePayload(resolvedOutput);
             execution.markModified("nodes");
 
-            previousNodeOutput = resolvedOutput;
+            const cleanTextOutput =
+              typeof resolvedOutput === "string"
+                ? resolvedOutput
+                : resolvedOutput?.result || resolvedOutput?.content || JSON.stringify(resolvedOutput);
+            previousNodeOutput = cleanTextOutput;
+
             completedNodeOutputs.set(node.id, {
               id: node.id,
               name: node.label || node.text?.slice(0, 35) || node.type,
@@ -1046,6 +1072,9 @@ ${formattedPrev}`;
               nodeIndex,
               node: execution.nodes[nodeIndex].toObject(),
             });
+
+            // Ensure the completed node's full response is rendered and settled before advancing to the next node
+            await new Promise((r) => setTimeout(r, 1200));
           } catch (nodeErr) {
             const nodeDuration = Date.now() - nodeStartTime;
             execution.nodes[nodeIndex].status = "failed";
@@ -1076,6 +1105,16 @@ ${formattedPrev}`;
               node: execution.nodes[nodeIndex].toObject(),
               error: nodeErr.message,
             });
+
+            // Halting remaining steps: A subsequent node must never proceed if current node failed to complete
+            execution.logs.push({
+              timestamp: new Date(),
+              level: "warn",
+              nodeId: node.id,
+              nodeName: node.label || node.type,
+              message: `Halting remaining workflow steps because node "${node.label || node.type}" failed.`,
+            });
+            break;
           }
         }
 
