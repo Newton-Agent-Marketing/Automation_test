@@ -6220,6 +6220,8 @@ export const runAgentChat = async ({
   }
 
   const isAutomationTask = Boolean(conversationId?.startsWith("automation_"));
+  const contextSplitRegex = /\[Context from (?:previous )?(?:step|node)(?:s)?(?:\s*#?\d*)?(?:\s*\([^)]*\))?\]:/i;
+  const hasUpstreamContext = contextSplitRegex.test(userMessage || "");
 
   // 1. Resolve selected Meta Ads account from AI Context Channel Node (Strict Source of Truth for Chat only)
   let contextMetaAccountId = aiContextMetaAccountId ? String(aiContextMetaAccountId).trim() : null;
