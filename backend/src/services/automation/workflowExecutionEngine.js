@@ -552,6 +552,7 @@ export class WorkflowExecutionEngine {
     triggerType = "manual",
     rerunExecutionId = null,
     startNodeId = null,
+    workflowNodeIds = null,
   }) {
     let automation;
     if (automationId) {
@@ -564,11 +565,18 @@ export class WorkflowExecutionEngine {
       throw new Error("Automation workflow not found for user.");
     }
 
-    const nodes = automation.nodes || [];
-    const edges = automation.edges || [];
+    let nodes = automation.nodes || [];
+    let edges = automation.edges || [];
 
     if (!nodes.length) {
       throw new Error("No nodes configured in this automation workflow.");
+    }
+
+    // If specific workflowNodeIds are provided, strictly isolate nodes and edges to ONLY this workflow
+    if (Array.isArray(workflowNodeIds) && workflowNodeIds.length > 0) {
+      const allowedNodeIds = new Set(workflowNodeIds);
+      nodes = nodes.filter((n) => allowedNodeIds.has(n.id));
+      edges = edges.filter((e) => allowedNodeIds.has(e.source) && allowedNodeIds.has(e.target));
     }
 
     // Isolate the specific workflow connected to startNodeId (prevents other workflows on the canvas from running)
@@ -587,11 +595,20 @@ export class WorkflowExecutionEngine {
     const existingRunning = await AutomationExecution.findOne(runningQuery);
 
     if (existingRunning && !rerunExecutionId) {
-      return {
-        executionId: existingRunning.executionId,
-        execution: existingRunning,
-        completionPromise: Promise.resolve(existingRunning),
-      };
+      // Check if it is actually alive in memory
+      const isAlive = WorkflowExecutionEngine.activeControls.has(existingRunning.executionId);
+      if (isAlive) {
+        return {
+          executionId: existingRunning.executionId,
+          execution: existingRunning,
+          completionPromise: Promise.resolve(existingRunning),
+        };
+      } else {
+        // Orphaned running state from server restart or crash, clean it up
+        existingRunning.status = "failed";
+        existingRunning.errorSummary = "Interrupted by previous process termination.";
+        await existingRunning.save().catch(() => {});
+      }
     }
 
     // Determine execution order for ONLY this workflow component
@@ -669,6 +686,30 @@ export class WorkflowExecutionEngine {
       logs: initialLogs,
     });
 
+    // Mutex queue to serialize all execution.save() operations and completely eliminate Mongoose ParallelSaveError
+    let saveQueue = Promise.resolve();
+    const safeSaveExecution = () => {
+      saveQueue = saveQueue
+        .catch(() => {})
+        .then(async () => {
+          let attempts = 3;
+          while (attempts > 0) {
+            try {
+              await execution.save();
+              return;
+            } catch (err) {
+              if (err.name === "ParallelSaveError" && attempts > 1) {
+                attempts--;
+                await new Promise((r) => setTimeout(r, 120));
+                continue;
+              }
+              throw err;
+            }
+          }
+        });
+      return saveQueue;
+    };
+
     // Register active control for pause / cancel / resume
     const control = { isPaused: false, isCancelled: false, resumeResolver: null };
     WorkflowExecutionEngine.activeControls.set(executionId, control);
@@ -682,6 +723,7 @@ export class WorkflowExecutionEngine {
             event: eventType,
             executionId,
             rootNodeId,
+            
             startNodeId,
             workflowName,
             ...payload,
@@ -727,7 +769,7 @@ export class WorkflowExecutionEngine {
               nodeName: node.label,
               message: `Workflow execution paused at node "${node.label || node.type}"`,
             });
-            await execution.save();
+            await safeSaveExecution();
 
             emitLiveUpdate("paused", {
               nodeId: node.id,
@@ -753,7 +795,7 @@ export class WorkflowExecutionEngine {
               nodeName: node.label,
               message: `Workflow execution resumed from node "${node.label || node.type}"`,
             });
-            await execution.save();
+            await safeSaveExecution();
 
             emitLiveUpdate("resumed", {
               nodeId: node.id,
@@ -787,7 +829,7 @@ export class WorkflowExecutionEngine {
             message: `Node ${i + 1}/${orderedNodes.length} "${node.label || node.type}" started execution`,
           });
 
-          await execution.save();
+          await safeSaveExecution();
           emitLiveUpdate("node_started", {
             nodeId: node.id,
             nodeIndex,
@@ -802,7 +844,9 @@ export class WorkflowExecutionEngine {
               if (prog.state === "verifying") {
                 execution.nodes[nodeIndex].status = "verifying";
                 execution.markModified("nodes");
-                await execution.save();
+                await safeSaveExecution().catch((e) => {
+                  console.warn(`[WorkflowEngine handleProgress safeSave warn]: ${e.message}`);
+                });
                 emitLiveUpdate("node_verifying", {
                   nodeId: node.id,
                   nodeIndex,
@@ -1035,7 +1079,7 @@ export class WorkflowExecutionEngine {
               ).toFixed(2)}s`,
             });
 
-            await execution.save();
+            await safeSaveExecution();
             emitLiveUpdate("node_completed", {
               nodeId: node.id,
               nodeIndex,
@@ -1069,7 +1113,7 @@ export class WorkflowExecutionEngine {
               message: `Node "${node.label || node.type}" failed: ${nodeErr.message}`,
             });
 
-            await execution.save();
+            await safeSaveExecution();
             emitLiveUpdate("node_failed", {
               nodeId: node.id,
               nodeIndex,
@@ -1142,27 +1186,35 @@ export class WorkflowExecutionEngine {
           ).toFixed(2)}s`,
         });
 
-        await execution.save();
+        await safeSaveExecution();
 
-        // Update AiAutomation document with last run info
+        // Update AiAutomation document with last run info using atomic update
         try {
-          automation.lastRunAt = new Date();
-          automation.executionHistory = automation.executionHistory || [];
-          automation.executionHistory.unshift({
-            id: executionId,
-            executedAt: new Date(),
-            triggerType,
-            actionType: orderedNodes.find((n) => n.type === "action")?.config?.actionType || "workflow_execution",
-            status: execution.status === "completed" ? "success" : "failed",
-            message: `Executed ${successfulCount}/${orderedNodes.length} nodes successfully`,
-            result: { runId: executionId, totalNodes: orderedNodes.length, successfulNodes: successfulCount },
-            error: execution.errorSummary,
-            durationMs: totalDuration,
-          });
-          if (automation.executionHistory.length > 50) {
-            automation.executionHistory = automation.executionHistory.slice(0, 50);
-          }
-          await automation.save();
+          await AiAutomation.updateOne(
+            { _id: automation._id },
+            {
+              $set: { lastRunAt: new Date() },
+              $push: {
+                executionHistory: {
+                  $each: [
+                    {
+                      id: executionId,
+                      executedAt: new Date(),
+                      triggerType,
+                      actionType: orderedNodes.find((n) => n.type === "action")?.config?.actionType || "workflow_execution",
+                      status: execution.status === "completed" ? "success" : "failed",
+                      message: `Executed ${successfulCount}/${orderedNodes.length} nodes successfully`,
+                      result: { runId: executionId, totalNodes: orderedNodes.length, successfulNodes: successfulCount },
+                      error: execution.errorSummary,
+                      durationMs: totalDuration,
+                    },
+                  ],
+                  $position: 0,
+                  $slice: 50,
+                },
+              },
+            }
+          );
         } catch (saveErr) {
           console.warn("[WorkflowEngine AiAutomation update warn]:", saveErr.message);
         }

@@ -863,8 +863,7 @@ export const AiAutomationCanvas = ({
             }
 
             const isEdgeCompleted =
-              (allNodesBlue && isWorkflowCompleted) ||
-              (Array.isArray(completedEdgeIds) && completedEdgeIds.includes(edge.id));
+              Array.isArray(completedEdgeIds) && completedEdgeIds.includes(edge.id);
 
             if (isEdgeCompleted) {
               return (

@@ -129,21 +129,24 @@ export class AutomationExecutionController {
   static async startExecution(req, res) {
     try {
       const userId = req.user._id;
-      const { startNodeId = null, nodes = null, edges = null } = req.body || {};
+      const { startNodeId = null, workflowNodeIds = null, nodes = null, edges = null } = req.body || {};
 
       let automation = await AiAutomation.findOne({ userId });
 
-      // Automatically sync latest canvas state from frontend so newly added workflows are immediately isolated
+      // Automatically sync latest canvas state from frontend using atomic update to avoid parallel save/version conflicts
       if (Array.isArray(nodes) && nodes.length > 0) {
         if (!automation) {
-          automation = new AiAutomation({ userId, nodes, edges: Array.isArray(edges) ? edges : [] });
+          automation = await AiAutomation.create({ userId, nodes, edges: Array.isArray(edges) ? edges : [] });
         } else {
+          await AiAutomation.updateOne(
+            { _id: automation._id },
+            { $set: { nodes, ...(Array.isArray(edges) ? { edges } : {}) } }
+          );
           automation.nodes = nodes;
           if (Array.isArray(edges)) {
             automation.edges = edges;
           }
         }
-        await automation.save();
       }
 
       if (!automation || !automation.nodes || automation.nodes.length === 0) {
@@ -158,6 +161,7 @@ export class AutomationExecutionController {
         automationId: automation._id,
         triggerType: "manual",
         startNodeId,
+        workflowNodeIds,
       });
 
       return res.status(200).json({

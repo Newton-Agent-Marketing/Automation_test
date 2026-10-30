@@ -60,7 +60,7 @@ export const AiAutomationNode = ({
   const isBelongingToActiveRun =
     Array.isArray(activeWorkflowNodeIds) && activeWorkflowNodeIds.length > 0
       ? activeWorkflowNodeIds.includes(node.id)
-      : true;
+      : false;
 
   // Action node keeps running/loading indicator during execution
   // ONLY if this specific action node belongs to the active workflow run!
@@ -73,7 +73,7 @@ export const AiAutomationNode = ({
   const isNodeVerifying = isBelongingToActiveRun && execStatus === "verifying";
   const isNodeCompleted =
     !isActionExecuting &&
-    (execStatus === "completed" || (allNodesBlue && execStatus !== "failed" && execStatus !== "blocked"));
+    (execStatus === "completed" || (allNodesBlue && isBelongingToActiveRun && execStatus !== "failed" && execStatus !== "blocked"));
   const isNodeFailed = execStatus === "failed";
   const isNodeBlocked = execStatus === "blocked";
   const isNodeWaiting = execStatus === "waiting_for_input";
@@ -139,7 +139,11 @@ export const AiAutomationNode = ({
           height: CIRCULAR_NODE_SIZE,
           backgroundColor: "#FFFFFF",
           borderRadius: "50%",
-          border: (allNodesBlue || isNodeRunning || isNodeCompleted)
+          border: isNodeRunning
+            ? "3px solid #0081FB"
+            : (allNodesBlue && isBelongingToActiveRun && execStatus !== "failed")
+            ? "3px solid #0081FB"
+            : (isNodeCompleted && !isAction)
             ? "3px solid #0081FB"
             : isNodeFailed
             ? "3px solid #EF4444"
@@ -152,9 +156,11 @@ export const AiAutomationNode = ({
             : isConnectSource
             ? `2.5px dashed ${accentColor}`
             : `2px solid ${accentColor}`,
-          boxShadow: (allNodesBlue || isNodeRunning)
+          boxShadow: isNodeRunning
             ? "0 0 0 5px rgba(0, 129, 251, 0.4), 0 0 24px rgba(0, 129, 251, 0.4)"
-            : isNodeCompleted
+            : (allNodesBlue && isBelongingToActiveRun && !isAction)
+            ? "0 0 0 4px rgba(0, 129, 251, 0.35), 0 0 20px rgba(0, 129, 251, 0.35)"
+            : (isNodeCompleted && !isAction)
             ? "0 0 0 4px rgba(0, 129, 251, 0.35), 0 0 20px rgba(0, 129, 251, 0.35)"
             : isNodeFailed
             ? "0 0 0 4px rgba(239, 68, 68, 0.35)"
@@ -452,7 +458,7 @@ export const AiAutomationNode = ({
         height: NODE_HEIGHT,
         backgroundColor: "#FFFFFF",
         borderRadius: 22,
-        border: (allNodesBlue || isNodeRunning || isNodeCompleted)
+        border: ((allNodesBlue && isBelongingToActiveRun) || isNodeRunning || isNodeCompleted)
           ? "2.5px solid #0081FB"
           : isNodeVerifying
           ? "2.5px solid #F59E0B"
@@ -471,7 +477,7 @@ export const AiAutomationNode = ({
           : isConnectSource
           ? `2px dashed ${accentColor}`
           : "1.5px solid #E2E8F0",
-        boxShadow: (allNodesBlue || isNodeRunning)
+        boxShadow: ((allNodesBlue && isBelongingToActiveRun) || isNodeRunning)
           ? "0 0 0 4.5px rgba(0, 129, 251, 0.35), 0 10px 28px rgba(0, 129, 251, 0.28)"
           : isNodeVerifying
           ? "0 0 0 4.5px rgba(245, 158, 11, 0.3), 0 10px 28px rgba(245, 158, 11, 0.2)"

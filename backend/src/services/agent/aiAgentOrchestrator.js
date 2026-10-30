@@ -198,9 +198,16 @@ export class AiAgentOrchestrator {
     }
 
     // 2. Google Sheets / Excel Fetch
+    const mentionsSheet = /(sheet|spreadsheet|worksheet|excel|data\s*warehouse)/i.test(text);
+    const mentionsFetch = /(fetch|get|read|load|extract|pull|show|display|view|list|retrieve|deatil|detail|details|field|fields|column|columns|row|rows|content)/i.test(text);
+    const mentionsConnectedSheet = /(connected\s*(?:a\s*)?(?:google\s*)?(?:sheet|spreadsheet|data\s*warehouse)|(?:sheet|spreadsheet)\s*(?:connected|in\s*ai\s*context))/i.test(text);
+    const isSheetWriteOrSync = /(save|write|update|export|append|push|sync)\s*.*(?:to|in|into)\s*(?:sheet|spreadsheet|worksheet|excel)/i.test(text);
+
     const isSheetFetch =
-      /fetch.*(sheet|spreadsheet|excel|rows|data\s*warehouse)|get.*(sheet|spreadsheet|excel|rows)|read.*(sheet|spreadsheet|excel)|connected\s*google\s*sheet|load.*(sheet|spreadsheet)/i.test(text) &&
-      !/(save|write|update|export).*to.*(sheet|spreadsheet)/i.test(text);
+      !isSheetWriteOrSync &&
+      (mentionsConnectedSheet ||
+       (mentionsSheet && mentionsFetch) ||
+       /fetch.*(sheet|spreadsheet|excel|rows|data\s*warehouse)|get.*(sheet|spreadsheet|excel|rows)|read.*(sheet|spreadsheet|excel)|connected\s*google\s*sheet|load.*(sheet|spreadsheet)/i.test(text));
 
     if (isSheetFetch) {
       return {
@@ -1099,7 +1106,7 @@ Review campaign details in your Meta Ads Manager.`;
     const intentObj = this.classifyIntent(instruction, context);
 
     if (typeof onProgress === "function") {
-      onProgress({ state: "running", message: `Executing node task "${node.label || node.type}"...` });
+      await Promise.resolve(onProgress({ state: "running", message: `Executing node task "${node.label || node.type}"...` })).catch(() => {});
     }
 
     const executedTools = await this.executeTools({
@@ -1109,14 +1116,14 @@ Review campaign details in your Meta Ads Manager.`;
       previousNodeOutput,
       onStatus: (st) => {
         if (typeof onProgress === "function") {
-          onProgress({ state: "running", toolName: st.toolName, message: st.status });
+          Promise.resolve(onProgress({ state: "running", toolName: st.toolName, message: st.status })).catch(() => {});
         }
       },
     });
 
     // Enter VERIFYING state
     if (typeof onProgress === "function") {
-      onProgress({ state: "verifying", message: `Verifying task outcomes and data validation...` });
+      await Promise.resolve(onProgress({ state: "verifying", message: `Verifying task outcomes and data validation...` })).catch(() => {});
     }
 
     const validation = this.verifyTaskCompletion({

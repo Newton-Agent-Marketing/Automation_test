@@ -739,7 +739,8 @@ export const AiAutomation = () => {
       // (This prelude only happens ONCE! Backend executes the Start Node task, then subsequent task nodes)
       try {
         const response = await aiAutomationApi.startExecution({
-          startNodeId: firstTaskNode?.id || rootNode?.id || startNodeId,
+          startNodeId: actionNode?.id || startNodeId || firstTaskNode?.id || rootNode?.id,
+          workflowNodeIds: workflowNodes.map((n) => n.id),
           nodes,
           edges,
         });
@@ -874,7 +875,7 @@ export const AiAutomation = () => {
               durationMs: n.durationMs,
             };
           });
-          setNodeStatusMap(initialStatus);
+          setNodeStatusMap((prev) => ({ ...prev, ...initialStatus }));
         }
         // Preserve validated prelude nodes (Action, Date, Time) from execution payload
         const completedFromExec = (execution?.nodes || [])
