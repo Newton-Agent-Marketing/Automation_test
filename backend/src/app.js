@@ -2,15 +2,25 @@ import express from "express";
 import cors from "cors";
 import morgan from "morgan";
 import cookieParser from "cookie-parser";
+import path from "path";
+import { fileURLToPath } from "url";
 import metaDashboardRoutes from "./routes/Dashboard.route.js";
 import chatAgentRoutes from "./routes/Chat.route.js";
 import authRoutes from "./routes/Auth.route.js";
 import channelRoutes from "./routes/channel.route.js";
 import googleOAuth from "./auth/googleOAuth.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const frontendDist = path.resolve(__dirname, "../../frontend/dist");
+
 // App entry point - OAuth Callback configured for http://localhost:3000/oauth/callback
 const app = express();
 
 import { corsOptions, isOriginAllowed } from "./config/cors.js";
+
+// Serve built frontend assets
+app.use(express.static(frontendDist));
 
 // Middleware
 app.use((req, res, next) => {
