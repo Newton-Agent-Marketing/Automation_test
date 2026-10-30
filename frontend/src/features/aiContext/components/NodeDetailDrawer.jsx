@@ -3353,47 +3353,6 @@ export const NodeDetailDrawer = ({
                             />
                           </div>
 
-                          {/* Connected Meta Ad Account for this Sheet */}
-                          <div>
-                            <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, color: "#1E293B", marginBottom: 5 }}>
-                              Connected Meta Ads Account
-                            </label>
-                            <select
-                              value={sheet.metaAccountId || ""}
-                              onChange={(e) => {
-                                const accId = e.target.value;
-                                const matched = (connectedAccounts || []).find((a) => String(a.accountId).trim() === accId.trim());
-                                handleUpdateSheetField(sheet.id, {
-                                  metaAccountId: accId,
-                                  metaAccountName: matched?.accountName || matched?.name || (accId ? `act_${accId}` : ""),
-                                });
-                              }}
-                              style={{
-                                width: "100%",
-                                padding: "8px 10px",
-                                borderRadius: 8,
-                                border: "1px solid #CBD5E1",
-                                fontSize: "12px",
-                                outline: "none",
-                                backgroundColor: "#FFFFFF",
-                                color: "#0F172A",
-                                cursor: "pointer",
-                              }}
-                            >
-                              <option value="">-- Associate with Meta Account (Optional) --</option>
-                              {(connectedAccounts || [])
-                                .filter((a) => {
-                                  const c = (a.channelId || a.channelName || "").toLowerCase();
-                                  return c.includes("meta") || c.includes("facebook") || !a.channelId;
-                                })
-                                .map((acc, aIdx) => (
-                                  <option key={acc.accountId || aIdx} value={acc.accountId}>
-                                    {acc.accountName || acc.name || `act_${acc.accountId}`} ({acc.accountId})
-                                  </option>
-                                ))}
-                            </select>
-                          </div>
-
                           {/* Individual Worksheet Tab Selection Section */}
                           {(isSynced || Boolean(sheet.sheetUrl) || (sheet.availableTabs && sheet.availableTabs.length > 0)) && (
                             <div
