@@ -1436,23 +1436,49 @@ export async function executeAgentTool(toolName, args) {
     const userId = args.userId;
     const context = await AiContext.findOne({ userId }).lean();
 
-    // Find all warehouse nodes that have a sheetUrl OR non-empty sheetRows stored
-    const warehouseNodes = (context?.nodes || []).filter(
-      (n) => n.type === "data_warehouse" && (n.data?.sheetUrl || (Array.isArray(n.data?.sheetRows) && n.data.sheetRows.length > 0))
-    );
+    // 1. Gather all connected sheets from all warehouse nodes (supporting multi-sheet array 'sheets' and single sheet)
+    const allSheets = [];
+    const warehouseNodes = (context?.nodes || []).filter((n) => n.type === "data_warehouse");
 
-    // Always sort by latest lastSyncedAt / updatedAt to ensure the LATEST attached file/sheet is selected
-    warehouseNodes.sort((a, b) => {
-      const timeA = new Date(a.data?.lastSyncedAt || a.updatedAt || 0).getTime();
-      const timeB = new Date(b.data?.lastSyncedAt || b.updatedAt || 0).getTime();
-      return timeB - timeA;
-    });
+    for (const w of warehouseNodes) {
+      if (Array.isArray(w.data?.sheets) && w.data.sheets.length > 0) {
+        w.data.sheets.forEach((s) => {
+          if (s && (s.sheetUrl || (Array.isArray(s.sheetRows) && s.sheetRows.length > 0))) {
+            allSheets.push({
+              sheetIndex: allSheets.length + 1,
+              sheetId: s.id || `sheet_${allSheets.length + 1}`,
+              warehouseNodeId: w.id,
+              sheetName: s.workbookName || s.sheetName || `Sheet #${allSheets.length + 1}`,
+              sheetUrl: (s.sheetUrl || "").trim(),
+              excelProvider: s.excelProvider || (s.sheetUrl ? "Google Sheets" : "Excel File Upload"),
+              rows: Array.isArray(s.sheetRows) ? s.sheetRows : [],
+              columns: Array.isArray(s.sheetColumns) ? s.sheetColumns : Array.isArray(s.columns) ? s.columns : [],
+              availableTabs: Array.isArray(s.availableTabs) ? s.availableTabs : [],
+              selectedTabIds: Array.isArray(s.selectedTabIds) ? s.selectedTabIds : [],
+              selectedTabsData: Array.isArray(s.selectedTabsData) ? s.selectedTabsData : [],
+              dataLabels: s.dataLabels || s.dataLevel || "",
+            });
+          }
+        });
+      } else if (w.data?.sheetUrl || (Array.isArray(w.data?.sheetRows) && w.data.sheetRows.length > 0)) {
+        allSheets.push({
+          sheetIndex: allSheets.length + 1,
+          sheetId: w.id,
+          warehouseNodeId: w.id,
+          sheetName: w.data.workbookName || w.data.sheetName || w.data.title || `Sheet #${allSheets.length + 1}`,
+          sheetUrl: (w.data.sheetUrl || "").trim(),
+          excelProvider: w.data.excelProvider || (w.data.sheetUrl ? "Google Sheets" : "Excel File Upload"),
+          rows: Array.isArray(w.data.sheetRows) ? w.data.sheetRows : [],
+          columns: Array.isArray(w.data.sheetColumns) ? w.data.sheetColumns : Array.isArray(w.data.columns) ? w.data.columns : [],
+          availableTabs: Array.isArray(w.data.availableTabs) ? w.data.availableTabs : [],
+          selectedTabIds: Array.isArray(w.data.selectedTabIds) ? w.data.selectedTabIds : [],
+          selectedTabsData: Array.isArray(w.data.selectedTabsData) ? w.data.selectedTabsData : [],
+          dataLabels: w.data.dataLabels || w.data.dataLevel || "",
+        });
+      }
+    }
 
-    const warehouseNode = args.sheetUrl
-      ? (warehouseNodes.find((n) => n.data?.sheetUrl === args.sheetUrl) || { data: { sheetUrl: args.sheetUrl } })
-      : (warehouseNodes.length > 0 ? warehouseNodes[0] : null);
-
-    if (!warehouseNode || (!warehouseNode.data?.sheetUrl && (!Array.isArray(warehouseNode.data?.sheetRows) || warehouseNode.data.sheetRows.length === 0))) {
+    if (allSheets.length === 0) {
       return {
         success: false,
         message: "No connected Google Sheet or Excel file found in AI Context. Please upload an Excel file or connect a Google Sheet in the AI Context Warehouse node.",
@@ -1461,14 +1487,53 @@ export async function executeAgentTool(toolName, args) {
       };
     }
 
-    let rows = warehouseNode.data?.sheetRows || [];
-    let columns = warehouseNode.data?.sheetColumns || (rows.length > 0 ? Object.keys(rows[0] || {}) : []);
-    const sheetUrl = warehouseNode.data?.sheetUrl;
+    // 2. Select the target sheet based on sheetUrl, sheetIndex, or user instruction
+    let selectedSheet = null;
 
-    const availableTabs = Array.isArray(warehouseNode.data?.availableTabs) ? warehouseNode.data.availableTabs : [];
-    const selectedTabIds = Array.isArray(warehouseNode.data?.selectedTabIds) ? warehouseNode.data.selectedTabIds : [];
-    let selectedTabsData = Array.isArray(warehouseNode.data?.selectedTabsData) && warehouseNode.data.selectedTabsData.length > 0
-      ? warehouseNode.data.selectedTabsData
+    if (args.sheetUrl) {
+      selectedSheet = allSheets.find((s) => s.sheetUrl === args.sheetUrl);
+    }
+
+    if (!selectedSheet && args.sheetIndex && args.sheetIndex <= allSheets.length) {
+      selectedSheet = allSheets[args.sheetIndex - 1];
+    }
+
+    if (!selectedSheet && (args.userMessage || args.userInstruction)) {
+      const msg = `${args.userMessage || ""} ${args.userInstruction || ""}`.toLowerCase();
+      const isSecond = /\b(second|2nd|sheet\s*#?\s*2|sheet2|two\s*sheet|2\s*sheet|dusra|dusri|doosra|doosri)\b/i.test(msg) &&
+                       !/\b(first|1st|sheet\s*#?\s*1|sheet1)\b/i.test(msg);
+      const isThird = /\b(third|3rd|sheet\s*#?\s*3|sheet3|three\s*sheet|3\s*sheet|teesra|teesri)\b/i.test(msg);
+      const isFirst = /\b(first|1st|sheet\s*#?\s*1|sheet1|one\s*sheet|1\s*sheet|pehla|pehli)\b/i.test(msg);
+
+      if (isSecond && allSheets.length >= 2) {
+        selectedSheet = allSheets[1];
+      } else if (isThird && allSheets.length >= 3) {
+        selectedSheet = allSheets[2];
+      } else if (isFirst) {
+        selectedSheet = allSheets[0];
+      } else {
+        const sheetNumMatch = msg.match(/\bsheet\s*#?\s*([0-9]+)\b/i) || msg.match(/\b([0-9]+)(?:st|nd|rd|th)\s*sheet\b/i);
+        if (sheetNumMatch) {
+          const num = parseInt(sheetNumMatch[1], 10);
+          if (num >= 1 && num <= allSheets.length) {
+            selectedSheet = allSheets[num - 1];
+          }
+        }
+      }
+    }
+
+    if (!selectedSheet) {
+      selectedSheet = allSheets[0];
+    }
+
+    let rows = selectedSheet.rows || [];
+    let columns = selectedSheet.columns || (rows.length > 0 ? Object.keys(rows[0] || {}) : []);
+    const sheetUrl = selectedSheet.sheetUrl;
+
+    const availableTabs = Array.isArray(selectedSheet.availableTabs) ? selectedSheet.availableTabs : [];
+    const selectedTabIds = Array.isArray(selectedSheet.selectedTabIds) ? selectedSheet.selectedTabIds : [];
+    let selectedTabsData = Array.isArray(selectedSheet.selectedTabsData) && selectedSheet.selectedTabsData.length > 0
+      ? selectedSheet.selectedTabsData
       : [];
 
     // Live Auto-Sync for Google Sheets URLs
@@ -1497,19 +1562,6 @@ export async function executeAgentTool(toolName, args) {
             });
             rows = combinedRows;
             columns = Array.from(new Set(refreshedTabs.flatMap((t) => t.columns || [])));
-
-            AiContext.updateOne(
-              { userId, "nodes.id": warehouseNode.id },
-              {
-                $set: {
-                  "nodes.$.data.selectedTabsData": selectedTabsData,
-                  "nodes.$.data.sheetRows": rows,
-                  "nodes.$.data.sheetColumns": columns,
-                  "nodes.$.data.totalRows": rows.length,
-                  "nodes.$.data.lastSyncedAt": new Date(),
-                },
-              }
-            ).catch(() => {});
           }
         } else {
           // Standard single-sheet read fallback
@@ -1517,18 +1569,6 @@ export async function executeAgentTool(toolName, args) {
           if (readResult && readResult.rows && readResult.rows.length > 0) {
             rows = readResult.rows;
             columns = readResult.headers || Object.keys(rows[0] || {});
-
-            AiContext.updateOne(
-              { userId, "nodes.id": warehouseNode.id },
-              {
-                $set: {
-                  "nodes.$.data.sheetRows": rows,
-                  "nodes.$.data.sheetColumns": columns,
-                  "nodes.$.data.totalRows": rows.length,
-                  "nodes.$.data.lastSyncedAt": new Date(),
-                },
-              }
-            ).catch(() => {});
           }
         }
       } catch (err) {
@@ -1587,12 +1627,10 @@ export async function executeAgentTool(toolName, args) {
     }
 
     const sheetName =
-      warehouseNode.data?.workbookName ||
-      warehouseNode.data?.fileName ||
-      warehouseNode.data?.sheetName ||
-      warehouseNode.data?.name ||
-      warehouseNode.data?.title ||
-      (sheetUrl ? sheetUrl.split("/").pop().split("?")[0] : "Connected Sheet");
+      selectedSheet.sheetName ||
+      selectedSheet.workbookName ||
+      selectedSheet.title ||
+      (sheetUrl ? sheetUrl.split("/").pop().split("?")[0] : `Sheet #${selectedSheet.sheetIndex || 1}`);
 
     const routing = CampaignRouter.routeSheet({
       headers: columns,
@@ -1603,9 +1641,11 @@ export async function executeAgentTool(toolName, args) {
 
     return {
       success: true,
+      sheetIndex: selectedSheet.sheetIndex || 1,
+      sheetId: selectedSheet.sheetId,
       sheetUrl,
       sheetName,
-      provider: warehouseNode.data?.excelProvider || (sheetUrl ? "Google Sheets" : "Excel File Upload"),
+      provider: selectedSheet.excelProvider || (sheetUrl ? "Google Sheets" : "Excel File Upload"),
       totalRows: rows.length,
       columns,
       rows,
@@ -1616,7 +1656,7 @@ export async function executeAgentTool(toolName, args) {
         totalRows: t.totalRows,
       })),
       selectedTabNames: selectedTabsData.map((t) => t.tabName),
-      lastSyncedAt: warehouseNode.data?.lastSyncedAt || null,
+      lastSyncedAt: selectedSheet.lastSyncedAt || null,
       campaignType: routing.campaignType,
       selectedSkill: routing.selectedSkill,
       confidence: routing.confidence,

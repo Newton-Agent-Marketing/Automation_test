@@ -26,6 +26,64 @@ import { AgentStreamHandler } from "./agentStream.js";
  */
 export class AiAgentOrchestrator {
   /**
+   * Helper to resolve target sheet from multiple connected sheets based on user instruction
+   */
+  static resolveTargetSheet(allConnectedSheets = [], instruction = "") {
+    if (!allConnectedSheets || allConnectedSheets.length === 0) return null;
+    if (allConnectedSheets.length === 1) return allConnectedSheets[0];
+
+    const text = String(instruction || "").toLowerCase();
+
+    // 1. Explicit ordinal or index references (second, 2nd, sheet 2, etc.)
+    const isSecondSheet =
+      /\b(second|2nd|sheet\s*#?\s*2|sheet2|two\s*sheet|2\s*sheet|dusra|dusri|doosra|doosri)\b/i.test(text) &&
+      !/\b(first|1st|sheet\s*#?\s*1|sheet1)\b/i.test(text);
+
+    const isThirdSheet =
+      /\b(third|3rd|sheet\s*#?\s*3|sheet3|three\s*sheet|3\s*sheet|teesra|teesri)\b/i.test(text);
+
+    const isFirstSheet =
+      /\b(first|1st|sheet\s*#?\s*1|sheet1|one\s*sheet|1\s*sheet|pehla|pehli)\b/i.test(text) &&
+      !isSecondSheet && !isThirdSheet;
+
+    if (isSecondSheet && allConnectedSheets.length >= 2) {
+      return allConnectedSheets[1]; // 2nd sheet
+    }
+    if (isThirdSheet && allConnectedSheets.length >= 3) {
+      return allConnectedSheets[2]; // 3rd sheet
+    }
+    if (isFirstSheet) {
+      return allConnectedSheets[0]; // 1st sheet
+    }
+
+    // 2. Numbered patterns like "sheet 2", "2nd sheet"
+    const sheetNumMatch = text.match(/\bsheet\s*#?\s*([0-9]+)\b/i) || text.match(/\b([0-9]+)(?:st|nd|rd|th)\s*sheet\b/i);
+    if (sheetNumMatch) {
+      const num = parseInt(sheetNumMatch[1], 10);
+      if (num >= 1 && num <= allConnectedSheets.length) {
+        return allConnectedSheets[num - 1];
+      }
+    }
+
+    // 3. Match by Sheet Name / Workbook Name / Data Label
+    for (const s of allConnectedSheets) {
+      if (s.sheetName && s.sheetName.length > 3) {
+        const cleanName = s.sheetName.toLowerCase().replace(/[-_.]/g, " ");
+        if (text.includes(s.sheetName.toLowerCase()) || text.includes(cleanName)) {
+          return s;
+        }
+      }
+      if (s.dataLabel && s.dataLabel.length > 3) {
+        if (text.includes(s.dataLabel.toLowerCase())) {
+          return s;
+        }
+      }
+    }
+
+    return allConnectedSheets[0];
+  }
+
+  /**
    * 1. CONTEXT RETRIEVAL SERVICE
    * Resolves authentic workspace context, connected accounts, AI Context hierarchy, and ad account bindings.
    */
@@ -102,38 +160,58 @@ export class AiAgentOrchestrator {
       targetGoogleCustomerId = primaryGoogle.selectedCustomerId || primaryGoogle.accountId || null;
     }
 
-    // Extract connected Google Sheet URL and Tab selections from AI Context Warehouse nodes
-    let connectedSheetUrl = null;
-    let connectedSheetName = "Connected Google Sheet";
-    let availableTabs = [];
-    let selectedTabIds = [];
-    let selectedTabs = [];
-    let excludedTabs = [];
-
+    // Extract all connected Google Sheets and Tab selections from AI Context Warehouse nodes
+    const allConnectedSheets = [];
     if (aiContextDoc?.nodes) {
       const warehouseNodes = aiContextDoc.nodes.filter((n) => n.type === "data_warehouse");
       for (const w of warehouseNodes) {
-        if (w.data?.sheetUrl) {
-          connectedSheetUrl = w.data.sheetUrl;
-          connectedSheetName = w.data.workbookName || w.data.sheetName || w.data.title || "Google Sheet";
-          availableTabs = Array.isArray(w.data.availableTabs) ? w.data.availableTabs : [];
-          selectedTabIds = Array.isArray(w.data.selectedTabIds) ? w.data.selectedTabIds : [];
-          selectedTabs = Array.isArray(w.data.selectedTabsData) ? w.data.selectedTabsData : [];
-          break;
-        }
         if (Array.isArray(w.data?.sheets) && w.data.sheets.length > 0) {
-          const first = w.data.sheets.find((s) => s.sheetUrl);
-          if (first) {
-            connectedSheetUrl = first.sheetUrl;
-            connectedSheetName = first.workbookName || first.sheetName || "Google Sheet";
-            availableTabs = Array.isArray(first.availableTabs) ? first.availableTabs : [];
-            selectedTabIds = Array.isArray(first.selectedTabIds) ? first.selectedTabIds : [];
-            selectedTabs = Array.isArray(first.selectedTabsData) ? first.selectedTabsData : [];
-            break;
+          for (let sIdx = 0; sIdx < w.data.sheets.length; sIdx++) {
+            const s = w.data.sheets[sIdx];
+            if (s && (s.sheetUrl || (Array.isArray(s.sheetRows) && s.sheetRows.length > 0))) {
+              allConnectedSheets.push({
+                sheetIndex: allConnectedSheets.length + 1,
+                sheetId: s.id || `sheet_${allConnectedSheets.length + 1}`,
+                sheetUrl: s.sheetUrl || "",
+                sheetName: s.workbookName || s.sheetName || `Sheet #${allConnectedSheets.length + 1}`,
+                dataLabel: s.dataLabels || s.dataLevel || "",
+                totalRows: s.totalRows || (Array.isArray(s.sheetRows) ? s.sheetRows.length : 0),
+                sheetRows: s.sheetRows || [],
+                sheetColumns: s.sheetColumns || s.columns || [],
+                availableTabs: Array.isArray(s.availableTabs) ? s.availableTabs : [],
+                selectedTabIds: Array.isArray(s.selectedTabIds) ? s.selectedTabIds : [],
+                selectedTabsData: Array.isArray(s.selectedTabsData) ? s.selectedTabsData : [],
+                warehouseNodeId: w.id,
+              });
+            }
           }
+        } else if (w.data?.sheetUrl || (Array.isArray(w.data?.sheetRows) && w.data.sheetRows.length > 0)) {
+          allConnectedSheets.push({
+            sheetIndex: allConnectedSheets.length + 1,
+            sheetId: w.id,
+            sheetUrl: w.data.sheetUrl || "",
+            sheetName: w.data.workbookName || w.data.sheetName || w.data.title || `Sheet #${allConnectedSheets.length + 1}`,
+            dataLabel: w.data.dataLabels || w.data.dataLevel || "",
+            totalRows: w.data.totalRows || (Array.isArray(w.data.sheetRows) ? w.data.sheetRows.length : 0),
+            sheetRows: w.data.sheetRows || [],
+            sheetColumns: w.data.sheetColumns || w.data.columns || [],
+            availableTabs: Array.isArray(w.data.availableTabs) ? w.data.availableTabs : [],
+            selectedTabIds: Array.isArray(w.data.selectedTabIds) ? w.data.selectedTabIds : [],
+            selectedTabsData: Array.isArray(w.data.selectedTabsData) ? w.data.selectedTabsData : [],
+            warehouseNodeId: w.id,
+          });
         }
       }
     }
+
+    const targetSheet = this.resolveTargetSheet(allConnectedSheets, userMessage);
+    const connectedSheetUrl = targetSheet?.sheetUrl || null;
+    const connectedSheetName = targetSheet?.sheetName || "Connected Google Sheet";
+    const availableTabs = targetSheet?.availableTabs || [];
+    const selectedTabIds = targetSheet?.selectedTabIds || [];
+    const selectedTabs = targetSheet?.selectedTabsData || [];
+    const targetSheetIndex = targetSheet?.sheetIndex || 1;
+    let excludedTabs = [];
 
     if (availableTabs.length > 0 && selectedTabIds.length > 0) {
       excludedTabs = availableTabs
@@ -150,6 +228,9 @@ export class AiAgentOrchestrator {
       aiContext: aiContextDoc,
       targetMetaAccountId,
       targetGoogleCustomerId,
+      allConnectedSheets,
+      targetSheet,
+      targetSheetIndex,
       connectedSheetUrl,
       connectedSheetName,
       availableTabs,
@@ -321,24 +402,32 @@ export class AiAgentOrchestrator {
 
     // --- TOOL: get_connected_sheet_rows ---
     if (intentObj.intent === "GOOGLE_SHEET_FETCH" || intentObj.tools.includes("get_connected_sheet_rows")) {
-      emitStatus("get_connected_sheet_rows", "Fetching connected Google Sheet rows...");
+      const targetSheet = this.resolveTargetSheet(context.allConnectedSheets, instruction) || context.targetSheet;
+      const targetUrl = targetSheet?.sheetUrl || context.connectedSheetUrl;
+      const targetName = targetSheet?.sheetName || context.connectedSheetName;
+      const targetIndex = targetSheet?.sheetIndex || context.targetSheetIndex || 1;
+
+      emitStatus("get_connected_sheet_rows", `Fetching rows from Sheet #${targetIndex} (${targetName})...`);
       const startTime = Date.now();
       try {
         let sheetResult = await executeAgentTool("get_connected_sheet_rows", {
           userId: context.userId,
-          sheetUrl: context.connectedSheetUrl,
+          sheetUrl: targetUrl,
+          sheetIndex: targetIndex,
+          sheetName: targetName,
           userMessage: instruction,
         });
 
         // Direct Sheets API fallback if executeAgentTool returned 0 rows and a URL is configured
-        if ((!sheetResult || !sheetResult.success || (sheetResult.rows && sheetResult.rows.length === 0)) && context.connectedSheetUrl) {
+        if ((!sheetResult || !sheetResult.success || (sheetResult.rows && sheetResult.rows.length === 0)) && targetUrl) {
           try {
-            const directRead = await sheetsService.readSpreadsheet({ spreadsheetIdOrUrl: context.connectedSheetUrl });
+            const directRead = await sheetsService.readSpreadsheet({ spreadsheetIdOrUrl: targetUrl });
             if (directRead && directRead.rows && directRead.rows.length > 0) {
               sheetResult = {
                 success: true,
-                sheetUrl: context.connectedSheetUrl,
-                sheetName: directRead.title || context.connectedSheetName || "Connected Sheet",
+                sheetIndex: targetIndex,
+                sheetUrl: targetUrl,
+                sheetName: directRead.title || targetName || `Sheet #${targetIndex}`,
                 totalRows: directRead.rows.length,
                 columns: directRead.headers || Object.keys(directRead.rows[0] || {}),
                 rows: directRead.rows,
@@ -351,7 +440,7 @@ export class AiAgentOrchestrator {
 
         executedTools.push({
           toolName: "get_connected_sheet_rows",
-          toolArgs: { sheetUrl: context.connectedSheetUrl, userId: context.userId },
+          toolArgs: { sheetUrl: targetUrl, sheetIndex: targetIndex, userId: context.userId },
           toolResult: sheetResult,
           status: sheetResult?.success && (sheetResult.rows?.length > 0 || sheetResult.totalRows > 0) ? "SUCCESS" : "FAILED",
           durationMs: Date.now() - startTime,
@@ -359,7 +448,7 @@ export class AiAgentOrchestrator {
       } catch (err) {
         executedTools.push({
           toolName: "get_connected_sheet_rows",
-          toolArgs: { sheetUrl: context.connectedSheetUrl },
+          toolArgs: { sheetUrl: targetUrl, sheetIndex: targetIndex },
           toolResult: { success: false, error: err.message },
           status: "FAILED",
           durationMs: Date.now() - startTime,
@@ -599,12 +688,15 @@ export class AiAgentOrchestrator {
           break;
         }
 
-        checks.push({ name: "Google Sheets Connection", passed: true, detail: `Found sheet: ${sheetTool.toolResult?.sheetName || "Sheet"}` });
+        const sIdx = sheetTool.toolResult?.sheetIndex || context.targetSheetIndex || 1;
+        const sName = sheetTool.toolResult?.sheetName || "Sheet";
+        checks.push({ name: "Google Sheets Connection", passed: true, detail: `Found Sheet #${sIdx}: ${sName}` });
         checks.push({ name: "Data Ingestion", passed: true, detail: `Retrieved ${totalRows} rows and ${sheetTool.toolResult?.columns?.length || 0} columns` });
 
         verifiedOutputData = {
           type: "google_sheet_data",
-          spreadsheet: sheetTool.toolResult?.sheetName || "Google Sheet",
+          sheetIndex: sIdx,
+          spreadsheet: sName,
           sheetUrl: sheetTool.toolResult?.sheetUrl,
           columns: sheetTool.toolResult?.columns || Object.keys(rows[0] || {}),
           rowsFetched: totalRows,
@@ -810,11 +902,14 @@ How can I help you today? You can ask me to:
         ? res.selectedTabs.map((t) => `\`${t.tabName}\` (${t.totalRows || 0} rows)`).join(", ")
         : null;
 
-      return `### 📄 Connected Spreadsheet Data Ingested
+      const sIdx = res.sheetIndex || context.targetSheetIndex || 1;
+      const sTitle = res.sheetName || context.connectedSheetName || `Sheet #${sIdx}`;
+
+      return `### 📄 Connected Spreadsheet Data Ingested (Sheet #${sIdx}: ${sTitle})
 
 > **Node Instruction:** *"${instruction}"*  
-> **Source:** **${res.sheetName || context.connectedSheetName}** (${res.totalRows || rows.length} total rows)  
-${activeTabsList ? `> **Active Selected Tabs:** ${activeTabsList}  \n` : ""}> **Verification Status:** **✅ VERIFIED & VALIDATED**
+> **Source:** **Sheet #${sIdx} — ${sTitle}** (${res.totalRows || rows.length} total rows)  
+${res.sheetUrl ? `> **Spreadsheet Link:** [Open in Google Sheets](${res.sheetUrl})  \n` : ""}${activeTabsList ? `> **Active Selected Tabs:** ${activeTabsList}  \n` : ""}> **Verification Status:** **✅ VERIFIED & VALIDATED**
 
 ---
 

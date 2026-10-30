@@ -938,11 +938,14 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
 
   const getConnectedSheetRows = tool(
     "get_connected_sheet_rows",
-    "Fetch latest real-time campaign configuration rows, columns, and stable row_ids from the user's connected Google Sheet or Excel warehouse document.",
-    {},
-    async () => {
+    "Fetch latest real-time campaign configuration rows, columns, and stable row_ids from the user's connected Google Sheet or Excel warehouse document. Can target a specific sheet by index (e.g. 1 for first sheet, 2 for second sheet) or sheetUrl.",
+    {
+      sheetIndex: z.number().optional().describe("1-based index of the connected sheet (1 for first sheet, 2 for second sheet, etc.)"),
+      sheetUrl: z.string().optional().describe("Optional URL of the specific spreadsheet to fetch rows from"),
+    },
+    async (args = {}) => {
       try {
-        const result = await executeAgentTool("get_connected_sheet_rows", { userId });
+        const result = await executeAgentTool("get_connected_sheet_rows", { ...args, userId });
         return toToolResult(result);
       } catch (error) {
         return toToolError(error);
