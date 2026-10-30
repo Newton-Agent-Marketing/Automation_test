@@ -53,14 +53,19 @@ export class DynamicSheetFilter {
     if (!msg || typeof msg !== "string") return null;
     const isCampaign = type === "campaign";
 
-    // Fast-path: Explicit key-value declaration takes highest precedence (e.g. "- Campaign Name: Diwali Special Promo")
+    const boundaryRegex = isCampaign
+      ? /\s*(?:;|\n|\r|(?=\s*(?:and|aur|also|with|using|from|for|under|into|in|on|,|\|)?\s*(?:process\b|upload\b|where\b|filter\b|only\b|(?:create|make|launch|set\s*up|build|banao|put|add)\s*(?:an?|the)?\s*(?:adset|ad_set|ad\s*set|adgroup|ads?\b)|\b(?:adset|ad_set|ad\s*set|adgroup|ads?\b)\b|ad_name|ad_set_name|adset_name|budget|daily\s*budget|sheet|spreadsheet|excel|rows?|lines?|from\s+row|start\s*row)\b))/i
+      : /\s*(?:;|\n|\r|(?=\s*(?:and|aur|also|with|using|from|for|under|into|in|on|,|\|)?\s*(?:process\b|upload\b|where\b|filter\b|only\b|(?:create|make|launch|set\s*up|build|banao|put|add)\s*(?:an?|the)?\s*(?:campaign|camp|ads?\b)|\b(?:campaign|camp|ads?\b)\b|campaign_name|camp_name|ad_name|(?:the\s+)?ad\s+creatives|creatives\s+(?:and|from)|budget|daily\s*budget|sheet|spreadsheet|excel|rows?|lines?|from\s+row|start\s*row)\b))/i;
+
+    // Fast-path: Explicit key-value declaration takes highest precedence (e.g. "- Campaign Name: Diwali Special Promo", "Adset name - Shiva New Creatives Test")
     const explicitPattern = isCampaign
-      ? /(?:^|[\n\r;•\-])\s*(?:campaign\s*(?:names?|title|titled|label|called)?|campaign_name|camp\s*(?:names?|title)?)\s*[:=]\s*([^\n\r;]+)/i
-      : /(?:^|[\n\r;•\-])\s*(?:(?:adset|ad_set|ad\s*set|adgroup)\s*(?:names?|title|titled|label|called)?|ad_set_name|adset_name)\s*[:=]\s*([^\n\r;]+)/i;
+      ? /(?:^|[\n\r;•\-,])\s*(?:campaign\s*(?:names?|title|titled|label|called)?|campaign_name|camp\s*(?:names?|title)?)\s*[:=\-–—]\s*([^\n\r;]+)/i
+      : /(?:^|[\n\r;•\-,])\s*(?:(?:adset|ad_set|ad\s*set|adgroup)\s*(?:names?|title|titled|label|called)?|ad_set_name|adset_name)\s*[:=\-–—]\s*([^\n\r;]+)/i;
 
     const explicitMatch = msg.match(explicitPattern);
     if (explicitMatch && explicitMatch[1]) {
-      const explicitVal = explicitMatch[1].trim().replace(/^["'\`]+|["'\`]+$/g, "").trim();
+      let explicitVal = explicitMatch[1].trim().replace(/^["'\`]+|["'\`]+$/g, "").trim();
+      explicitVal = explicitVal.split(boundaryRegex)[0].trim().replace(/^["'\s,;•\-\*|]+|["'\.,\s,;•\-\*|]+$/g, "").trim();
       if (explicitVal && !explicitVal.toLowerCase().startsWith("http") && !/(?:on\s+meta\s+ads|for\s+ad\s+account)/i.test(explicitVal)) {
         return explicitVal;
       }
@@ -78,8 +83,8 @@ export class DynamicSheetFilter {
       let afterKey = msg.substring(match.index + match[0].length).trim();
       if (!afterKey) continue;
 
-      // Remove connector words between entity keyword and the actual name
-      afterKey = afterKey.replace(/^(?:names?|title|titled|label|called|ka\s*naam|ka\s*name)?\s*(?:is|will\s*be|should\s*be|be|as|to|into|named|called|titled|labeled|[:=\-–—])\s*/i, "").trim();
+      // Remove connector words between entity keyword and the actual name (supports "in Draft with Name", "with Name", "is", etc.)
+      afterKey = afterKey.replace(/^(?:(?:in\s+draft(?:\s+mode)?\s*)?(?:with\s+)?(?:names?|title|titled|label|called|ka\s*naam|ka\s*name)\s*(?:is|will\s*be|should\s*be|be|as|to|into|named|called|titled|labeled|[:=\-–—])?|(?:is|will\s*be|should\s*be|be|as|to|into|named|called|titled|labeled|[:=\-–—]))\s*/i, "").trim();
       if (!afterKey) continue;
 
       // 1. Quoted name: "Foo", 'Foo', `Foo`
@@ -90,10 +95,6 @@ export class DynamicSheetFilter {
       }
 
       // 2. Unquoted name: split at next structural boundary
-      const boundaryRegex = isCampaign
-        ? /\s*(?:;|\n|\r|(?=\s*(?:and|aur|also|with|using|from|for|under|into|in|on|,|\|)?\s*(?:process\b|upload\b|where\b|filter\b|only\b|(?:create|make|launch|set\s*up|build|banao)\s*(?:an?|the)?\s*(?:adset|ad_set|ad\s*set|adgroup)|(?:adset|ad_set|ad\s*set|adgroup)[_\s]*(?:names?|title|titled|called|[:=\-–—])?|ad_set_name|adset_name|budget|daily\s*budget|sheet|spreadsheet|excel|rows?|lines?|from\s+row|start\s*row)\b))/i
-        : /\s*(?:;|\n|\r|(?=\s*(?:and|aur|also|with|using|from|for|under|into|in|on|,|\|)?\s*(?:process\b|upload\b|where\b|filter\b|only\b|(?:create|make|launch|set\s*up|build|banao)\s*(?:an?|the)?\s*(?:campaign|camp)|(?:campaign|camp)[_\s]*(?:names?|title|titled|called|[:=\-–—])?|campaign_name|camp_name|budget|daily\s*budget|sheet|spreadsheet|excel|rows?|lines?|from\s+row|start\s*row)\b))/i;
-
       const parts = afterKey.split(boundaryRegex);
       let rawVal = parts[0] ? parts[0].trim() : "";
 
@@ -122,6 +123,8 @@ export class DynamicSheetFilter {
   /**
    * Extract dynamic Ad Name pattern / template from user prompt.
    * Matches lines like:
+   *   - Put Ads with Name - ...
+   *   - with ads named Summer Offer 1
    *   - Ad name : "Creative Code+Nomenclature"
    *   - Ad Name: Creative Code + Nomenclature
    *   - Ad name: [Creative Code] - [Nomenclature]
@@ -131,11 +134,12 @@ export class DynamicSheetFilter {
   static parseAdNamePattern(msg) {
     if (!msg || typeof msg !== "string") return null;
 
-    // 1. Explicit key-value declaration: "- Ad name : ...", "Ad name: ...", "Ad Name = ..."
-    const explicitPattern = /(?:^|[\n\r;•\-])\s*(?:ad\s*(?:names?|title|titled|label|called)?|ad_name)\s*[:=]\s*([^\n\r;]+)/i;
+    // 1. Explicit key-value or phrasal declaration: "Put Ads with Name - ...", "- Ad name : ...", "Ad name: ...", "Ad Name = ..."
+    const explicitPattern = /(?:(?:put|create|make|set|place|launch|with)\s+)?(?:ads?\s*(?:with\s+)?(?:named|called|titled|names?|title|label)?|ad_name)\s*(?:[:=\-–—]|named|called|titled|as)\s*([^\n\r;]+)/i;
     const explicitMatch = msg.match(explicitPattern);
     if (explicitMatch && explicitMatch[1]) {
       let rawVal = explicitMatch[1].trim().replace(/^["'\`]+|["'\`]+$/g, "").trim();
+      rawVal = rawVal.replace(/\s+(?:the\s+ad\s+creatives|the\s+creatives|creatives\b|and\s+everything|fetch\s+from|from\s+(?:connected\s+)?(?:google\s+)?sheet).*/i, "").trim();
       if (rawVal) {
         return rawVal;
       }

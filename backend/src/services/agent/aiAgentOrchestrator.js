@@ -278,13 +278,28 @@ export class AiAgentOrchestrator {
       };
     }
 
-    // 2. Google Sheets / Excel Fetch
+    // 2. Meta Ads Campaign / Ad Set / Creative Creation (Takes priority over pure sheet fetching)
+    const isMetaCreation =
+      /(create|launch|draft|build|setup|publish|make|banao|deploy)\s*(?:a\s*)?(?:new\s*)?(?:meta\s*|facebook\s*)?(?:draft\s*)?(campaign|adset|ad\s*set|ad\b|ads\b|creative)/i.test(text) ||
+      /(create|launch|draft|build|setup|publish|make|banao|deploy)\s+.*(?:campaign|adset|ad\s*set|ad\b|ads\b)/i.test(text);
+
+    if (isMetaCreation) {
+      return {
+        intent: "CAMPAIGN_CREATION",
+        requiresTools: true,
+        tools: ["create_meta_campaign", "create_meta_ad_set", "create_meta_ad", "verify_meta_campaign"],
+        description: "Build and verify multi-level Meta Ads campaign hierarchy",
+      };
+    }
+
+    // 3. Google Sheets / Excel Fetch
     const mentionsSheet = /(sheet|spreadsheet|worksheet|excel|data\s*warehouse)/i.test(text);
     const mentionsFetch = /(fetch|get|read|load|extract|pull|show|display|view|list|retrieve|deatil|detail|details|field|fields|column|columns|row|rows|content)/i.test(text);
     const mentionsConnectedSheet = /(connected\s*(?:a\s*)?(?:google\s*)?(?:sheet|spreadsheet|data\s*warehouse)|(?:sheet|spreadsheet)\s*(?:connected|in\s*ai\s*context))/i.test(text);
     const isSheetWriteOrSync = /(save|write|update|export|append|push|sync)\s*.*(?:to|in|into)\s*(?:sheet|spreadsheet|worksheet|excel)/i.test(text);
 
     const isSheetFetch =
+      !isMetaCreation &&
       !isSheetWriteOrSync &&
       (mentionsConnectedSheet ||
        (mentionsSheet && mentionsFetch) ||
@@ -299,7 +314,7 @@ export class AiAgentOrchestrator {
       };
     }
 
-    // 3. Google Sheets / Excel Write / Save Recommendations
+    // 4. Google Sheets / Excel Write / Save Recommendations
     const isSheetWrite =
       /(save|write|update|export|append|push).*(recommendations?|results?|data|output|analysis|findings?).*(to|into).*(sheet|spreadsheet|excel|warehouse)/i.test(text) ||
       /(save|write|update).*(sheet|spreadsheet)/i.test(text);
@@ -313,7 +328,7 @@ export class AiAgentOrchestrator {
       };
     }
 
-    // 4. Data Analysis / Creative Audit / CPA Benchmarking on Preceding Step Data
+    // 5. Data Analysis / Creative Audit / CPA Benchmarking on Preceding Step Data
     const isDataAnalysis =
       /(previous\s*node|preceding|context\s*from|upstream)/i.test(text) ||
       /(analyze|evaluate|audit|rank|calculate|compare|benchmark|review|examine).*(spreadsheet|data|creatives?|cpa|performance|campaigns?|metrics)/i.test(text) ||
@@ -329,7 +344,7 @@ export class AiAgentOrchestrator {
       };
     }
 
-    // 5. Meta Ads Performance, Insights & Spend Query
+    // 6. Meta Ads Performance, Insights & Spend Query
     const isMetaMetrics =
       /(campaign\s*performance|ad\s*performance|meta\s*ads?|facebook\s*ads?|roas|ctr|cpa|cpc|spend|clicks|impressions|conversions|purchases|top\s*campaigns?|winning\s*ads?)/i.test(text) &&
       !/(create|launch|draft|build|setup|publish)\s*(campaign|adset|ad)/i.test(text);
@@ -343,7 +358,7 @@ export class AiAgentOrchestrator {
       };
     }
 
-    // 6. Google Ads Performance Query
+    // 7. Google Ads Performance Query
     const isGoogleMetrics =
       /(google\s*ads?|google\s*campaign|adwords|search\s*campaign|keywords?)/i.test(text) &&
       /(performance|spend|impressions|clicks|conversions|roas|cpc|cost)/i.test(text) &&
@@ -355,19 +370,6 @@ export class AiAgentOrchestrator {
         requiresTools: true,
         tools: ["fetch_live_google_ads_mcp", "query_database_metrics"],
         description: "Fetch live Google Ads campaign performance, keywords, and spend",
-      };
-    }
-
-    // 7. Meta Ads Campaign / Ad Set / Creative Creation
-    const isMetaCreation =
-      /(create|launch|draft|build|setup|publish|make)\s*(?:a\s*)?(?:meta\s*|facebook\s*)?(?:new\s*)?(campaign|adset|ad\s*set|ad\b|ads\b|creative)/i.test(text);
-
-    if (isMetaCreation) {
-      return {
-        intent: "CAMPAIGN_CREATION",
-        requiresTools: true,
-        tools: ["create_meta_campaign", "create_meta_ad_set", "create_meta_ad", "verify_meta_campaign"],
-        description: "Build and verify multi-level Meta Ads campaign hierarchy",
       };
     }
 
@@ -850,12 +852,13 @@ export class AiAgentOrchestrator {
     validation,
     previousNodeOutput = null,
   }) {
+    const isAutomation = Boolean(context.isAutomation || context.conversationId?.startsWith("automation_"));
+
     // If validation failed, report the actual reason transparently
     if (!validation.verified) {
       return `### ❌ Execution Alert: Task Validation Failed
 
-> **Instruction:** *"${instruction}"*  
-> **Status:** **${validation.status.toUpperCase()}**
+${isAutomation ? `> **Instruction:** *"${instruction}"*  \n` : ""}> **Status:** **${validation.status.toUpperCase()}**
 
 #### 🛑 Error & Barrier Details
 ${validation.reason}
@@ -865,7 +868,7 @@ ${validation.checks.map((c) => `- ${c.passed ? "✅" : "❌"} **${c.name}**: ${c
 
 #### 💡 Action Required
 - Please check your connected accounts and input parameters before retrying.
-- Downstream automation steps have been halted to prevent cascading corruptions.`;
+${isAutomation ? "- Downstream automation steps have been halted to prevent cascading corruptions." : ""}`;
     }
 
     // 1. Conversational Response
@@ -907,8 +910,7 @@ How can I help you today? You can ask me to:
 
       return `### 📄 Connected Spreadsheet Data Ingested (Sheet #${sIdx}: ${sTitle})
 
-> **Node Instruction:** *"${instruction}"*  
-> **Source:** **Sheet #${sIdx} — ${sTitle}** (${res.totalRows || rows.length} total rows)  
+${isAutomation ? `> **Node Instruction:** *"${instruction}"*  \n` : ""}> **Source:** **Sheet #${sIdx} — ${sTitle}** (${res.totalRows || rows.length} total rows)  
 ${res.sheetUrl ? `> **Spreadsheet Link:** [Open in Google Sheets](${res.sheetUrl})  \n` : ""}${activeTabsList ? `> **Active Selected Tabs:** ${activeTabsList}  \n` : ""}> **Verification Status:** **✅ VERIFIED & VALIDATED**
 
 ---
@@ -924,7 +926,7 @@ ${tableRows}
 - **Total Valid Rows Extracted:** **${res.totalRows || rows.length}**
 ${activeTabsList ? `- **Worksheet Tab Isolation:** Ingested from selected tabs (${activeTabsList}). Unselected tabs were excluded from the execution context.` : ""}
 - **Detected Columns:** \`${columns.join("`, `")}\`
-- **Lineage Integrity:** Data verified from authorized source. The structured payload has been validated and packaged for downstream execution nodes.`;
+- **Lineage Integrity:** Data verified from authorized source. ${isAutomation ? "The structured payload has been validated and packaged for downstream execution nodes." : "Loaded into your workspace context."}`;
     }
 
     // 2.5. Daily Meta Ads Google Sheet Sync Response
@@ -939,8 +941,7 @@ ${activeTabsList ? `- **Worksheet Tab Isolation:** Ingested from selected tabs (
 
       return `### 📊 Daily Meta Ads Reporting Sync Completed
 
-> **Node Instruction:** *"${instruction}"*  
-> **Connected Meta Account:** **act_${res.metaAccountId}** (${res.metaAccountName || "Meta Ads"})  
+${isAutomation ? `> **Node Instruction:** *"${instruction}"*  \n` : ""}> **Connected Meta Account:** **act_${res.metaAccountId}** (${res.metaAccountName || "Meta Ads"})  
 > **Spreadsheet ID:** \`${res.spreadsheetId}\`  
 > **Worksheet Tab:** **${res.targetTab}**  
 > **Reporting Period:** **${res.targetDate}** (${res.timeZone || "Asia/Kolkata"})  
@@ -970,8 +971,7 @@ ${logsMarkdown}
     if (intentObj.intent === "GOOGLE_SHEET_WRITE") {
       return `### 💾 Recommendations Saved to Google Sheet
 
-> **Node Instruction:** *"${instruction}"*  
-> **Target Sheet:** **${context.connectedSheetName}**  
+${isAutomation ? `> **Node Instruction:** *"${instruction}"*  \n` : ""}> **Target Sheet:** **${context.connectedSheetName}**  
 > **Verification Status:** **✅ VERIFIED (Cells Updated)**
 
 ---
@@ -979,7 +979,7 @@ ${logsMarkdown}
 #### 📝 Action Details
 - Successfully transmitted structured creative & budget recommendations into the designated sheet.
 - Written records have been committed to live Google Sheets storage and verified.
-- Downstream nodes can now reference the confirmed sheet state.`;
+${isAutomation ? "- Downstream nodes can now reference the confirmed sheet state." : ""}`;
     }
 
     // 4. Meta Ads Performance Response
@@ -1055,15 +1055,14 @@ ${tableRows || "| No active campaign spend recorded in this period | - | ₹0 | 
 
 #### 💡 Analytical Findings & Recommendations
 1. **Budget Efficiency**: Direct spend towards initiatives driving conversions under target CPA.
-2. **Next Steps**: Output data has been validated and packaged for downstream execution nodes.`;
+2. **Next Steps**: ${isAutomation ? "Output data has been validated and packaged for downstream execution nodes." : "Performance evaluation completed successfully."}`;
     }
 
     // 5. Data Analysis / Creative Audit
     if (intentObj.intent === "DATA_ANALYSIS") {
       return `### 🔍 Structured Performance & Creative Analysis
 
-> **Node Instruction:** *"${instruction}"*  
-> **Verification Status:** **✅ VERIFIED & VALIDATED**
+${isAutomation ? `> **Node Instruction:** *"${instruction}"*  \n` : ""}> **Verification Status:** **✅ VERIFIED & VALIDATED**
 
 ---
 
@@ -1127,8 +1126,63 @@ Review campaign details in your Meta Ads Manager.`;
       googleAccountId,
       userMessage,
     });
+    context.conversationId = conversationId;
+    context.isAutomation = Boolean(conversationId?.startsWith("automation_"));
 
     const intentObj = this.classifyIntent(userMessage, context);
+
+    // If intent is CAMPAIGN_CREATION in chat, route directly through CampaignPreparationService
+    // to dynamically detect missing fields, prompt user in chat, and inject answers.
+    if (intentObj.intent === "CAMPAIGN_CREATION") {
+      try {
+        const CampaignPreparationService = (await import("../campaignPreparation/campaignPreparationService.js")).default;
+        const prepResult = await CampaignPreparationService.handleWorkflow({
+          userId,
+          conversationId,
+          userMessage,
+          metaAccountId: context.targetMetaAccountId || metaAccountId || accountId,
+          onProgress: (st) => {
+            if (typeof onEvent === "function") {
+              onEvent({ type: "tool_status", toolName: st.toolName || "campaign_preparation", status: st.status || st.message });
+            }
+            if (res) {
+              AgentStreamHandler.sendToolStatus(res, st.toolName || "campaign_preparation", st.status || st.message);
+            }
+          },
+        });
+
+        if (prepResult?.preparationSession) {
+          if (typeof onEvent === "function") {
+            onEvent({ type: "preparation_update", session: prepResult.preparationSession });
+          }
+          if (res) {
+            AgentStreamHandler.sendPreparationUpdate(res, prepResult.preparationSession);
+          }
+        }
+
+        const replyContent = prepResult.content || "Campaign preparation preview is ready.";
+        if (typeof onEvent === "function") {
+          onEvent({ type: "text_delta", content: replyContent });
+        }
+        if (res) {
+          AgentStreamHandler.sendChunk(res, replyContent);
+        }
+
+        return {
+          content: replyContent,
+          result: replyContent,
+          toolCalls: prepResult.toolCalls || [],
+          status: "completed",
+          preparationData: prepResult.preparationSession,
+          tokenUsage: {
+            totalTokens: Math.round(((userMessage?.length || 50) + (replyContent?.length || 200)) / 3.8),
+            model: "claude-sonnet-4-5 (Campaign Preparation Engine)",
+          },
+        };
+      } catch (prepErr) {
+        console.warn("[executeChat CampaignCreation delegation fallback]:", prepErr.message);
+      }
+    }
 
     const executedTools = await this.executeTools({
       intentObj,
@@ -1197,6 +1251,7 @@ Review campaign details in your Meta Ads Manager.`;
       metaAccountId: node.data?.adAccountId || node.adAccountId,
       userMessage: instruction,
     });
+    context.isAutomation = true;
 
     const intentObj = this.classifyIntent(instruction, context);
 

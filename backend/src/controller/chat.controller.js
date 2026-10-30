@@ -180,18 +180,32 @@ export const runAgentChat = async ({
   const mentionsGoogleAds =
     msgLower.includes("google ads") ||
     (msgLower.includes("google") && !msgLower.includes("drive") && !msgLower.includes("sheet") && !msgLower.includes("docs.google.com"));
-  const isFetchOrQueryCmd =
+
+  // Explicit campaign or ad creation command: e.g. "Create a campaign in draft", "Create ads from sheet", "Launch campaign Shiva test"
+  const isExplicitCampaignCreation =
+    /(?:create|launch|setup|draft|build|publish|banao|deploy|make)\s*(?:a\s*)?(?:new\s*)?(?:draft\s*)?(?:meta\s*|facebook\s*)?(?:draft\s*)?(?:campaigns?|adsets?|ad\s*sets?|ads?\b)/i.test(msgLower) ||
+    /(?:create|launch|setup|draft|build|publish|banao|deploy|make)\s+.*(?:campaigns?|adsets?|ad\s*sets?|ads?\b)/i.test(msgLower) ||
+    /(?:campaigns?|adsets?|ad\s*sets?|ads?\b)\s+.*(?:create|launch|setup|draft|build|publish|banao|deploy|make)/i.test(msgLower);
+
+  // Pure fetch / query commands (only when user is purely inspecting/fetching data, NOT creating campaigns/ads)
+  const isPureFetchOrQueryCmd =
+    !isExplicitCampaignCreation &&
     /\b(?:fetch|get|list|show|count|check|preview|read|view|kitna|kitne|batao|status|insights|metrics|performance|audit|rank|ranking|evaluat\w*|analy\w*|compar\w*|identif\w*|retriev\w*|combin\w*|inspect\w*|extract\w*|summar\w*|flag\w*)\b/i.test(msgLower);
+
   const isCreationAction =
-    /\b(?:create|launch|setup|upload|banao|deploy)\b/i.test(msgLower) &&
-    !/\b(?:creatives?|creativity)\b/i.test(msgLower);
+    /\b(?:create|launch|setup|upload|banao|deploy|draft)\b/i.test(msgLower);
+
   const isAnalyticalTask =
+    !isExplicitCampaignCreation &&
     /\b(?:rank|ranking|evaluat\w*|analy\w*|compar\w*|identif\w*|retriev\w*|combin\w*|inspect\w*|metric|insight|ctr|cpc|cpa|roas|efficiency|previous\s+node)\b/i.test(msgLower);
+
   const isCreationOrCampaignCmd =
-    !isFetchOrQueryCmd &&
-    !isAnalyticalTask &&
-    isCreationAction &&
-    /\b(?:campaigns?|adsets?|ad\s+sets?|ads?|sheets?)\b/i.test(msgLower);
+    isExplicitCampaignCreation ||
+    (!isPureFetchOrQueryCmd &&
+      !isAnalyticalTask &&
+      isCreationAction &&
+      /\b(?:campaigns?|adsets?|ad\s+sets?|ads?|sheets?)\b/i.test(msgLower));
+
   const isMetaIntent =
     !mentionsGoogleAds &&
     (msgLower.includes("meta") ||
@@ -513,7 +527,7 @@ export const runAgentChat = async ({
   const isMetaPrepWorkflow =
     isAnsweringMissingFields ||
     (!mentionsGoogleAds &&
-      !isFetchOrQueryCmd &&
+      !isPureFetchOrQueryCmd &&
       !isAnalyticalTask &&
       (!isAutomationRun || isExplicitCampaignDeployCmd) &&
       (Boolean(activePrepSession) ||
