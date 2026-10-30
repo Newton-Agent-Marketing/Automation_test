@@ -70,10 +70,13 @@ export const AiAutomationNode = ({
     nodeExecution?.status ||
     (isExecuting || isActionExecuting ? "running" : isCompleted ? "completed" : "pending");
   const isNodeRunning = isBelongingToActiveRun && (execStatus === "running" || isActionExecuting);
+  const isNodeVerifying = isBelongingToActiveRun && execStatus === "verifying";
   const isNodeCompleted =
     !isActionExecuting &&
-    (execStatus === "completed" || (allNodesBlue && execStatus !== "failed"));
+    (execStatus === "completed" || (allNodesBlue && execStatus !== "failed" && execStatus !== "blocked"));
   const isNodeFailed = execStatus === "failed";
+  const isNodeBlocked = execStatus === "blocked";
+  const isNodeWaiting = execStatus === "waiting_for_input";
   const isNodePaused = isWorkflowPaused && isBelongingToActiveRun && (execStatus === "paused" || (isAction && isWorkflowRunning));
 
   // Accent colors per node type
@@ -451,8 +454,14 @@ export const AiAutomationNode = ({
         borderRadius: 22,
         border: (allNodesBlue || isNodeRunning || isNodeCompleted)
           ? "2.5px solid #0081FB"
+          : isNodeVerifying
+          ? "2.5px solid #F59E0B"
           : isNodeFailed
           ? "2.5px solid #EF4444"
+          : isNodeBlocked
+          ? "2.5px solid #94A3B8"
+          : isNodeWaiting
+          ? "2.5px solid #8B5CF6"
           : isNodePaused
           ? "2.5px solid #F59E0B"
           : isConnectTarget
@@ -464,10 +473,14 @@ export const AiAutomationNode = ({
           : "1.5px solid #E2E8F0",
         boxShadow: (allNodesBlue || isNodeRunning)
           ? "0 0 0 4.5px rgba(0, 129, 251, 0.35), 0 10px 28px rgba(0, 129, 251, 0.28)"
+          : isNodeVerifying
+          ? "0 0 0 4.5px rgba(245, 158, 11, 0.3), 0 10px 28px rgba(245, 158, 11, 0.2)"
           : isNodeCompleted
           ? "0 0 0 3.5px rgba(0, 129, 251, 0.25), 0 6px 18px rgba(0, 129, 251, 0.15)"
           : isNodeFailed
           ? "0 0 0 4px rgba(239, 68, 68, 0.25), 0 6px 18px rgba(239, 68, 68, 0.18)"
+          : isNodeBlocked
+          ? "0 0 0 3px rgba(148, 163, 184, 0.2)"
           : isNodePaused
           ? "0 0 0 3.5px rgba(245, 158, 11, 0.25)"
           : isConnectTarget

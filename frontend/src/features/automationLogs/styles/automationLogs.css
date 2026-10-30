@@ -328,6 +328,17 @@
   background: var(--muted, #64748B);
 }
 
+.status-dot-verifying {
+  background: #D97706;
+  box-shadow: 0 0 8px rgba(217, 119, 6, 0.6);
+  animation: alPulse 1s infinite;
+}
+
+.status-dot-blocked {
+  background: #64748B;
+  box-shadow: 0 0 6px rgba(100, 116, 139, 0.4);
+}
+
 .al-run-title-group {
   display: flex;
   flex-direction: column;
@@ -423,6 +434,24 @@
   background: #F1F5F9;
   color: var(--muted, #64748B);
   border: 1px solid #E2E8F0;
+}
+
+.badge-verifying {
+  background: #FFFBEB;
+  color: #D97706;
+  border: 1px solid #FDE68A;
+}
+
+.badge-blocked {
+  background: #F1F5F9;
+  color: #64748B;
+  border: 1px solid #CBD5E1;
+}
+
+.badge-waiting_for_input {
+  background: #F5F3FF;
+  color: #7C3AED;
+  border: 1px solid #DDD6FE;
 }
 
 /* Header Right Summary */

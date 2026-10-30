@@ -53,8 +53,14 @@ export const NodeResultCard = ({ node, executionId, onOpenDetail }) => {
         return <CheckCircle2 size={16} color="#10B981" />;
       case "running":
         return <Loader2 size={16} color="#0081FB" className="animate-spin" />;
+      case "verifying":
+        return <Loader2 size={16} color="#D97706" className="animate-spin" />;
       case "failed":
         return <AlertCircle size={16} color="#EF4444" />;
+      case "blocked":
+        return <AlertCircle size={16} color="#64748B" />;
+      case "waiting_for_input":
+        return <Clock size={16} color="#8B5CF6" />;
       case "skipped":
       case "pending":
       default:

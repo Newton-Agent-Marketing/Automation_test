@@ -119,6 +119,72 @@ export const ExecutionResultsPanel = ({
             Running
           </span>
         );
+      case "verifying":
+        return (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "2px 8px",
+              borderRadius: 9999,
+              fontSize: "11px",
+              fontWeight: 600,
+              backgroundColor: "rgba(245, 158, 11, 0.12)",
+              color: "#D97706",
+              border: "1px solid rgba(245, 158, 11, 0.3)",
+            }}
+          >
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                backgroundColor: "#D97706",
+                animation: "pulse 0.9s infinite",
+              }}
+            />
+            Verifying Output
+          </span>
+        );
+      case "blocked":
+        return (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "2px 8px",
+              borderRadius: 9999,
+              fontSize: "11px",
+              fontWeight: 600,
+              backgroundColor: "rgba(100, 116, 139, 0.12)",
+              color: "#64748B",
+              border: "1px solid rgba(100, 116, 139, 0.3)",
+            }}
+          >
+            <ShieldAlert size={11} /> Blocked
+          </span>
+        );
+      case "waiting_for_input":
+        return (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "2px 8px",
+              borderRadius: 9999,
+              fontSize: "11px",
+              fontWeight: 600,
+              backgroundColor: "rgba(139, 92, 246, 0.12)",
+              color: "#8B5CF6",
+              border: "1px solid rgba(139, 92, 246, 0.3)",
+            }}
+          >
+            <Clock size={11} /> Waiting for Input
+          </span>
+        );
       case "failed":
         return (
           <span
@@ -609,13 +675,13 @@ export const ExecutionResultsPanel = ({
                     )}
 
                     {/* Tool Calls Captured */}
-                    {Array.isArray(n.output?.toolCalls) && n.output.toolCalls.length > 0 && (
+                    {((Array.isArray(n.toolsCalled) && n.toolsCalled.length > 0) || (Array.isArray(n.output?.toolCalls) && n.output.toolCalls.length > 0)) && (
                       <div style={{ marginBottom: 10 }}>
                         <div style={{ fontSize: "11px", fontWeight: 600, color: "#0081FB", marginBottom: 4 }}>
-                          Tool Calls Executed ({n.output.toolCalls.length})
+                          Tool Calls Executed ({((n.toolsCalled || n.output?.toolCalls) || []).length})
                         </div>
                         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                          {n.output.toolCalls.map((tc, tcIdx) => (
+                          {((n.toolsCalled || n.output?.toolCalls) || []).map((tc, tcIdx) => (
                             <div
                               key={tcIdx}
                               style={{
@@ -631,9 +697,32 @@ export const ExecutionResultsPanel = ({
                               }}
                             >
                               <span>{tc.toolName || tc.name || tc.action || "Tool"}</span>
-                              <span style={{ fontSize: "10px", color: "#60A5FA" }}>SUCCESS</span>
+                              <span style={{ fontSize: "10px", color: tc.status === "FAILED" ? "#DC2626" : "#059669" }}>
+                                {tc.status || "SUCCESS"}
+                              </span>
                             </div>
                           ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Validation Checks */}
+                    {n.validation && (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: "11px", fontWeight: 600, color: n.validation.verified ? "#059669" : "#DC2626", marginBottom: 3 }}>
+                          Data Validation: {n.validation.verified ? "Verified" : "Failed"}
+                        </div>
+                        <div
+                          style={{
+                            padding: "6px 8px",
+                            backgroundColor: n.validation.verified ? "#F0FDF4" : "#FEF2F2",
+                            border: `1px solid ${n.validation.verified ? "#BBF7D0" : "#FECACA"}`,
+                            borderRadius: 4,
+                            fontSize: "11px",
+                            color: n.validation.verified ? "#166534" : "#991B1B",
+                          }}
+                        >
+                          {n.validation.reason}
                         </div>
                       </div>
                     )}

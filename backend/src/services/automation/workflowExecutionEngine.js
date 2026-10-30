@@ -2,6 +2,7 @@ import AiAutomation from "../../models/aiAutomationModel.js";
 import AutomationExecution from "../../models/automationExecutionModel.js";
 import ActionExecutor from "./actionExecutor.js";
 import { runAgentChat } from "../../controller/chat.controller.js";
+import { AiAgentOrchestrator } from "../agent/aiAgentOrchestrator.js";
 import { getIo } from "../../socket/index.js";
 
 /**
@@ -511,7 +512,7 @@ export class WorkflowExecutionEngine {
   }
 
   /**
-   * Execute instruction using the actual AI Agent
+   * Execute instruction using the actual AI Agent Orchestrator with strict validation.
    */
   static async executeWithAiAgent({
     instruction,
@@ -519,116 +520,27 @@ export class WorkflowExecutionEngine {
     previousNodeOutput,
     userId,
     executionId,
+    onProgress,
   }) {
     if (!instruction || !instruction.trim()) {
       return {
         status: "completed",
         result: `Node "${node.label || node.type}" completed without instructions.`,
         task: node.label || node.type,
+        output: { status: "success", emptyInstruction: true },
+        toolCalls: [],
+        validation: { verified: true, checks: [] },
       };
     }
 
-    // Extract any explicit Meta Ad Account ID like act_1416124059911929 or 1416124059911929 or from node configuration
-    let metaAccountId = node.data?.adAccountId || node.data?.accountId || node.adAccountId || node.accountId || null;
-    if (metaAccountId) {
-      metaAccountId = String(metaAccountId).replace(/^act_/, "");
-    }
-    const actMatch = instruction.match(/\b(?:act_)?(\d{10,22})\b/i);
-    if (actMatch) {
-      metaAccountId = actMatch[1];
-    }
-
-    // Auto-resolve user's active Meta Ad Account from AI Context Channel Node or connected accounts
-    if (!metaAccountId && userId) {
-      try {
-        const AiContext = (await import("../../models/aiContextModel.js")).default;
-        const aiCtx = await AiContext.findOne({ userId }).lean().catch(() => null);
-        const channelNodes = (aiCtx?.nodes || []).filter((n) => n.type === "ad_channel");
-        const metaChannelNode =
-          channelNodes.find((n) => {
-            const cName = (n.data?.channelName || n.data?.channel || n.label || "").toLowerCase();
-            return cName.includes("meta") || cName.includes("facebook");
-          }) || (channelNodes.length === 1 ? channelNodes[0] : null);
-        if (metaChannelNode?.data?.adAccountId) {
-          metaAccountId = String(metaChannelNode.data.adAccountId).replace(/^act_/, "").trim();
-        }
-      } catch (_) {}
-
-      if (!metaAccountId) {
-        try {
-          const MetaAccount = (await import("../../models/metaAccount.js")).default;
-          const metaAcc = await MetaAccount.findOne({
-            userId,
-            $or: [{ isConnected: true }, { isActive: true }, { accountStatus: 1 }, { accountId: { $exists: true } }],
-          }).lean().catch(() => null);
-          if (metaAcc?.accountId) {
-            metaAccountId = String(metaAcc.accountId).replace(/^act_/, "").trim();
-          }
-        } catch (_) {}
-      }
-    }
-
-    let userMessage = instruction;
-    if (previousNodeOutput) {
-      let formattedPrev = "";
-      if (typeof previousNodeOutput === "string") {
-        formattedPrev = previousNodeOutput;
-      } else if (previousNodeOutput?.result && typeof previousNodeOutput.result === "string") {
-        formattedPrev = previousNodeOutput.result;
-      } else if (previousNodeOutput?.output?.result && typeof previousNodeOutput.output.result === "string") {
-        formattedPrev = previousNodeOutput.output.result;
-      } else if (previousNodeOutput?.content && typeof previousNodeOutput.content === "string") {
-        formattedPrev = previousNodeOutput.content;
-      } else {
-        formattedPrev = JSON.stringify(previousNodeOutput, null, 2);
-      }
-
-      userMessage = `${instruction}
-
-[Context from previous step]:
-${formattedPrev}`;
-    }
-
-    let streamedText = "";
-    const toolCalls = [];
-
-    const agentResult = await runAgentChat({
+    return await AiAgentOrchestrator.executeNodeTask({
+      instruction,
+      node,
+      previousNodeOutput,
       userId,
-      conversationId: `automation_${executionId}_${node.id}`,
-      userMessage,
-      metaAccountId,
-      accountId: metaAccountId ? `act_${metaAccountId}` : undefined,
-      onEvent: (event) => {
-        if (event.type === "text_delta" || event.type === "content") {
-          streamedText += event.content || event.text || "";
-        } else if (
-          event.type === "tool_call" ||
-          event.type === "action" ||
-          event.type === "tool_status"
-        ) {
-          toolCalls.push(event);
-        }
-      },
+      executionId,
+      onProgress,
     });
-
-    const finalResult =
-      streamedText.trim() ||
-      agentResult?.content ||
-      agentResult?.result ||
-      "";
-
-    // Strict validation: Do not mark node completed or proceed to next node if AI agent failed to return a valid response
-    if (!finalResult || finalResult.length < 15 || finalResult.includes("couldn't process your request right now")) {
-      throw new Error(`AI Agent failed to produce a complete response for node "${node.label || node.type}". Halting execution to prevent passing empty state.`);
-    }
-
-    return {
-      status: "completed",
-      result: finalResult,
-      toolCalls: agentResult?.toolCalls?.length ? agentResult.toolCalls : toolCalls,
-      tokenUsage: agentResult?.tokenUsage || null,
-      taskName: instruction,
-    };
   }
 
   /**
@@ -886,6 +798,19 @@ ${formattedPrev}`;
             let resolvedInput = null;
             let resolvedOutput = null;
 
+            const handleProgress = async (prog) => {
+              if (prog.state === "verifying") {
+                execution.nodes[nodeIndex].status = "verifying";
+                execution.markModified("nodes");
+                await execution.save();
+                emitLiveUpdate("node_verifying", {
+                  nodeId: node.id,
+                  nodeIndex,
+                  node: execution.nodes[nodeIndex].toObject(),
+                });
+              }
+            };
+
             switch (node.type) {
               case "trigger": {
                 const instructionText = (node.text || node.label || "").trim();
@@ -910,6 +835,7 @@ ${formattedPrev}`;
                     previousNodeOutput,
                     userId,
                     executionId,
+                    onProgress: handleProgress,
                   });
 
                   resolvedOutput = aiResult;
@@ -1057,6 +983,7 @@ ${formattedPrev}`;
                   previousNodeOutput: effectiveInputContext,
                   userId,
                   executionId,
+                  onProgress: handleProgress,
                 });
 
                 resolvedOutput = aiResult;
@@ -1069,7 +996,9 @@ ${formattedPrev}`;
             execution.nodes[nodeIndex].completedAt = new Date();
             execution.nodes[nodeIndex].durationMs = nodeDuration;
             execution.nodes[nodeIndex].input = sanitizePayload(resolvedInput);
-            execution.nodes[nodeIndex].output = sanitizePayload(resolvedOutput);
+            execution.nodes[nodeIndex].output = sanitizePayload(resolvedOutput?.output || resolvedOutput);
+            execution.nodes[nodeIndex].toolsCalled = sanitizePayload(resolvedOutput?.toolCalls || []);
+            execution.nodes[nodeIndex].validation = sanitizePayload(resolvedOutput?.validation || null);
             execution.markModified("nodes");
 
             const cleanTextOutput =
@@ -1091,7 +1020,7 @@ ${formattedPrev}`;
             completedNodeOutputs.set(node.id, {
               id: node.id,
               name: node.label || node.text?.slice(0, 35) || node.type,
-              output: resolvedOutput,
+              output: resolvedOutput?.output || resolvedOutput,
             });
             successfulCount++;
             execution.successfulNodes = preludeNodeExecutions.length + successfulCount;
@@ -1101,7 +1030,7 @@ ${formattedPrev}`;
               level: "success",
               nodeId: node.id,
               nodeName: node.label || node.type,
-              message: `Node "${node.label || node.type}" completed successfully in ${(
+              message: `Node "${node.label || node.type}" verified and completed successfully in ${(
                 nodeDuration / 1000
               ).toFixed(2)}s`,
             });
@@ -1124,6 +1053,8 @@ ${formattedPrev}`;
               message: nodeErr.message || "Execution error",
               code: nodeErr.code || "ERR_NODE_EXECUTION",
             };
+            execution.nodes[nodeIndex].toolsCalled = sanitizePayload(nodeErr.toolCalls || []);
+            execution.nodes[nodeIndex].validation = sanitizePayload(nodeErr.validation || null);
             execution.markModified("nodes");
 
             failedCount++;
@@ -1145,6 +1076,32 @@ ${formattedPrev}`;
               node: execution.nodes[nodeIndex].toObject(),
               error: nodeErr.message,
             });
+
+            // Strict execution gate: Immediately block all remaining connected nodes
+            for (let j = i + 1; j < orderedNodes.length; j++) {
+              const remNode = orderedNodes[j];
+              const remIdx = execution.nodes.findIndex((n) => n.nodeId === remNode.id);
+              if (remIdx !== -1 && execution.nodes[remIdx].status === "pending") {
+                execution.nodes[remIdx].status = "blocked";
+                execution.nodes[remIdx].error = {
+                  message: `Execution blocked: Preceding node "${node.label || node.type}" failed validation (${nodeErr.message}).`,
+                  code: "ERR_UPSTREAM_BLOCKED",
+                };
+                execution.logs.push({
+                  timestamp: new Date(),
+                  level: "warn",
+                  nodeId: remNode.id,
+                  nodeName: remNode.label || remNode.type,
+                  message: `Node "${remNode.label || remNode.type}" blocked due to upstream failure.`,
+                });
+                emitLiveUpdate("node_blocked", {
+                  nodeId: remNode.id,
+                  nodeIndex: remIdx,
+                  node: execution.nodes[remIdx].toObject(),
+                  reason: nodeErr.message,
+                });
+              }
+            }
 
             // Halting remaining steps: A subsequent node must never proceed if current node failed to complete
             execution.logs.push({
