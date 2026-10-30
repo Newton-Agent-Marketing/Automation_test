@@ -415,7 +415,7 @@ export class MetaAdsOrchestrator {
             videoId: adConfig.videoId || null,
             creativeId: null,
             adId: null,
-            status: "SKIPPED",
+            status: "PENDING",
             error: null,
           };
           adResults.push(existingRes);
@@ -427,6 +427,12 @@ export class MetaAdsOrchestrator {
         if (existingRes.status === "SUCCESS" && isRealMetaAdId) {
           emit(4, `Skipping Row #${rowNo} "${adConfig.adName}" — Already Created on Meta (ID: ${existingRes.adId})`);
           continue;
+        }
+
+        // Reset state for retry execution
+        if (!isRealMetaAdId) {
+          existingRes.status = "PENDING";
+          existingRes.error = null;
         }
 
         emit(4, `[Row #${rowNo}] Processing asset & creating Ad "${adConfig.adName}" (${i + 1}/${previewAds.length})...`);
@@ -971,7 +977,7 @@ export class MetaAdsOrchestrator {
     const { metaCampaignId, metaAdSetId, totalAds, adResults = [] } = result;
 
     const actualSuccess = adResults.filter((r) => r.status === "SUCCESS" && Boolean(r.adId)).length;
-    const actualFailed = adResults.filter((r) => r.status === "FAILED").length;
+    const actualFailed = adResults.filter((r) => (r.status === "FAILED" || r.status === "PENDING" || r.status === "SKIPPED") && !r.adId).length;
     const isAllSuccess = actualFailed === 0 && actualSuccess > 0;
 
     let md = isAllSuccess
@@ -992,11 +998,12 @@ export class MetaAdsOrchestrator {
 
     adResults.forEach((r) => {
       const isSuccess = r.status === "SUCCESS" && Boolean(r.adId);
-      const statusIcon = isSuccess ? "✅ SUCCESS" : (r.status === "SKIPPED" ? "⏭️ SKIPPED" : "❌ FAILED");
+      const isSkipped = r.status === "SKIPPED" && Boolean(r.adId);
+      const statusIcon = isSuccess ? "✅ SUCCESS" : (isSkipped ? "⏭️ SKIPPED" : "❌ FAILED");
       const idText = r.adId ? `\`${r.adId}\`` : "N/A";
       const details = isSuccess
         ? `Linked to Creative \`${r.creativeId || "active"}\``
-        : (r.error || "Creation error");
+        : (r.error || "Ad creative was not published to Meta. Ready for retry.");
       md += `| #${r.sourceRow} | **${r.adName}** | ${idText} | ${statusIcon} | ${details} |\n`;
     });
 

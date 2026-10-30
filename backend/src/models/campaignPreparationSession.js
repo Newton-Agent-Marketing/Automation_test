@@ -248,7 +248,7 @@ const campaignPreparationSessionSchema = new mongoose.Schema(
           imageHash: { type: String, default: null },
           creativeId: { type: String, default: null },
           adId: { type: String, default: null },
-          status: { type: String, enum: ["SUCCESS", "FAILED", "SKIPPED"], default: "SKIPPED" },
+          status: { type: String, enum: ["SUCCESS", "FAILED", "SKIPPED", "PENDING"], default: "PENDING" },
           error: { type: String, default: null },
         },
       ],
