@@ -1046,7 +1046,17 @@ ${formattedPrev}`;
               typeof resolvedOutput === "string"
                 ? resolvedOutput
                 : resolvedOutput?.result || resolvedOutput?.content || JSON.stringify(resolvedOutput);
-            previousNodeOutput = cleanTextOutput;
+
+            // If the node was a trigger without custom instructions, don't pass its boilerplate to subsequent nodes
+            const isPlainTrigger =
+              node.type === "trigger" &&
+              (!node.text || ["start workflow", "trigger node", "trigger", "start"].includes(node.text.trim().toLowerCase()));
+
+            if (isPlainTrigger) {
+              previousNodeOutput = null;
+            } else {
+              previousNodeOutput = cleanTextOutput;
+            }
 
             completedNodeOutputs.set(node.id, {
               id: node.id,

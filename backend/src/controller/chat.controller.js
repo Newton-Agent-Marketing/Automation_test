@@ -104,7 +104,7 @@ const generateFallbackMarketingResponse = async ({
   if (!resolvedUserEmail && userId) {
     try {
       const User = (await import("../models/authModel.js")).default;
-      const userDoc = await User.findById(userId).select("email").lean();
+      const userDoc = await User.findById(userId).select("email").lean().catch(() => null);
       if (userDoc?.email) {
         resolvedUserEmail = userDoc.email;
       }
@@ -6212,7 +6212,7 @@ export const runAgentChat = async ({
   if (!resolvedUserEmail && (validUserId || userId)) {
     try {
       const User = (await import("../models/authModel.js")).default;
-      const userDoc = await User.findById(validUserId || userId).select("email").lean();
+      const userDoc = await User.findById(validUserId || userId).select("email").lean().catch(() => null);
       if (userDoc?.email) {
         resolvedUserEmail = userDoc.email;
       }
