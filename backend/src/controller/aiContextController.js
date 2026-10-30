@@ -1377,10 +1377,13 @@ export class AiContextController {
       });
 
       // Update target sheet in sheets array (resiliently update or push)
+      const primarySelectedTitle = tabsToFetch.length > 0 ? (tabsToFetch[0].title || tabsToFetch[0].tabName) : (targetSheet?.worksheetName || "Sheet1");
       const updatedSheetEntry = {
         ...(targetSheetIdx >= 0 ? sheetsArr[targetSheetIdx] : {}),
         id: sheetId || targetSheet?.id || `sheet_${Date.now()}`,
         sheetUrl: effectiveSheetUrl,
+        worksheetName: primarySelectedTitle,
+        targetTab: primarySelectedTitle,
         selectedTabIds,
         availableTabs,
         selectedTabsData,
@@ -1400,6 +1403,8 @@ export class AiContextController {
       // Also sync to top-level warehouseNode data
       warehouseNode.data = {
         ...warehouseNode.data,
+        worksheetName: primarySelectedTitle,
+        targetTab: primarySelectedTitle,
         selectedTabIds,
         availableTabs,
         selectedTabsData,

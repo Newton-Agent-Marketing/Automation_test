@@ -274,6 +274,16 @@ export class CampaignPreparationService {
         const primaryFlow = aiCtx.flows?.[0];
         const flowParams = primaryFlow?.campaignLaunchParameters || {};
 
+        const targetWorksheetName = selection?.targetWorksheetName ||
+          resolvedSheet?.targetWorksheetName ||
+          resolvedSheet?.worksheetName ||
+          resolvedWarehouse?.worksheetName ||
+          null;
+
+        const selectedTabIds = selection?.selectedTabIds || resolvedSheet?.selectedTabIds || resolvedWarehouse?.selectedTabIds || [];
+        const selectedTabsData = selection?.selectedTabsData || resolvedSheet?.selectedTabsData || resolvedWarehouse?.selectedTabsData || [];
+        const availableTabs = selection?.availableTabs || resolvedSheet?.availableTabs || resolvedWarehouse?.availableTabs || [];
+
         contextNodeData = {
           adAccountId: resolvedChannel.accountId || flowParams.accountId || null,
           accountName: resolvedChannel.accountName || flowParams.accountName || null,
@@ -289,6 +299,11 @@ export class CampaignPreparationService {
           sheetUrl: resolvedSheet?.sheetUrl || resolvedWarehouse.sheetUrl || flowParams.sheetUrl || null,
           sheets: resolvedWarehouse.sheets || flowParams.sheets || [],
           selectedSheet: resolvedSheet,
+          worksheetName: targetWorksheetName,
+          targetWorksheetName,
+          selectedTabIds,
+          selectedTabsData,
+          availableTabs,
           businessUnitName: resolvedBu.name || resolvedChannel.businessUnitName || flowParams.businessUnitName || null,
           rawFlowSummary: primaryFlow?.flowSummary || null,
         };
@@ -339,8 +354,10 @@ export class CampaignPreparationService {
     });
     console.log("📊 5. Data Warehouse Node   :", {
       activeSheet: contextNodeData.selectedSheet?.sheetName || "(Primary Sheet)",
+      targetWorksheet: contextNodeData.targetWorksheetName || "(Default Tab)",
       sheetUrl: contextNodeData.selectedSheet?.sheetUrl || contextNodeData.sheetUrl || "(None)",
       activeDataLabels: contextNodeData.selectedSheet?.dataLabels || "(None)",
+      selectedTabIds: contextNodeData.selectedTabIds || [],
       totalSheetsCount: contextNodeData.sheets?.length || (contextNodeData.sheetUrl ? 1 : 0),
     });
     console.log("--------------------------------------------------------------------------------");
@@ -359,7 +376,8 @@ export class CampaignPreparationService {
           userId,
           sheetUrlOrId: session.source?.sheetUrl || session.source?.spreadsheetId,
           filePath: session.source?.filePath,
-          worksheetName: session.source?.worksheetName,
+          worksheetName: session.source?.worksheetName || contextNodeData?.targetWorksheetName,
+          selectedTabIds: session.source?.selectedTabIds || contextNodeData?.selectedTabIds,
         });
 
         const { filteredSource: latestSource } = this.applyFiltersToSourceData(rawLatest, "", session.filterCriteria);
@@ -477,7 +495,8 @@ export class CampaignPreparationService {
             userId,
             sheetUrlOrId: session.source?.sheetUrl || session.source?.spreadsheetId,
             filePath: session.source?.filePath,
-            worksheetName: session.source?.worksheetName,
+            worksheetName: session.source?.worksheetName || contextNodeData?.targetWorksheetName,
+            selectedTabIds: session.source?.selectedTabIds || contextNodeData?.selectedTabIds,
           });
           const filtered = this.applyFiltersToSourceData(rawSource, "", session.filterCriteria);
           sourceData = filtered.filteredSource;
@@ -619,7 +638,8 @@ export class CampaignPreparationService {
             userId,
             sheetUrlOrId: session.source?.sheetUrl || session.source?.spreadsheetId,
             filePath: session.source?.filePath,
-            worksheetName: session.source?.worksheetName,
+            worksheetName: session.source?.worksheetName || contextNodeData?.targetWorksheetName,
+            selectedTabIds: session.source?.selectedTabIds || contextNodeData?.selectedTabIds,
           });
 
           const filtered = this.applyFiltersToSourceData(rawSource, "", session.filterCriteria);
@@ -785,8 +805,15 @@ export class CampaignPreparationService {
     const existingCampaignId = promptCampId || session?.existingCampaignId || null;
     const existingAdSetId = promptAdSetId || session?.existingAdSetId || null;
 
+    const effectiveWorksheetName =
+      contextNodeData?.targetWorksheetName ||
+      contextNodeData?.worksheetName ||
+      contextNodeData?.selectedSheet?.worksheetName ||
+      session?.source?.worksheetName ||
+      null;
+
     const campaignName = promptCampName || (existingCampaignId ? `Target Campaign (${existingCampaignId})` : (session?.campaignName || (contextNodeData?.productName ? `${contextNodeData.productName}|Campaign` : "NWTS|Image_Test")));
-    const adSetName = promptAdSetName || (existingAdSetId ? `Target AdSet (${existingAdSetId})` : (session?.adSetName || (contextNodeData?.funnelEvent ? `${contextNodeData.funnelEvent}|AdSet` : "NWTS|test")));
+    const adSetName = promptAdSetName || (existingAdSetId ? `Target AdSet (${existingAdSetId})` : (session?.adSetName || (effectiveWorksheetName ? `${effectiveWorksheetName}` : (contextNodeData?.funnelEvent ? `${contextNodeData.funnelEvent}|AdSet` : "NWTS|test"))));
 
     // 2. Read complete dataset from source
     let explicitSheetUrl = null;
@@ -804,6 +831,9 @@ export class CampaignPreparationService {
     const rawSourceData = await SourceSheetReader.readSource({
       userId,
       sheetUrlOrId: explicitSheetUrl,
+      worksheetName: effectiveWorksheetName,
+      selectedTabIds: contextNodeData?.selectedTabIds || session?.source?.selectedTabIds,
+      selectedTabs: contextNodeData?.selectedTabsData || session?.source?.selectedTabs,
     });
 
     if (rawSourceData.rows.length === 0) {
@@ -883,6 +913,7 @@ export class CampaignPreparationService {
             headerRow: sourceData.headerRowNumber,
             dataRowStart: sourceData.dataRowStart,
             dataFingerprint: sourceData.dataFingerprint,
+            selectedTabIds: contextNodeData?.selectedTabIds || [],
             lastSyncedAt: new Date(),
           },
           eligibleRows: sourceData.eligibleRows,

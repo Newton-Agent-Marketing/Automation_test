@@ -219,6 +219,60 @@ export class AiAgentOrchestrator {
         .map((t) => t.title);
     }
 
+    // Resolve target worksheet tab from selectedTabIds / availableTabs / prompt
+    let targetWorksheetName = null;
+    if (availableTabs.length > 0) {
+      const msgLower = (userMessage || "").toLowerCase();
+      // 1. Ordinal references
+      const isSecond = /\b(second|2nd|sheet\s*#?\s*2|sheet2|two\s*sheet|2\s*sheet|dusra|dusri|doosra|doosri|second\s*tab|2nd\s*tab)\b/i.test(msgLower) &&
+        !/\b(first|1st|sheet\s*#?\s*1|sheet1)\b/i.test(msgLower);
+      const isThird = /\b(third|3rd|sheet\s*#?\s*3|sheet3|three\s*sheet|3\s*sheet|teesra|teesri|third\s*tab|3rd\s*tab)\b/i.test(msgLower);
+      const isFirst = /\b(first|1st|sheet\s*#?\s*1|sheet1|one\s*sheet|1\s*sheet|pehla|pehli|first\s*tab|1st\s*tab)\b/i.test(msgLower) && !isSecond && !isThird;
+
+      if (isSecond && availableTabs.length >= 2) {
+        targetWorksheetName = availableTabs[1].title || availableTabs[1].name;
+      } else if (isThird && availableTabs.length >= 3) {
+        targetWorksheetName = availableTabs[2].title || availableTabs[2].name;
+      } else if (isFirst) {
+        targetWorksheetName = availableTabs[0].title || availableTabs[0].name;
+      }
+
+      // 2. Mentioned tab title
+      if (!targetWorksheetName) {
+        const found = availableTabs.find((t) => {
+          const tName = (t.title || t.name || "").toLowerCase().trim();
+          return tName && msgLower.includes(tName);
+        });
+        if (found) targetWorksheetName = found.title || found.name;
+      }
+
+      // 3. UI Selected Tabs (selectedTabIds)
+      if (!targetWorksheetName && selectedTabIds.length > 0) {
+        const selObj = availableTabs.find((t) =>
+          selectedTabIds.some((id) =>
+            String(id) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
+            String(id).toLowerCase() === String(t.title || t.name || "").toLowerCase()
+          )
+        );
+        if (selObj) targetWorksheetName = selObj.title || selObj.name;
+      }
+
+      // 4. selectedTabsData fallback
+      if (!targetWorksheetName && selectedTabs.length > 0) {
+        targetWorksheetName = selectedTabs[0].tabName || selectedTabs[0].title;
+      }
+
+      // 5. targetSheet.worksheetName
+      if (!targetWorksheetName && targetSheet?.worksheetName && targetSheet.worksheetName !== "Sheet1") {
+        targetWorksheetName = targetSheet.worksheetName;
+      }
+
+      if (targetSheet && targetWorksheetName) {
+        targetSheet.targetWorksheetName = targetWorksheetName;
+        targetSheet.worksheetName = targetWorksheetName;
+      }
+    }
+
     return {
       userId: validUserId,
       user,
@@ -423,7 +477,10 @@ export class AiAgentOrchestrator {
         // Direct Sheets API fallback if executeAgentTool returned 0 rows and a URL is configured
         if ((!sheetResult || !sheetResult.success || (sheetResult.rows && sheetResult.rows.length === 0)) && targetUrl) {
           try {
-            const directRead = await sheetsService.readSpreadsheet({ spreadsheetIdOrUrl: targetUrl });
+            const directRead = await sheetsService.readSpreadsheet({
+              spreadsheetIdOrUrl: targetUrl,
+              sheetTitle: targetSheet?.targetWorksheetName || targetSheet?.worksheetName || null,
+            });
             if (directRead && directRead.rows && directRead.rows.length > 0) {
               sheetResult = {
                 success: true,

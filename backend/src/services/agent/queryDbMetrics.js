@@ -1374,6 +1374,7 @@ export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedCh
     });
 
     // 5b. Match by matched product name
+    
     if (!matchedSheet && matchedProduct) {
       const pName = (matchedProduct.productName || matchedProduct.name || "").toLowerCase().trim();
       const pWords = pName.split(/[\s_-]+/).filter((w) => w.length >= 3 && !["item", "product", "premium"].includes(w));
@@ -1399,6 +1400,76 @@ export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedCh
     }
   }
 
+  // 5e. MATCH TARGET WORKSHEET TAB (Honor User's AI Context Selection & Intent)
+  let targetWorksheetName = null;
+  const availableTabs = (matchedSheet?.availableTabs?.length ? matchedSheet.availableTabs : matchedWarehouse?.availableTabs) || [];
+  const selectedTabIds = (matchedSheet?.selectedTabIds?.length ? matchedSheet.selectedTabIds : matchedWarehouse?.selectedTabIds) || [];
+  const selectedTabsData = (matchedSheet?.selectedTabsData?.length ? matchedSheet.selectedTabsData : matchedWarehouse?.selectedTabsData) || [];
+
+  // Strategy 1: User explicitly mentions a tab name in userMessage
+  if (availableTabs.length > 0) {
+    const mentionedTab = availableTabs.find((t) => {
+      const tName = (t.title || t.name || t.tabName || "").toLowerCase().trim();
+      if (!tName) return false;
+      if (msgLower.includes(tName)) return true;
+      const parts = tName.split(/[|\-_/]+/).map((p) => p.trim().toLowerCase()).filter((p) => p.length >= 3);
+      return parts.some((p) => msgLower.includes(p));
+    });
+    if (mentionedTab) {
+      targetWorksheetName = mentionedTab.title || mentionedTab.name || mentionedTab.tabName;
+    }
+  }
+
+  // Strategy 2: User mentions ordinal reference in userMessage ("second worksheet", "2nd sheet", "dusra worksheet", "second tab")
+  if (!targetWorksheetName && availableTabs.length > 0) {
+    const isSecond = /\b(second|2nd|sheet\s*#?\s*2|sheet2|two\s*sheet|2\s*sheet|dusra|dusri|doosra|doosri|second\s*tab|2nd\s*tab)\b/i.test(msgLower) &&
+      !/\b(first|1st|sheet\s*#?\s*1|sheet1)\b/i.test(msgLower);
+    const isThird = /\b(third|3rd|sheet\s*#?\s*3|sheet3|three\s*sheet|3\s*sheet|teesra|teesri|third\s*tab|3rd\s*tab)\b/i.test(msgLower);
+    const isFirst = /\b(first|1st|sheet\s*#?\s*1|sheet1|one\s*sheet|1\s*sheet|pehla|pehli|first\s*tab|1st\s*tab)\b/i.test(msgLower) && !isSecond && !isThird;
+
+    if (isSecond && availableTabs.length >= 2) {
+      targetWorksheetName = availableTabs[1].title || availableTabs[1].name;
+    } else if (isThird && availableTabs.length >= 3) {
+      targetWorksheetName = availableTabs[2].title || availableTabs[2].name;
+    } else if (isFirst) {
+      targetWorksheetName = availableTabs[0].title || availableTabs[0].name;
+    }
+  }
+
+  // Strategy 3: Check AI Context UI Selection (selectedTabIds)
+  // When user selected specific tab(s) in AI Context (e.g. checkbox checked for 2nd tab)
+  if (!targetWorksheetName && selectedTabIds.length > 0 && availableTabs.length > 0) {
+    const selectedTabObjects = availableTabs.filter((t) =>
+      selectedTabIds.some((id) =>
+        String(id) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
+        String(id).toLowerCase() === String(t.title || t.name || t.tabName || "").toLowerCase()
+      )
+    );
+    if (selectedTabObjects.length > 0) {
+      targetWorksheetName = selectedTabObjects[0].title || selectedTabObjects[0].name || selectedTabObjects[0].tabName;
+    }
+  }
+
+  // Strategy 4: Fallback to selectedTabsData if available
+  if (!targetWorksheetName && selectedTabsData.length > 0) {
+    targetWorksheetName = selectedTabsData[0].tabName || selectedTabsData[0].title;
+  }
+
+  // Strategy 5: Fallback to sheet's configured worksheetName if customized (not "Sheet1")
+  if (!targetWorksheetName && matchedSheet?.worksheetName && matchedSheet.worksheetName !== "Sheet1") {
+    targetWorksheetName = matchedSheet.worksheetName;
+  }
+
+  // Strategy 6: If availableTabs exist and no tab was specified, default to first available tab's title
+  if (!targetWorksheetName && availableTabs.length > 0) {
+    targetWorksheetName = availableTabs[0].title || availableTabs[0].name;
+  }
+
+  if (matchedSheet && targetWorksheetName) {
+    matchedSheet.targetWorksheetName = targetWorksheetName;
+    matchedSheet.worksheetName = targetWorksheetName;
+  }
+
   return {
     hasSelection: Boolean(matchedBu || matchedChannel || matchedProduct || matchedWarehouse),
     businessUnit: matchedBu,
@@ -1407,6 +1478,10 @@ export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedCh
     brief: matchedBrief,
     warehouse: matchedWarehouse,
     selectedSheet: matchedSheet,
+    targetWorksheetName,
+    selectedTabIds,
+    selectedTabsData,
+    availableTabs,
     availableBusinessUnits: buList,
     availableChannels,
     availableProducts,
@@ -1563,9 +1638,42 @@ export async function executeAgentTool(toolName, args) {
             rows = combinedRows;
             columns = Array.from(new Set(refreshedTabs.flatMap((t) => t.columns || [])));
           }
+        } else if (selectedTabIds.length > 0 && availableTabs.length > 0) {
+          // If selectedTabsData is not populated yet, fetch the selected tabs directly!
+          const activeSelectedTabs = availableTabs.filter((t) =>
+            selectedTabIds.some(
+              (id) =>
+                String(id) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
+                String(id).toLowerCase() === String(t.title || t.name || "").toLowerCase()
+            )
+          );
+          if (activeSelectedTabs.length > 0) {
+            const refreshedTabs = await sheetsService.fetchMultipleWorksheetsData({
+              spreadsheetIdOrUrl: sheetUrl,
+              selectedTabs: activeSelectedTabs.map((t) => ({ sheetId: t.sheetId, title: t.title || t.name })),
+            });
+            if (refreshedTabs && refreshedTabs.length > 0) {
+              selectedTabsData = refreshedTabs;
+              const combinedRows = [];
+              refreshedTabs.forEach((tab) => {
+                (tab.rows || []).forEach((r) => {
+                  combinedRows.push({
+                    ...(r.values || r),
+                    _worksheetTab: tab.tabName,
+                    _worksheetId: tab.sheetId,
+                  });
+                });
+              });
+              rows = combinedRows;
+              columns = Array.from(new Set(refreshedTabs.flatMap((t) => t.columns || [])));
+            }
+          }
         } else {
           // Standard single-sheet read fallback
-          const readResult = await sheetsService.readSpreadsheet({ spreadsheetIdOrUrl: sheetUrl });
+          const readResult = await sheetsService.readSpreadsheet({
+            spreadsheetIdOrUrl: sheetUrl,
+            sheetTitle: selectedSheet.worksheetName || selectedSheet.targetWorksheetName || null,
+          });
           if (readResult && readResult.rows && readResult.rows.length > 0) {
             rows = readResult.rows;
             columns = readResult.headers || Object.keys(rows[0] || {});
@@ -1578,13 +1686,43 @@ export async function executeAgentTool(toolName, args) {
 
     // Check if the user specifically requested a single tab (by tab name or by intent)
     let requestedTabName = args.tabName || args.worksheetName || args.sheetTitle || null;
-    if (!requestedTabName && (args.userMessage || args.userInstruction)) {
-      const msg = `${args.userMessage || ""} ${args.userInstruction || ""}`;
-      for (const tab of availableTabs) {
-        if (tab.title && new RegExp(`\\b${tab.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(msg)) {
-          requestedTabName = tab.title;
-          break;
+    const msg = `${args.userMessage || ""} ${args.userInstruction || ""}`.trim();
+    if (!requestedTabName && msg) {
+      // Check for ordinal references (e.g. second worksheet, 2nd sheet, dusri sheet, second tab)
+      const isSecond = /\b(second|2nd|sheet\s*#?\s*2|sheet2|two\s*sheet|2\s*sheet|dusra|dusri|doosra|doosri|second\s*tab|2nd\s*tab)\b/i.test(msg) &&
+        !/\b(first|1st|sheet\s*#?\s*1|sheet1)\b/i.test(msg);
+      const isThird = /\b(third|3rd|sheet\s*#?\s*3|sheet3|three\s*sheet|3\s*sheet|teesra|teesri|third\s*tab|3rd\s*tab)\b/i.test(msg);
+      const isFirst = /\b(first|1st|sheet\s*#?\s*1|sheet1|one\s*sheet|1\s*sheet|pehla|pehli|first\s*tab|1st\s*tab)\b/i.test(msg) && !isSecond && !isThird;
+
+      if (isSecond && availableTabs.length >= 2) {
+        requestedTabName = availableTabs[1].title || availableTabs[1].name;
+      } else if (isThird && availableTabs.length >= 3) {
+        requestedTabName = availableTabs[2].title || availableTabs[2].name;
+      } else if (isFirst && availableTabs.length >= 1) {
+        requestedTabName = availableTabs[0].title || availableTabs[0].name;
+      }
+
+      if (!requestedTabName) {
+        for (const tab of availableTabs) {
+          const tTitle = tab.title || tab.name;
+          if (tTitle && new RegExp(`\\b${tTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(msg)) {
+            requestedTabName = tTitle;
+            break;
+          }
         }
+      }
+    }
+
+    // If still no requestedTabName, and user has selected tabs in AI Context, pick the first selected tab if 1 selected
+    if (!requestedTabName && selectedTabsData.length === 1) {
+      requestedTabName = selectedTabsData[0].tabName;
+    } else if (!requestedTabName && selectedTabIds.length === 1 && availableTabs.length > 0) {
+      const singleMatch = availableTabs.find((t) =>
+        String(t.sheetId) === String(selectedTabIds[0]) ||
+        String(t.title || "").toLowerCase() === String(selectedTabIds[0]).toLowerCase()
+      );
+      if (singleMatch) {
+        requestedTabName = singleMatch.title || singleMatch.name;
       }
     }
 

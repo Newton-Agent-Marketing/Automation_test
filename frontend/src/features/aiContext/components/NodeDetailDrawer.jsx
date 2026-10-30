@@ -416,8 +416,21 @@ export const NodeDetailDrawer = ({
         } else {
           updated = [...currentSelected, tabKey];
         }
+
+        let effectiveWsName = s.worksheetName || "Sheet1";
+        if (updated.length > 0 && Array.isArray(s.availableTabs)) {
+          const matchTab = s.availableTabs.find((t) =>
+            updated.some((id) =>
+              String(id) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
+              String(id).toLowerCase() === String(t.title || t.name || "").toLowerCase()
+            )
+          );
+          if (matchTab) effectiveWsName = matchTab.title || matchTab.name || effectiveWsName;
+        }
+
         return {
           ...s,
+          worksheetName: effectiveWsName,
           selectedTabIds: updated,
           hasUnsavedTabChanges: true,
           saveTabsMsg: "",
@@ -1513,27 +1526,45 @@ export const NodeDetailDrawer = ({
         catalogCount: totalCount,
       };
     } else if (node.type === "data_warehouse") {
-      const sheetsToSave = sheetsList.slice(0, 10).map((s, idx) => ({
-        id: String(s.id || `sheet_${idx}_${Date.now()}`),
-        sheetUrl: (s.sheetUrl || "").trim(),
-        excelProvider: s.excelProvider || "Google Sheets",
-        workbookName: (s.workbookName || "").trim(),
-        worksheetName: (s.worksheetName || "Sheet1").trim(),
-        availableTabs: Array.isArray(s.availableTabs) ? s.availableTabs : [],
-        selectedTabIds: Array.isArray(s.selectedTabIds) ? s.selectedTabIds : [],
-        selectedTabsData: Array.isArray(s.selectedTabsData) ? s.selectedTabsData : [],
-        excelSyncStatus: s.excelSyncStatus || (s.sheetUrl ? "SYNCED" : "NOT_CONNECTED"),
-        totalRows: Number(s.totalRows || 0),
-        totalDataRows: Number(s.totalDataRows || s.totalRows || 0),
-        totalSheetRows: Number(s.totalSheetRows || (s.totalRows ? s.totalRows + 1 : 0)),
-        sheetColumns: Array.isArray(s.sheetColumns) ? s.sheetColumns : [],
-        dataLabels: (s.dataLabels || "").trim(),
-        dataLevel: (s.dataLabels || "").trim(),
-        metaAccountId: (s.metaAccountId || "").trim(),
-        metaAccountName: (s.metaAccountName || "").trim(),
-        targetTab: (s.targetTab || "").trim(),
-        lastSyncedAt: s.lastSyncedAt || null,
-      }));
+      const sheetsToSave = sheetsList.slice(0, 10).map((s, idx) => {
+        let effectiveWsName = (s.worksheetName || "Sheet1").trim();
+        const selIds = Array.isArray(s.selectedTabIds) ? s.selectedTabIds : [];
+        const avail = Array.isArray(s.availableTabs) ? s.availableTabs : [];
+        if (selIds.length > 0 && avail.length > 0) {
+          const matched = avail.find(
+            (t) =>
+              selIds.some((id) =>
+                String(id) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
+                String(id).toLowerCase() === String(t.title || t.name || "").toLowerCase()
+              )
+          );
+          if (matched) effectiveWsName = matched.title || matched.name || effectiveWsName;
+        } else if (Array.isArray(s.selectedTabsData) && s.selectedTabsData.length > 0) {
+          effectiveWsName = s.selectedTabsData[0].tabName || s.selectedTabsData[0].title || effectiveWsName;
+        }
+
+        return {
+          id: String(s.id || `sheet_${idx}_${Date.now()}`),
+          sheetUrl: (s.sheetUrl || "").trim(),
+          excelProvider: s.excelProvider || "Google Sheets",
+          workbookName: (s.workbookName || "").trim(),
+          worksheetName: effectiveWsName,
+          availableTabs: avail,
+          selectedTabIds: selIds,
+          selectedTabsData: Array.isArray(s.selectedTabsData) ? s.selectedTabsData : [],
+          excelSyncStatus: s.excelSyncStatus || (s.sheetUrl ? "SYNCED" : "NOT_CONNECTED"),
+          totalRows: Number(s.totalRows || 0),
+          totalDataRows: Number(s.totalDataRows || s.totalRows || 0),
+          totalSheetRows: Number(s.totalSheetRows || (s.totalRows ? s.totalRows + 1 : 0)),
+          sheetColumns: Array.isArray(s.sheetColumns) ? s.sheetColumns : [],
+          dataLabels: (s.dataLabels || "").trim(),
+          dataLevel: (s.dataLabels || "").trim(),
+          metaAccountId: (s.metaAccountId || "").trim(),
+          metaAccountName: (s.metaAccountName || "").trim(),
+          targetTab: effectiveWsName,
+          lastSyncedAt: s.lastSyncedAt || null,
+        };
+      });
 
       const connectedSheets = sheetsToSave.filter((s) => Boolean(s.sheetUrl));
       const primaryConnected = connectedSheets[0] || null;

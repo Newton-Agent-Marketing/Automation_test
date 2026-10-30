@@ -35,6 +35,8 @@ export class SourceSheetReader {
     filePath = null,
     fileBuffer = null,
     worksheetName = null,
+    selectedTabIds = [],
+    selectedTabs = [],
   } = {}) {
     let sourceType = "google_sheets";
     let spreadsheetName = "";
@@ -58,13 +60,62 @@ export class SourceSheetReader {
       sourceType = "google_sheets";
       spreadsheetId = sheetsService.extractSpreadsheetId(sheetUrlOrId);
 
+      // Auto-resolve worksheet tab from AI Context if not explicitly passed
+      if (!worksheetName && userId) {
+        try {
+          const context = await AiContext.findOne({ userId }).lean();
+          const allWhNodes = (context?.nodes || []).filter(
+            (n) => n.type === "data_warehouse" || n.type === "storage"
+          );
+          for (const wh of allWhNodes) {
+            const sheets = Array.isArray(wh.data?.sheets) ? wh.data.sheets : [];
+            let target = null;
+            if (spreadsheetId) {
+              target = sheets.find((s) => s.sheetUrl && sheetsService.extractSpreadsheetId(s.sheetUrl) === spreadsheetId) ||
+                (wh.data?.sheetUrl && sheetsService.extractSpreadsheetId(wh.data.sheetUrl) === spreadsheetId ? wh.data : null);
+            }
+            if (!target) {
+              target = sheets[0] || wh.data;
+            }
+            if (target) {
+              const selIds = (Array.isArray(target.selectedTabIds) && target.selectedTabIds.length > 0)
+                ? target.selectedTabIds
+                : (Array.isArray(selectedTabIds) && selectedTabIds.length > 0 ? selectedTabIds : []);
+              const avail = Array.isArray(target.availableTabs) ? target.availableTabs : [];
+
+              if (selIds.length > 0 && avail.length > 0) {
+                const found = avail.find((t) =>
+                  selIds.some(
+                    (id) =>
+                      String(id) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
+                      String(id).toLowerCase() === String(t.title || t.name || t.tabName || "").toLowerCase()
+                  )
+                );
+                if (found) {
+                  worksheetName = found.title || found.name || found.tabName;
+                }
+              }
+              if (!worksheetName && Array.isArray(target.selectedTabsData) && target.selectedTabsData.length > 0) {
+                worksheetName = target.selectedTabsData[0].tabName || target.selectedTabsData[0].title;
+              }
+              if (!worksheetName && target.worksheetName && target.worksheetName !== "Sheet1") {
+                worksheetName = target.worksheetName;
+              }
+            }
+            if (worksheetName) break;
+          }
+        } catch (autoErr) {
+          console.warn("[SourceSheetReader Auto-Resolve Tab Warning]:", autoErr.message);
+        }
+      }
+
       const readResult = await sheetsService.readSpreadsheet({
         spreadsheetIdOrUrl: sheetUrlOrId,
         sheetTitle: worksheetName,
       });
 
       spreadsheetName = readResult.spreadsheetName || `Google_Sheet_${spreadsheetId?.slice(0, 8)}`;
-      targetWorksheet = readResult.sheetTitle || "Sheet1";
+      targetWorksheet = readResult.sheetTitle || worksheetName || "Sheet1";
       availableWorksheets = readResult.availableWorksheets || [targetWorksheet];
       headers = readResult.headers || [];
       rawRows = readResult.rows || [];
@@ -116,7 +167,22 @@ export class SourceSheetReader {
           primaryNode.data?.fileName ||
           primaryNode.data?.sheetName ||
           "Connected Spreadsheet";
-        targetWorksheet = primaryConnectedSheet?.worksheetName || primaryNode.data?.worksheetName || "Sheet1";
+        targetWorksheet = worksheetName || primaryConnectedSheet?.worksheetName || primaryNode.data?.worksheetName || "Sheet1";
+
+        const curSelIds = primaryConnectedSheet?.selectedTabIds || primaryNode.data?.selectedTabIds || [];
+        const curAvail = primaryConnectedSheet?.availableTabs || primaryNode.data?.availableTabs || [];
+        if ((!targetWorksheet || targetWorksheet === "Sheet1") && curSelIds.length > 0 && curAvail.length > 0) {
+          const matchTab = curAvail.find((t) =>
+            curSelIds.some(
+              (id) =>
+                String(id) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
+                String(id).toLowerCase() === String(t.title || t.name || "").toLowerCase()
+            )
+          );
+          if (matchTab) {
+            targetWorksheet = matchTab.title || matchTab.name || targetWorksheet;
+          }
+        }
 
         if (nodeSheetUrl) {
           sourceType = "google_sheets";
