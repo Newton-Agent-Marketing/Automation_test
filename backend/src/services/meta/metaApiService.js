@@ -3761,7 +3761,7 @@ export class MetaApiService {
 
       if (isPermissionErr && !objectStorySpec.instagram_actor_id && !objectStorySpec.instagram_user_id) {
         throw new Error(
-          `Page Permission Error [Code ${firstErr?.code || 10} / Subcode ${firstErr?.error_subcode || 3858749}]: Facebook Page ID "${objectStorySpec.page_id}" lacks required Ads permission. ${firstErr?.error_user_msg || firstErr?.message || "Please grant Advertiser or Admin access for this Page."}`
+          `Facebook Page Permission Error [Meta Code 10 / Subcode 3858749]: Your connected Meta account lacks "Advertiser" permission on Page "${objectStorySpec.page_id}". To publish ads for this Page, grant Advertiser access in Facebook Business Manager or use an authorized Page (such as 1151601711372388 - Impetus Billion).`
         );
       }
 
@@ -3830,6 +3830,11 @@ export class MetaApiService {
         } catch (retryErr3) {
           console.warn("[Meta Video Creative Attempt 3 Warning]:", retryErr3.response?.data?.error || retryErr3.message);
           const metaErr = retryErr3.response?.data?.error || retryErr2.response?.data?.error || err.response?.data?.error;
+          if (metaErr?.code === 10 || metaErr?.error_subcode === 3858749 || (metaErr?.message || "").toLowerCase().includes("permission")) {
+            throw new Error(
+              `Facebook Page Permission Error [Meta Code 10 / Subcode 3858749]: Your connected Meta account lacks "Advertiser" permission on Page "${objectStorySpec.page_id}". To publish ads for this Page, grant Advertiser access in Facebook Business Manager or use an authorized Page (such as 1151601711372388 - Impetus Billion).`
+            );
+          }
           const msg = metaErr ? `[${metaErr.code}]: ${metaErr.message || metaErr.error_user_msg}` : retryErr3.message;
           throw new Error(`Meta Video Ad Creative Creation Failed: ${msg}`);
         }

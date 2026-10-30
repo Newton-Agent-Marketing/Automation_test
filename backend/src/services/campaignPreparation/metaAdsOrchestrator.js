@@ -137,7 +137,7 @@ export class MetaAdsOrchestrator {
     let adResults = session.creationJob.adResults || [];
 
     // Helper: Find existing result for row
-    const findAdResult = (sourceRow) => adResults.find((r) => r.sourceRow === sourceRow);
+    const findAdResult = (sourceRow) => adResults.find((r) => String(r.sourceRow) === String(sourceRow));
 
     // Extract Ad Set configuration and asset settings at outer scope so available across all steps
     const adSetDetails = session.preview?.adSetDetails || [];
@@ -544,7 +544,10 @@ export class MetaAdsOrchestrator {
                   await session.save();
                 } else {
                   console.warn(`[MetaAdsOrchestrator] Warning: No video ID returned for Row #${rowNo}`);
+                  existingRes.error = `Meta video upload failed for Row #${rowNo}: /advideos returned no ID.`;
                 }
+              } else {
+                existingRes.error = `Video download failed for Row #${rowNo}: unable to download media asset from "${adConfig.creative}".`;
               }
             } catch (videoDlErr) {
               console.error(`[MetaAdsOrchestrator] Error ingesting video for Row #${rowNo}:`, videoDlErr.message);
@@ -640,6 +643,17 @@ export class MetaAdsOrchestrator {
         // 4. Create Meta Ad for THIS row now!
         const rowVideoId = adConfig.videoId || existingRes.videoId;
         const rowImageHash = adConfig.imageHash || existingRes.imageHash;
+
+        if (isVideo && !rowVideoId && !adConfig.videoFilePath) {
+          existingRes.status = "FAILED";
+          existingRes.error = existingRes.error || `Row #${rowNo}: Video asset not available for ad creation.`;
+          emit(4, `❌ Row #${rowNo} ("${adConfig.adName}"): ${existingRes.error}`);
+          session.creationJob.adResults = adResults;
+          session.markModified("creationJob.adResults");
+          session.markModified("creationJob");
+          await session.save();
+          continue;
+        }
 
         emit(4, `Publishing Ad #${i + 1} "${adConfig.adName}" to Meta Ads Manager (Row #${rowNo})...`);
 
@@ -931,7 +945,7 @@ export class MetaAdsOrchestrator {
       for (let i = 0; i < previewAds.length; i++) {
         const p = previewAds[i];
         const rowNo = p.sourceRow || (i + 2);
-        let r = adResults.find((x) => x.sourceRow === rowNo);
+        let r = adResults.find((x) => String(x.sourceRow) === String(rowNo));
         if (!r) {
           r = {
             sourceRow: rowNo,
@@ -944,6 +958,8 @@ export class MetaAdsOrchestrator {
             error: "Ad creative was not published to Meta",
           };
           adResults.push(r);
+        } else if (!r.adId && !r.error) {
+          r.error = "Ad creative was not published to Meta";
         }
 
         const expectedTruncated = MetaApiService.formatAdName(p.adName);
@@ -1009,6 +1025,10 @@ export class MetaAdsOrchestrator {
 
     if (actualFailed > 0) {
       md += `\n> 💡 **Safe Retry**: You can ask to retry failed ads at any time. Existing successful ads will not be duplicated.`;
+      const hasPagePermissionIssue = adResults.some((r) => (r.error || "").toLowerCase().includes("permission") || (r.error || "").includes("3858749"));
+      if (hasPagePermissionIssue) {
+        md += `\n> ⚠️ **Facebook Page Permission Action Required**: Meta Marketing API requires your connected Meta account to have **Advertiser** or **Admin** role on the Facebook Page. To fix this, grant Advertiser permission to your Meta account in Facebook Business Manager, or update the Page ID in your Sheet to your authorized Page (\`1151601711372388\` - Impetus Billion).`;
+      }
     }
 
     return md;

@@ -692,16 +692,38 @@ export class WorkflowExecutionEngine {
       saveQueue = saveQueue
         .catch(() => {})
         .then(async () => {
-          let attempts = 3;
+          let attempts = 4;
           while (attempts > 0) {
             try {
               await execution.save();
               return;
             } catch (err) {
-              if (err.name === "ParallelSaveError" && attempts > 1) {
-                attempts--;
-                await new Promise((r) => setTimeout(r, 120));
-                continue;
+              if (err.name === "ParallelSaveError") {
+                if (attempts > 1) {
+                  attempts--;
+                  await new Promise((r) => setTimeout(r, 150));
+                  continue;
+                }
+                // Resilient fallback: Persist updates atomically via updateOne to prevent parallel save crash
+                try {
+                  const AutomationExecution = (await import("../../models/automationExecutionModel.js")).default;
+                  await AutomationExecution.updateOne(
+                    { _id: execution._id },
+                    {
+                      $set: {
+                        status: execution.status,
+                        nodes: execution.nodes,
+                        logs: execution.logs,
+                        successfulNodes: execution.successfulNodes,
+                        failedNodes: execution.failedNodes,
+                        totalNodes: execution.totalNodes,
+                        completedAt: execution.completedAt,
+                        errorSummary: execution.errorSummary,
+                      },
+                    }
+                  );
+                } catch (_) {}
+                return;
               }
               throw err;
             }
