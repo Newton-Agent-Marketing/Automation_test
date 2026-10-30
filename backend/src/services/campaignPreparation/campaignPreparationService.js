@@ -569,41 +569,81 @@ export class CampaignPreparationService {
       const hasAnswers = Object.keys(parsedAnswers).length > 0;
 
       if (hasAnswers) {
-        emit("Saving answers to connected source sheet and revalidating...");
+        emit("Merging chat-provided values with session context...");
         session.status = "UPDATING_SHEET";
 
-        // Update sheet cells
-        const updateRes = await SheetUpdateService.updateSourceSheet({
-          userId,
-          source: session.source,
-          updates: parsedAnswers,
-          affectedRows: [],
-        });
+        // Accumulate and persist user answers immediately across turns
+        const combinedAnswers = {
+          ...(session.userAnswers || {}),
+          ...(session.chatInjectedValues || {}),
+          ...parsedAnswers,
+        };
 
-        // Re-read back latest values
-        const rawSource = await SourceSheetReader.readSource({
-          userId,
-          sheetUrlOrId: session.source?.sheetUrl || session.source?.spreadsheetId,
-          filePath: session.source?.filePath,
-          worksheetName: session.source?.worksheetName,
-        });
+        session.userAnswers = combinedAnswers;
+        session.chatInjectedValues = combinedAnswers;
 
-        const { filteredSource: sourceData } = this.applyFiltersToSourceData(rawSource, "", session.filterCriteria);
+        if (combinedAnswers.pixel_id || combinedAnswers.pixelId) {
+          session.pixelId = combinedAnswers.pixel_id || combinedAnswers.pixelId;
+        }
+        if (combinedAnswers.app_id || combinedAnswers.appId) {
+          session.appId = combinedAnswers.app_id || combinedAnswers.appId;
+        }
+        if (combinedAnswers.object_store_url || combinedAnswers.objectStoreUrl) {
+          session.objectStoreUrl = combinedAnswers.object_store_url || combinedAnswers.objectStoreUrl;
+        }
+        if (combinedAnswers.objective) {
+          session.objective = combinedAnswers.objective;
+        }
+        if (combinedAnswers.campaignType) {
+          session.campaignType = combinedAnswers.campaignType;
+        }
+        await session.save();
 
-        // Re-run validation
-        emit("Revalidating configuration and dependencies...");
+        // Attempt to update source sheet cells (gracefully handle sheets without matching columns)
+        let updateRes = { success: true };
+        try {
+          updateRes = await SheetUpdateService.updateSourceSheet({
+            userId,
+            source: session.source,
+            updates: combinedAnswers,
+            affectedRows: [],
+          });
+        } catch (sheetErr) {
+          console.warn("[SheetUpdateService Warning]:", sheetErr.message);
+        }
+
+        // Re-read back latest values from sheet
+        let sourceData = null;
+        try {
+          const rawSource = await SourceSheetReader.readSource({
+            userId,
+            sheetUrlOrId: session.source?.sheetUrl || session.source?.spreadsheetId,
+            filePath: session.source?.filePath,
+            worksheetName: session.source?.worksheetName,
+          });
+
+          const filtered = this.applyFiltersToSourceData(rawSource, "", session.filterCriteria);
+          sourceData = filtered.filteredSource;
+          if (sourceData?.dataFingerprint) {
+            session.source.dataFingerprint = sourceData.dataFingerprint;
+          }
+        } catch (readErr) {
+          console.warn("[SourceSheetReader Re-read Warning]:", readErr.message);
+        }
+
+        // Re-run validation WITH CUMULATIVE combinedAnswers
+        emit("Revalidating configuration with merged sheet and chat data...");
         const valResult = await CampaignValidator.validate({
           campaignName: session.campaignName,
           adSetName: session.adSetName,
           metaAccountId: effectiveMetaAccountId,
           accountDoc: effectiveAccountDoc,
-          sourceData,
-          userAnswers: parsedAnswers,
+          sourceData: sourceData || { headers: [], rows: [] },
+          userAnswers: combinedAnswers,
           contextNodeData,
           adNamePattern: session?.adNamePattern || null,
         });
 
-        session.source.dataFingerprint = sourceData.dataFingerprint;
         session.validationReport = {
           summaryTable: valResult.summaryTable,
           campaignIssues: valResult.campaignIssues,
@@ -618,45 +658,114 @@ export class CampaignPreparationService {
         session.objective = valResult.objective;
         session.contextNodeData = contextNodeData;
         if (effectiveMetaAccountId) session.metaAccountId = effectiveMetaAccountId;
-        session.userAnswers = { ...(session.userAnswers || {}), ...parsedAnswers };
-
-        let replyMd = "";
-        if (updateRes.message) {
-          replyMd += `> 💾 ${updateRes.message}\n\n`;
-        }
 
         if (valResult.isValid) {
-          session.status = "READY_FOR_REVIEW";
+          emit("All missing fields resolved! Building preview and continuing ad creation...");
+          const newVersion = (session.preview?.version || 1) + 1;
           const preview = PreviewBuilder.buildPreview({
             validationResult: valResult,
-            sourceData,
-            userAnswers: parsedAnswers,
-            version: (session.preview?.version || 1) + 1,
+            sourceData: sourceData || { headers: [], rows: [] },
+            userAnswers: combinedAnswers,
+            version: newVersion,
           });
           session.preview = preview;
+          session.mergedPayload = {
+            campaign: preview.campaignDetails,
+            adSet: preview.adSetDetails,
+            ads: preview.adDetails,
+            userAnswers: combinedAnswers,
+          };
+
+          // Seamlessly continue ad creation on the selected Meta Ad Account
+          session.status = "APPROVED";
+          session.approval = {
+            status: "APPROVED",
+            approvedAt: new Date(),
+            approvedBy: userId,
+            snapshotDataFingerprint: session.source?.dataFingerprint,
+            snapshot: JSON.parse(JSON.stringify(preview)),
+          };
+          session.creationJob = {
+            status: "IN_PROGRESS",
+            startedAt: new Date(),
+            completedAt: null,
+            campaignName: session.campaignName,
+            metaCampaignId: null,
+            metaAdSetId: null,
+            adResults: [],
+            totalAds: preview.adDetails?.length || 0,
+          };
+          session.auditHistory.push({
+            action: "RESUME_CREATION_AFTER_MISSING_FIELDS",
+            performedBy: userEmail || "USER",
+            details: { previewVersion: newVersion, injectedFields: Object.keys(parsedAnswers) },
+            timestamp: new Date(),
+          });
           await session.save();
 
-          replyMd += CampaignValidator.formatReportMarkdown(valResult);
-          replyMd += `\n\n` + PreviewBuilder.formatPreviewMarkdown(preview);
+          emit("Executing Meta Ads creation on selected Meta Ad Account...");
+          const creationResult = await MetaAdsOrchestrator.executeApprovalCreation({
+            session,
+            userId,
+            userEmail,
+            onProgress,
+          });
+
+          let replyMd = `### ✅ Missing Fields Received & Ad Creation Resumed\n\n`;
+          replyMd += `> 📥 **Injected Values**: ` + Object.entries(parsedAnswers).map(([k, v]) => `\`${k}\`: \`${v}\``).join(", ") + `\n\n`;
+          replyMd += MetaAdsOrchestrator.formatCreationResultMarkdown(
+            creationResult,
+            session.campaignName,
+            session.adSetName
+          );
+
+          return {
+            content: replyMd,
+            preparationSession: typeof session?.toObject === "function" ? session.toObject() : session,
+            toolCalls: [
+              {
+                toolName: "inject_missing_fields_and_create_ad",
+                toolArgs: parsedAnswers,
+                toolResult: creationResult,
+                status: "SUCCESS",
+              },
+            ],
+          };
         } else {
           session.status = "NEEDS_USER_INPUT";
           await session.save();
 
-          replyMd += CampaignValidator.formatReportMarkdown(valResult);
-          replyMd += `\n\n` + MissingFieldCollector.formatQuestionsMarkdown(valResult.missingFields);
+          let replyMd = `### 📥 Received & Injected Information\n\n`;
+          replyMd += `I've updated the campaign context with your provided values:\n`;
+          for (const [k, v] of Object.entries(parsedAnswers)) {
+            replyMd += `- **${k}**: \`${v}\`\n`;
+          }
+          replyMd += `\nHowever, some required fields are still missing before ad creation can continue:\n\n`;
+          replyMd += MissingFieldCollector.formatQuestionsMarkdown(valResult.missingFields);
+
+          return {
+            content: replyMd,
+            preparationSession: typeof session?.toObject === "function" ? session.toObject() : session,
+            toolCalls: [
+              {
+                toolName: "save_missing_fields",
+                toolArgs: parsedAnswers,
+                toolResult: { success: true, remainingMissing: valResult.missingFields.length },
+                status: "SUCCESS",
+              },
+            ],
+          };
         }
+      } else {
+        // User message was received while waiting for inputs, but no recognizable fields were found
+        let replyMd = `### ❓ Missing Information Still Required\n\n`;
+        replyMd += `I noticed your message, but I still need the required missing fields before I can continue creating your Meta Ads campaign:\n\n`;
+        replyMd += MissingFieldCollector.formatQuestionsMarkdown(session.missingFields || []);
 
         return {
           content: replyMd,
-          preparationSession: session,
-          toolCalls: [
-            {
-              toolName: "save_missing_fields",
-              toolArgs: parsedAnswers,
-              toolResult: updateRes,
-              status: "SUCCESS",
-            },
-          ],
+          preparationSession: typeof session?.toObject === "function" ? session.toObject() : session,
+          toolCalls: [],
         };
       }
     }
@@ -721,6 +830,7 @@ export class CampaignPreparationService {
 
     const sourceData = filteredSource;
     const adNamePattern = DynamicSheetFilter.parseAdNamePattern(msg) || session?.adNamePattern || null;
+    const initialChatAnswers = MissingFieldCollector.parseAnswersFromMessage(msg, []);
 
     // 3. Validate filtered sheet data across all levels
     emit("Validating fields at Campaign, Ad Set, Ad, and Media levels...");
@@ -730,6 +840,7 @@ export class CampaignPreparationService {
       metaAccountId: effectiveMetaAccountId,
       accountDoc: effectiveAccountDoc,
       sourceData,
+      userAnswers: initialChatAnswers,
       contextNodeData,
       adNamePattern,
     });
@@ -751,6 +862,9 @@ export class CampaignPreparationService {
           adNamePattern: adNamePattern || null,
           existingCampaignId,
           existingAdSetId,
+          userAnswers: initialChatAnswers,
+          chatInjectedValues: initialChatAnswers,
+          mergedPayload: null,
           ...(existingCampaignId ? { "creationJob.metaCampaignId": existingCampaignId } : {}),
           ...(existingAdSetId ? { "creationJob.metaAdSetId": existingAdSetId } : {}),
           campaignType: valResult.campaignType,
@@ -816,6 +930,7 @@ export class CampaignPreparationService {
       const preview = PreviewBuilder.buildPreview({
         validationResult: valResult,
         sourceData,
+        userAnswers: initialChatAnswers,
         version: 1,
       });
       session.preview = preview;

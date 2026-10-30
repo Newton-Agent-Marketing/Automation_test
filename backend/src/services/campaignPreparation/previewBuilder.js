@@ -75,8 +75,8 @@ export class PreviewBuilder {
         ? `Locations: ${firstRowValues.countries || "India"} | Age: ${firstRowValues.age_min || "18"}-${firstRowValues.age_max || "65"} | Gender: ${firstRowValues.gender || "ALL"}`
         : "Locations: India | Age: 18-65 | Gender: ALL";
 
-    const effectiveAppId = firstRowValues.app_id || userAnswers.appId || validationResult.appId || null;
-    const effectivePixelId = firstRowValues.pixel_id || userAnswers.pixelId || validationResult.pixelId || null;
+    const effectiveAppId = userAnswers.appId || userAnswers.app_id || validationResult.appId || firstRowValues.app_id || null;
+    const effectivePixelId = userAnswers.pixelId || userAnswers.pixel_id || userAnswers.dataset_id || validationResult.pixelId || firstRowValues.pixel_id || null;
 
     let trackingConversionSettings = "";
     if (campaignType === "APP_PROMOTION") {
@@ -157,15 +157,15 @@ export class PreviewBuilder {
         adName: ad.adName,
         creativeType: ad.creativeType,
         creative: ad.creative || "Configured media asset",
-        primaryText: ad.primaryText || "",
-        headline: ad.headline || "",
+        primaryText: userAnswers.primaryText || userAnswers.primary_text || ad.primaryText || "",
+        headline: userAnswers.headline || ad.headline || "",
         description: ad.description || "",
-        destination: ad.destination || "",
-        displayLink: ad.displayLink || "",
+        destination: userAnswers.landingPageUrl || userAnswers.landing_page_url || userAnswers.website_url || userAnswers.objectStoreUrl || userAnswers.object_store_url || ad.destination || "",
+        displayLink: userAnswers.displayLink || userAnswers.display_link || ad.displayLink || "",
         urlTags: ad.urlTags || null,
         cta: ad.cta || (campaignType === "APP_PROMOTION" ? "DOWNLOAD" : "BOOK_NOW"),
-        pageId: ad.pageId || "",
-        instagramId: ad.instagramId || "",
+        pageId: userAnswers.pageId || userAnswers.page_id || ad.pageId || "",
+        instagramId: userAnswers.instagramId || userAnswers.instagram_id || userAnswers.instagram_account_id || ad.instagramId || "",
         appId: ad.appId || effectiveAppId || "",
         pixelId: ad.pixelId || effectivePixelId || "",
         videoId: ad.videoId || null,

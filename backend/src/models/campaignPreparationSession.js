@@ -267,6 +267,18 @@ const campaignPreparationSessionSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.Mixed,
       default: null,
     },
+    userAnswers: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+    chatInjectedValues: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+    mergedPayload: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
   },
   {
     timestamps: true,

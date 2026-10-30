@@ -60,10 +60,10 @@ export class CampaignValidator {
 
     const firstRowValues = rows[0]?.values || {};
 
-    const detectedAppId = userAnswers.appId || this.getFieldValue(firstRowValues, "appId");
-    const detectedStoreUrl = userAnswers.objectStoreUrl || this.getFieldValue(firstRowValues, "objectStoreUrl");
-    const detectedPixelId = userAnswers.pixelId || this.getFieldValue(firstRowValues, "pixelId");
-    const detectedLandingUrl = userAnswers.landingPageUrl || this.getFieldValue(firstRowValues, "landingPageUrl") || contextNodeData?.productUrl;
+    const detectedAppId = userAnswers.appId || userAnswers.app_id || this.getFieldValue(firstRowValues, "appId");
+    const detectedStoreUrl = userAnswers.objectStoreUrl || userAnswers.object_store_url || this.getFieldValue(firstRowValues, "objectStoreUrl");
+    const detectedPixelId = userAnswers.pixelId || userAnswers.pixel_id || userAnswers.dataset_id || this.getFieldValue(firstRowValues, "pixelId");
+    const detectedLandingUrl = userAnswers.landingPageUrl || userAnswers.landing_page_url || userAnswers.website_url || this.getFieldValue(firstRowValues, "landingPageUrl") || contextNodeData?.productUrl;
 
     // 1. Detect Campaign Type: WEBSITE vs APP_PROMOTION
     const explicitCampType = userAnswers.campaignType || this.getFieldValue(firstRowValues, "campaignType");
@@ -156,6 +156,9 @@ export class CampaignValidator {
     // Check Budget Configuration (CBO vs ABO)
     const rawCampBudget =
       userAnswers.campaignBudget ||
+      userAnswers.budget ||
+      userAnswers.dailyBudget ||
+      userAnswers.daily_budget ||
       this.getFieldValue(firstRowValues, "campaign_budget") ||
       this.getFieldValue(firstRowValues, "daily_budget") ||
       this.getFieldValue(firstRowValues, "budget");
@@ -167,7 +170,7 @@ export class CampaignValidator {
     const specialAdCategory = userAnswers.specialAdCategory || firstRowValues.special_ad_category || "NONE";
 
     // 3. AD SET LEVEL VALIDATION
-    const effectiveAdSetName = (adSetName || userAnswers.adSetName || this.getFieldValue(firstRowValues, "adSetName") || "").trim();
+    const effectiveAdSetName = (adSetName || userAnswers.adSetName || userAnswers.adset_name || this.getFieldValue(firstRowValues, "adSetName") || "").trim();
     if (!effectiveAdSetName || effectiveAdSetName.length < 2) {
       adSetIssues.push({
         field: "adset_name",
@@ -190,6 +193,9 @@ export class CampaignValidator {
     // Budget check: If NOT CBO, require Ad Set budget (ABO)
     const rawAdSetBudget =
       userAnswers.adSetBudget ||
+      userAnswers.budget ||
+      userAnswers.dailyBudget ||
+      userAnswers.daily_budget ||
       this.getFieldValue(firstRowValues, "adset_daily_budget") ||
       this.getFieldValue(firstRowValues, "adset_budget") ||
       this.getFieldValue(firstRowValues, "daily_budget");
@@ -297,7 +303,7 @@ export class CampaignValidator {
       }
     } else {
       // Website Campaign Specific Checks
-      pixelId = userAnswers.pixelId || this.getFieldValue(firstRowValues, "pixelId");
+      pixelId = userAnswers.pixelId || userAnswers.pixel_id || userAnswers.dataset_id || this.getFieldValue(firstRowValues, "pixelId");
       const requiresPixel = objective === "OUTCOME_SALES" || objective === "OUTCOME_LEADS";
       if (requiresPixel && (!pixelId || !/^\d{10,20}$/.test(String(pixelId).trim()))) {
         adSetIssues.push({
@@ -370,6 +376,11 @@ export class CampaignValidator {
     const missingMediaRows = [];
     const missingHeadlineRows = [];
     const missingDestinationRows = [];
+    const missingDisplayLinkRows = [];
+
+    const hasDisplayLinkHeader =
+      headers.some((h) => /display\s*link|displaylink/i.test(String(h).trim())) ||
+      Object.keys(firstRowValues).some((k) => /display\s*link|displaylink/i.test(String(k).trim()));
 
     console.log("\n📋 [CAMPAIGN PREFLIGHT VALIDATOR ➔ AI CONTEXT NODE FUSION]");
     console.log(`   Ad Account Target  : ${targetAccId || "(None)"} (Source: ${metaAccountId ? "Parameter" : (contextNodeData?.adAccountId ? "AI Context Ad Channel Node" : "Default")})`);
@@ -425,6 +436,7 @@ export class CampaignValidator {
 
       const pageId =
         userAnswers.pageId ||
+        userAnswers.page_id ||
         this.getFieldValue(vals, "pageId") ||
         accountDoc?.pageId ||
         contextNodeData?.pageId;
@@ -442,6 +454,7 @@ export class CampaignValidator {
 
       const primaryText =
         userAnswers.primaryText ||
+        userAnswers.primary_text ||
         this.getFieldValue(vals, "primaryText") ||
         contextNodeData?.briefName ||
         contextNodeData?.productName ||
@@ -479,12 +492,15 @@ export class CampaignValidator {
         const rowStore = this.getFieldValue(vals, "objectStoreUrl");
         const isRowValid = rowStore && (rowStore.includes("play.google.com") || rowStore.includes("apple.com"));
         destination =
-          (isRowValid ? rowStore : null) ||
           userAnswers.objectStoreUrl ||
+          userAnswers.object_store_url ||
+          (isRowValid ? rowStore : null) ||
           storeUrl;
       } else {
         destination =
           userAnswers.landingPageUrl ||
+          userAnswers.landing_page_url ||
+          userAnswers.website_url ||
           this.getFieldValue(vals, "landingPageUrl") ||
           contextNodeData?.productUrl ||
           contextNodeData?.products?.[0]?.url;
@@ -601,6 +617,31 @@ export class CampaignValidator {
         firstRowValues.instagram_user_id ||
         null;
 
+      const rowDisplayLink = (() => {
+        const raw =
+          userAnswers?.displayLink ||
+          userAnswers?.display_link ||
+          this.getFieldValue(vals, "displayLink") ||
+          vals.display_link ||
+          vals["Display link"] ||
+          vals["Display Link"] ||
+          vals["display link"] ||
+          vals.displayLink ||
+          null;
+        return raw ? String(raw).trim() : "";
+      })();
+
+      if (hasDisplayLinkHeader && !rowDisplayLink && !isAppPromotion) {
+        missingDisplayLinkRows.push(rowNo);
+        adIssues.push({
+          rowNumber: rowNo,
+          adName,
+          field: "display_link",
+          message: "Display Link is missing.",
+          blocking: true,
+        });
+      }
+
       adLevelRows.push({
         sourceRow: rowNo,
         adName,
@@ -615,19 +656,7 @@ export class CampaignValidator {
         headline,
         description: this.getFieldValue(vals, "description") || "",
         destination,
-        displayLink: (() => {
-          const raw =
-            this.getFieldValue(vals, "displayLink") ||
-            vals.display_link ||
-            vals["Display link"] ||
-            vals["Display Link"] ||
-            vals["display link"] ||
-            vals.displayLink ||
-            userAnswers?.displayLink ||
-            userAnswers?.display_link ||
-            null;
-          return raw ? String(raw).trim() : "";
-        })(),
+        displayLink: rowDisplayLink,
         urlTags: (() => {
           const raw =
             this.getFieldValue(vals, "urlTags") ||
@@ -695,6 +724,36 @@ export class CampaignValidator {
         label: "Creative Media URL / Drive Link",
         description: "Provide accessible Google Drive links or media URLs for the creatives.",
         affectedRows: missingMediaRows,
+        currentValue: null,
+        options: [],
+        resolved: false,
+      });
+    }
+
+    if (missingDestinationRows.length > 0) {
+      missingFieldsMap.set(isAppPromotion ? "ad.object_store_url" : "ad.landing_page_url", {
+        id: isAppPromotion ? "object_store_url" : "landing_page_url",
+        level: "ad",
+        field: isAppPromotion ? "object_store_url" : "landing_page_url",
+        label: isAppPromotion ? "App Store Destination URL" : "Landing Page / Website URL",
+        description: isAppPromotion
+          ? "Provide a valid Google Play Store or Apple App Store URL."
+          : "Provide the website destination URL for your ads.",
+        affectedRows: missingDestinationRows,
+        currentValue: null,
+        options: [],
+        resolved: false,
+      });
+    }
+
+    if (missingDisplayLinkRows.length > 0) {
+      missingFieldsMap.set("ad.display_link", {
+        id: "display_link",
+        level: "ad",
+        field: "display_link",
+        label: "Display Link",
+        description: "Provide the display link (vanity URL, e.g. example.com) shown on your ad.",
+        affectedRows: missingDisplayLinkRows,
         currentValue: null,
         options: [],
         resolved: false,

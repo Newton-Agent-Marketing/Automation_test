@@ -164,9 +164,9 @@ export class MetaAdsOrchestrator {
     const trackingRow = String(adSetDetails.find((d) => d.field.includes("Tracking") || d.field.includes("Conversion"))?.value || "");
 
     // Robust asset extraction for App Promotion and Website campaigns
-    let appId = session.appId || session.userAnswers?.appId || session.userAnswers?.applicationId || null;
-    let objectStoreUrl = session.objectStoreUrl || session.userAnswers?.objectStoreUrl || session.userAnswers?.object_store_url || null;
-    let pixelId = session.pixelId || session.userAnswers?.pixelId || null;
+    let appId = session.appId || session.userAnswers?.appId || session.userAnswers?.app_id || session.chatInjectedValues?.appId || session.chatInjectedValues?.app_id || session.userAnswers?.applicationId || null;
+    let objectStoreUrl = session.objectStoreUrl || session.userAnswers?.objectStoreUrl || session.userAnswers?.object_store_url || session.chatInjectedValues?.objectStoreUrl || session.chatInjectedValues?.object_store_url || null;
+    let pixelId = session.pixelId || session.userAnswers?.pixelId || session.userAnswers?.pixel_id || session.chatInjectedValues?.pixelId || session.chatInjectedValues?.pixel_id || session.userAnswers?.dataset_id || null;
 
     if (!appId && trackingRow.includes("Meta App ID:")) {
       const match = trackingRow.match(/Meta App ID:\s*([0-9]+)/i);
@@ -640,12 +640,12 @@ export class MetaAdsOrchestrator {
           let createdAdRes = null;
 
           const defaultCta = isAppCamp ? "DOWNLOAD" : "BOOK_TRAVEL";
-          const adAppId = appId || adConfig.appId || session.appId || session.userAnswers?.appId || null;
-          const adPixelId = adConfig.pixelId || session.pixelId || session.userAnswers?.pixelId || null;
+          const adAppId = appId || adConfig.appId || session.appId || session.userAnswers?.appId || session.userAnswers?.app_id || session.chatInjectedValues?.appId || session.chatInjectedValues?.app_id || null;
+          const adPixelId = adConfig.pixelId || session.pixelId || session.userAnswers?.pixelId || session.userAnswers?.pixel_id || session.chatInjectedValues?.pixelId || session.chatInjectedValues?.pixel_id || null;
           const adTrackingType = (adPixelId && adAppId) ? "BOTH" : (isAppCamp ? "APP" : (adPixelId ? "WEBSITE" : (adAppId ? "APP" : "WEBSITE")));
-          const adStoreUrl = isAppCamp ? (objectStoreUrl || session.objectStoreUrl || adConfig.destination) : null;
-          const adPageId = adConfig.pageId || session.preview?.adDetails?.[0]?.pageId || session.userAnswers?.pageId;
-          const adInstagramId = adConfig.instagramId || adConfig.instagram_user_id || adConfig.instagramUserId || null;
+          const adStoreUrl = isAppCamp ? (objectStoreUrl || session.objectStoreUrl || session.userAnswers?.objectStoreUrl || session.userAnswers?.object_store_url || session.chatInjectedValues?.objectStoreUrl || session.chatInjectedValues?.object_store_url || adConfig.destination) : null;
+          const adPageId = adConfig.pageId || session.preview?.adDetails?.[0]?.pageId || session.userAnswers?.pageId || session.userAnswers?.page_id || session.chatInjectedValues?.pageId || session.chatInjectedValues?.page_id;
+          const adInstagramId = adConfig.instagramId || adConfig.instagram_user_id || adConfig.instagramUserId || session.userAnswers?.instagramId || session.userAnswers?.instagram_id || session.chatInjectedValues?.instagramId || null;
           let adUrlTags = adConfig.urlTags || adConfig.url_tags || adConfig.urlParameter || null;
           if (!adUrlTags && adConfig.tracking) {
             const trackingStr = String(adConfig.tracking).trim();
@@ -656,7 +656,7 @@ export class MetaAdsOrchestrator {
             }
           }
 
-          const adDisplayLink = adConfig.displayLink || adConfig.display_link || session.preview?.adDetails?.[i]?.displayLink || session.preview?.adDetails?.[0]?.displayLink || session.userAnswers?.displayLink || null;
+          const adDisplayLink = adConfig.displayLink || adConfig.display_link || session.preview?.adDetails?.[i]?.displayLink || session.preview?.adDetails?.[0]?.displayLink || session.userAnswers?.displayLink || session.userAnswers?.display_link || session.chatInjectedValues?.displayLink || session.chatInjectedValues?.display_link || null;
 
           const candidateDest =
             adConfig.destination ||
@@ -664,6 +664,11 @@ export class MetaAdsOrchestrator {
             adConfig.linkUrl ||
             session.preview?.adDetails?.[i]?.destination ||
             session.userAnswers?.landingPageUrl ||
+            session.userAnswers?.landing_page_url ||
+            session.userAnswers?.website_url ||
+            session.chatInjectedValues?.landingPageUrl ||
+            session.chatInjectedValues?.landing_page_url ||
+            session.chatInjectedValues?.website_url ||
             session.contextNodeData?.productUrl ||
             session.contextNodeData?.products?.[0]?.url ||
             null;
@@ -675,12 +680,16 @@ export class MetaAdsOrchestrator {
             adConfig.headline ||
             session.preview?.adDetails?.[i]?.headline ||
             session.userAnswers?.headline ||
+            session.chatInjectedValues?.headline ||
             (session.contextNodeData?.productName ? `${session.contextNodeData.productName} - Special Offer` : null);
 
           const adPrimaryText =
             adConfig.primaryText ||
             session.preview?.adDetails?.[i]?.primaryText ||
             session.userAnswers?.primaryText ||
+            session.userAnswers?.primary_text ||
+            session.chatInjectedValues?.primaryText ||
+            session.chatInjectedValues?.primary_text ||
             session.contextNodeData?.briefName ||
             session.contextNodeData?.productName ||
             null;

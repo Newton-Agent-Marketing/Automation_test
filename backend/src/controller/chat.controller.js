@@ -504,15 +504,22 @@ export const runAgentChat = async ({
   // 1b. Check if this request is a Meta Campaign Preparation Workflow request (create, approve, edit, or answering missing fields)
   const isAutomationRun = Boolean(conversationId?.startsWith("automation_"));
   const activePrepSession = await CampaignPreparationService.getActiveSession(conversationId, validUserId || userId).catch(() => null);
+  const isAnsweringMissingFields = Boolean(
+    activePrepSession &&
+    activePrepSession.status === "NEEDS_USER_INPUT" &&
+    !mentionsGoogleAds
+  );
+
   const isMetaPrepWorkflow =
-    !mentionsGoogleAds &&
-    !isFetchOrQueryCmd &&
-    !isAnalyticalTask &&
-    (!isAutomationRun || isExplicitCampaignDeployCmd) &&
-    (Boolean(activePrepSession) ||
-      CampaignPreparationService.isApprovalCommand(userMessage, activePrepSession) ||
-      CampaignPreparationService.isEditCommand(userMessage, activePrepSession) ||
-      isCreationOrCampaignCmd);
+    isAnsweringMissingFields ||
+    (!mentionsGoogleAds &&
+      !isFetchOrQueryCmd &&
+      !isAnalyticalTask &&
+      (!isAutomationRun || isExplicitCampaignDeployCmd) &&
+      (Boolean(activePrepSession) ||
+        CampaignPreparationService.isApprovalCommand(userMessage, activePrepSession) ||
+        CampaignPreparationService.isEditCommand(userMessage, activePrepSession) ||
+        isCreationOrCampaignCmd));
 
   if (!result && isMetaPrepWorkflow) {
     try {
