@@ -8,6 +8,9 @@ export const aiContextApi = {
   
   // Data Ingestion (Excel Upload & Google Sheets)
   connectSheet: (payload) => api.post("/api/ai-context/connect-sheet", payload),
+  discoverSheetTabs: (payload) => api.post("/api/ai-context/discover-sheet-tabs", payload),
+  saveTabSelection: (payload) => api.post("/api/ai-context/save-tab-selection", payload),
+  previewTabData: (payload) => api.post("/api/ai-context/preview-tab-data", payload),
   syncSheet: (payload) => api.post("/api/ai-context/sync-sheet", payload),
   getSheetSyncStatus: () => api.get("/api/ai-context/sheet-sync-status"),
   uploadExcel: (formData) => api.post("/api/ai-context/upload-excel", formData, {

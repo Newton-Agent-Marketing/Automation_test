@@ -102,15 +102,23 @@ export class AiAgentOrchestrator {
       targetGoogleCustomerId = primaryGoogle.selectedCustomerId || primaryGoogle.accountId || null;
     }
 
-    // Extract connected Google Sheet URL from AI Context Warehouse nodes
+    // Extract connected Google Sheet URL and Tab selections from AI Context Warehouse nodes
     let connectedSheetUrl = null;
     let connectedSheetName = "Connected Google Sheet";
+    let availableTabs = [];
+    let selectedTabIds = [];
+    let selectedTabs = [];
+    let excludedTabs = [];
+
     if (aiContextDoc?.nodes) {
       const warehouseNodes = aiContextDoc.nodes.filter((n) => n.type === "data_warehouse");
       for (const w of warehouseNodes) {
         if (w.data?.sheetUrl) {
           connectedSheetUrl = w.data.sheetUrl;
           connectedSheetName = w.data.workbookName || w.data.sheetName || w.data.title || "Google Sheet";
+          availableTabs = Array.isArray(w.data.availableTabs) ? w.data.availableTabs : [];
+          selectedTabIds = Array.isArray(w.data.selectedTabIds) ? w.data.selectedTabIds : [];
+          selectedTabs = Array.isArray(w.data.selectedTabsData) ? w.data.selectedTabsData : [];
           break;
         }
         if (Array.isArray(w.data?.sheets) && w.data.sheets.length > 0) {
@@ -118,10 +126,19 @@ export class AiAgentOrchestrator {
           if (first) {
             connectedSheetUrl = first.sheetUrl;
             connectedSheetName = first.workbookName || first.sheetName || "Google Sheet";
+            availableTabs = Array.isArray(first.availableTabs) ? first.availableTabs : [];
+            selectedTabIds = Array.isArray(first.selectedTabIds) ? first.selectedTabIds : [];
+            selectedTabs = Array.isArray(first.selectedTabsData) ? first.selectedTabsData : [];
             break;
           }
         }
       }
+    }
+
+    if (availableTabs.length > 0 && selectedTabIds.length > 0) {
+      excludedTabs = availableTabs
+        .filter((t) => !selectedTabIds.some((id) => String(id) === String(t.sheetId) || String(id).toLowerCase() === String(t.title || "").toLowerCase()))
+        .map((t) => t.title);
     }
 
     return {
@@ -135,6 +152,10 @@ export class AiAgentOrchestrator {
       targetGoogleCustomerId,
       connectedSheetUrl,
       connectedSheetName,
+      availableTabs,
+      selectedTabIds,
+      selectedTabs,
+      excludedTabs,
     };
   }
 
@@ -700,11 +721,15 @@ How can I help you today? You can ask me to:
         .map((r) => columns.slice(0, 5).map((col) => String(r[col] || "-").replace(/\n/g, " ").slice(0, 40)).join(" | "))
         .join("\n");
 
+      const activeTabsList = (res.selectedTabs && res.selectedTabs.length > 0)
+        ? res.selectedTabs.map((t) => `\`${t.tabName}\` (${t.totalRows || 0} rows)`).join(", ")
+        : null;
+
       return `### 📄 Connected Spreadsheet Data Ingested
 
 > **Node Instruction:** *"${instruction}"*  
 > **Source:** **${res.sheetName || context.connectedSheetName}** (${res.totalRows || rows.length} total rows)  
-> **Verification Status:** **✅ VERIFIED & VALIDATED**
+${activeTabsList ? `> **Active Selected Tabs:** ${activeTabsList}  \n` : ""}> **Verification Status:** **✅ VERIFIED & VALIDATED**
 
 ---
 
@@ -717,6 +742,7 @@ ${tableRows}
 
 #### 🔍 Verification Summary
 - **Total Valid Rows Extracted:** **${res.totalRows || rows.length}**
+${activeTabsList ? `- **Worksheet Tab Isolation:** Ingested from selected tabs (${activeTabsList}). Unselected tabs were excluded from the execution context.` : ""}
 - **Detected Columns:** \`${columns.join("`, `")}\`
 - **Lineage Integrity:** Data verified from authorized source. The structured payload has been validated and packaged for downstream execution nodes.`;
     }

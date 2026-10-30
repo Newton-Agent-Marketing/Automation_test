@@ -1143,7 +1143,32 @@ export async function getUserAiContext({ userId }) {
       googleDriveFolderName: n.data?.googleDriveFolderName || "",
       dataLevel: n.data?.dataLevel || n.data?.dataLabels || "",
       dataLabels: n.data?.dataLabels || n.data?.dataLevel || "",
-      sheets: Array.isArray(n.data?.sheets) ? n.data.sheets : [],
+      availableTabs: n.data?.availableTabs || [],
+      selectedTabIds: n.data?.selectedTabIds || [],
+      selectedTabs: (n.data?.selectedTabsData || []).map((t) => ({
+        sheetId: t.sheetId,
+        tabName: t.tabName,
+        columns: t.columns,
+        totalRows: t.totalRows,
+        totalDataRows: t.totalDataRows,
+        sampleRows: (t.rows || []).slice(0, 5),
+      })),
+      sheets: (Array.isArray(n.data?.sheets) ? n.data.sheets : []).map((s) => ({
+        ...s,
+        availableTabs: s.availableTabs || [],
+        selectedTabIds: s.selectedTabIds || [],
+        selectedTabs: (s.selectedTabsData || []).map((t) => ({
+          sheetId: t.sheetId,
+          tabName: t.tabName,
+          columns: t.columns,
+          totalRows: t.totalRows,
+          totalDataRows: t.totalDataRows,
+          sampleRows: (t.rows || []).slice(0, 5),
+        })),
+        excludedTabs: (s.availableTabs || [])
+          .filter((t) => !(s.selectedTabIds || []).some((id) => String(id) === String(t.sheetId) || String(id).toLowerCase() === String(t.title || "").toLowerCase()))
+          .map((t) => t.title),
+      })),
       totalSheets: Array.isArray(n.data?.sheets) ? n.data.sheets.length : (n.data?.sheetUrl ? 1 : 0),
     })),
     rawNodes: nodes.map((n) => ({
@@ -1413,31 +1438,125 @@ export async function executeAgentTool(toolName, args) {
     let columns = warehouseNode.data?.sheetColumns || (rows.length > 0 ? Object.keys(rows[0] || {}) : []);
     const sheetUrl = warehouseNode.data?.sheetUrl;
 
+    const availableTabs = Array.isArray(warehouseNode.data?.availableTabs) ? warehouseNode.data.availableTabs : [];
+    const selectedTabIds = Array.isArray(warehouseNode.data?.selectedTabIds) ? warehouseNode.data.selectedTabIds : [];
+    let selectedTabsData = Array.isArray(warehouseNode.data?.selectedTabsData) && warehouseNode.data.selectedTabsData.length > 0
+      ? warehouseNode.data.selectedTabsData
+      : [];
+
     // Live Auto-Sync for Google Sheets URLs
     if (sheetUrl && (sheetUrl.startsWith("http://") || sheetUrl.startsWith("https://"))) {
       try {
         const { default: sheetsService } = await import("../../google/sheetsService.js");
-        const readResult = await sheetsService.readSpreadsheet({ spreadsheetIdOrUrl: sheetUrl });
-        if (readResult && readResult.rows && readResult.rows.length > 0) {
-          rows = readResult.rows;
-          columns = readResult.headers || Object.keys(rows[0] || {});
 
-          // Asynchronously update MongoDB so future calls load updated data
-          AiContext.updateOne(
-            { userId, "nodes.id": warehouseNode.id },
-            {
-              $set: {
-                "nodes.$.data.sheetRows": rows,
-                "nodes.$.data.sheetColumns": columns,
-                "nodes.$.data.totalRows": rows.length,
-                "nodes.$.data.lastSyncedAt": new Date(),
-              },
-            }
-          ).catch(() => {});
+        if (selectedTabsData.length > 0) {
+          // Live auto-sync ONLY the user's selected tabs (preserve tab isolation)
+          const refreshedTabs = await sheetsService.fetchMultipleWorksheetsData({
+            spreadsheetIdOrUrl: sheetUrl,
+            selectedTabs: selectedTabsData.map((t) => ({ sheetId: t.sheetId, title: t.tabName })),
+          });
+
+          if (refreshedTabs && refreshedTabs.length > 0) {
+            selectedTabsData = refreshedTabs;
+            const combinedRows = [];
+            refreshedTabs.forEach((tab) => {
+              (tab.rows || []).forEach((r) => {
+                combinedRows.push({
+                  ...(r.values || r),
+                  _worksheetTab: tab.tabName,
+                  _worksheetId: tab.sheetId,
+                });
+              });
+            });
+            rows = combinedRows;
+            columns = Array.from(new Set(refreshedTabs.flatMap((t) => t.columns || [])));
+
+            AiContext.updateOne(
+              { userId, "nodes.id": warehouseNode.id },
+              {
+                $set: {
+                  "nodes.$.data.selectedTabsData": selectedTabsData,
+                  "nodes.$.data.sheetRows": rows,
+                  "nodes.$.data.sheetColumns": columns,
+                  "nodes.$.data.totalRows": rows.length,
+                  "nodes.$.data.lastSyncedAt": new Date(),
+                },
+              }
+            ).catch(() => {});
+          }
+        } else {
+          // Standard single-sheet read fallback
+          const readResult = await sheetsService.readSpreadsheet({ spreadsheetIdOrUrl: sheetUrl });
+          if (readResult && readResult.rows && readResult.rows.length > 0) {
+            rows = readResult.rows;
+            columns = readResult.headers || Object.keys(rows[0] || {});
+
+            AiContext.updateOne(
+              { userId, "nodes.id": warehouseNode.id },
+              {
+                $set: {
+                  "nodes.$.data.sheetRows": rows,
+                  "nodes.$.data.sheetColumns": columns,
+                  "nodes.$.data.totalRows": rows.length,
+                  "nodes.$.data.lastSyncedAt": new Date(),
+                },
+              }
+            ).catch(() => {});
+          }
         }
       } catch (err) {
         console.warn("[get_connected_sheet_rows Live Auto-Sync Warning]:", err.message);
       }
+    }
+
+    // Check if the user specifically requested a single tab (by tab name or by intent)
+    let requestedTabName = args.tabName || args.worksheetName || args.sheetTitle || null;
+    if (!requestedTabName && (args.userMessage || args.userInstruction)) {
+      const msg = `${args.userMessage || ""} ${args.userInstruction || ""}`;
+      for (const tab of availableTabs) {
+        if (tab.title && new RegExp(`\\b${tab.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(msg)) {
+          requestedTabName = tab.title;
+          break;
+        }
+      }
+    }
+
+    // Tab Selection Enforcement Gate:
+    // If user specified or mentioned a tab that is EXCLUDED (not selected), block access to it!
+    if (requestedTabName && selectedTabsData.length > 0) {
+      const matchedSelectedTab = selectedTabsData.find(
+        (t) => t.tabName.toLowerCase() === requestedTabName.toLowerCase() || String(t.sheetId) === String(requestedTabName)
+      );
+
+      if (!matchedSelectedTab) {
+        return {
+          success: false,
+          message: `Access denied to worksheet tab "${requestedTabName}". This tab is NOT selected in AI Context. Only the selected tabs [${selectedTabsData.map((t) => t.tabName).join(", ")}] are accessible to the AI Agent.`,
+          availableTabs: availableTabs.map((t) => t.title),
+          selectedTabs: selectedTabsData.map((t) => t.tabName),
+          rows: [],
+          totalRows: 0,
+        };
+      }
+
+      // User requested a valid selected tab: return only that tab's data
+      rows = matchedSelectedTab.rows || [];
+      columns = matchedSelectedTab.columns || (rows.length > 0 ? Object.keys(rows[0] || {}) : []);
+    } else if (selectedTabsData.length > 0) {
+      // Multiple tabs selected, no specific single tab requested:
+      // Return combined rows strictly from selected tabs only
+      const combined = [];
+      selectedTabsData.forEach((tab) => {
+        (tab.rows || []).forEach((r) => {
+          combined.push({
+            ...(r.values || r),
+            _worksheetTab: tab.tabName,
+            _worksheetId: tab.sheetId,
+          });
+        });
+      });
+      rows = combined;
+      columns = Array.from(new Set(selectedTabsData.flatMap((t) => t.columns || [])));
     }
 
     const sheetName =
@@ -1463,6 +1582,13 @@ export async function executeAgentTool(toolName, args) {
       totalRows: rows.length,
       columns,
       rows,
+      selectedTabs: selectedTabsData.map((t) => ({
+        tabName: t.tabName,
+        sheetId: t.sheetId,
+        columns: t.columns,
+        totalRows: t.totalRows,
+      })),
+      selectedTabNames: selectedTabsData.map((t) => t.tabName),
       lastSyncedAt: warehouseNode.data?.lastSyncedAt || null,
       campaignType: routing.campaignType,
       selectedSkill: routing.selectedSkill,

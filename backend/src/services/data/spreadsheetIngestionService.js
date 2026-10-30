@@ -94,6 +94,7 @@ export class SpreadsheetIngestionService {
         spreadsheetName,
         worksheetName: worksheetNameClean,
         availableWorksheets,
+        availableTabs: result.availableTabs || [],
         detectedHeaderRowIndex,
         headerRowNumber,
         lastRowNumber,

@@ -42,6 +42,7 @@ import {
   Layers,
   Sparkles,
   Play,
+  Eye,
 } from "lucide-react";
 import { NODE_TYPE_INFO } from "../aiContext.slice";
 import { channelApi } from "../../channel/service/channel.api";
@@ -235,6 +236,9 @@ export const NodeDetailDrawer = ({
       excelProvider: s.excelProvider || "Google Sheets",
       workbookName: (s.workbookName || "").trim(),
       worksheetName: (s.worksheetName || "Sheet1").trim(),
+      availableTabs: Array.isArray(s.availableTabs) ? s.availableTabs : [],
+      selectedTabIds: Array.isArray(s.selectedTabIds) ? s.selectedTabIds : [],
+      selectedTabsData: Array.isArray(s.selectedTabsData) ? s.selectedTabsData : [],
       excelSyncStatus: s.excelSyncStatus || (s.sheetUrl ? "SYNCED" : "NOT_CONNECTED"),
       totalRows: Number(s.totalRows || 0),
       totalDataRows: Number(s.totalDataRows || s.totalRows || 0),
@@ -363,14 +367,18 @@ export const NodeDetailDrawer = ({
         handleUpdateSheetField(sheetItem.id, {
           isConnecting: false,
           excelSyncStatus: "SYNCED",
-          connectMsg: res.data.message || `Connected! Found ${d.totalDataRows || d.totalRows || 0} data rows.`,
+          connectMsg: res.data.message || `Connected! Found ${d.totalDataRows || d.totalRows || 0} data rows across ${d.availableTabs?.length || 1} tabs.`,
           workbookName: d.spreadsheetName || sheetItem.workbookName || `Google_Sheet_${(d.sheetId || "").slice(0, 8)}`,
           worksheetName: d.worksheetName || sheetItem.worksheetName || "Sheet1",
+          availableTabs: d.availableTabs || [],
+          selectedTabIds: d.selectedTabIds || (d.availableTabs || []).map((t) => (t.sheetId !== undefined ? t.sheetId : t.title)),
+          selectedTabsData: d.selectedTabsData || [],
           totalRows: d.totalRows || 0,
           totalDataRows: d.totalDataRows || d.totalRows || 0,
           totalSheetRows: d.totalSheetRows || ((d.totalDataRows || d.totalRows || 0) + 1),
           sheetColumns: d.columns || [],
           lastSyncedAt: d.lastSyncedAt || new Date().toISOString(),
+          hasUnsavedTabChanges: false,
         });
       } else {
         handleUpdateSheetField(sheetItem.id, {
@@ -386,6 +394,153 @@ export const NodeDetailDrawer = ({
         excelSyncStatus: "FAILED",
         connectError: msg,
       });
+    }
+  };
+
+  // Preview Data Modal State
+  const [previewModalData, setPreviewModalData] = useState(null);
+
+  const handleToggleTabSelection = (sheetId, tabKey) => {
+    setSheetsList((prev) =>
+      prev.map((s) => {
+        if (s.id !== sheetId) return s;
+        const currentSelected = Array.isArray(s.selectedTabIds) ? [...s.selectedTabIds] : [];
+        const exists = currentSelected.some(
+          (id) => String(id) === String(tabKey) || String(id).toLowerCase() === String(tabKey).toLowerCase()
+        );
+        let updated;
+        if (exists) {
+          updated = currentSelected.filter(
+            (id) => String(id) !== String(tabKey) && String(id).toLowerCase() !== String(tabKey).toLowerCase()
+          );
+        } else {
+          updated = [...currentSelected, tabKey];
+        }
+        return {
+          ...s,
+          selectedTabIds: updated,
+          hasUnsavedTabChanges: true,
+          saveTabsMsg: "",
+        };
+      })
+    );
+  };
+
+  const handleSelectAllTabs = (sheetId) => {
+    setSheetsList((prev) =>
+      prev.map((s) => {
+        if (s.id !== sheetId) return s;
+        const allKeys = (s.availableTabs || []).map((t) => (t.sheetId !== undefined ? t.sheetId : t.title));
+        return {
+          ...s,
+          selectedTabIds: allKeys,
+          hasUnsavedTabChanges: true,
+          saveTabsMsg: "",
+        };
+      })
+    );
+  };
+
+  const handleDeselectAllTabs = (sheetId) => {
+    setSheetsList((prev) =>
+      prev.map((s) => {
+        if (s.id !== sheetId) return s;
+        return {
+          ...s,
+          selectedTabIds: [],
+          hasUnsavedTabChanges: true,
+          saveTabsMsg: "",
+        };
+      })
+    );
+  };
+
+  const handleSaveTabSelection = async (sheetId) => {
+    const target = sheetsList.find((s) => s.id === sheetId);
+    if (!target) return;
+
+    handleUpdateSheetField(sheetId, { isSavingTabs: true, saveTabsMsg: "" });
+
+    try {
+      const res = await aiContextApi.saveTabSelection({
+        nodeId: node?.id,
+        sheetId: target.id,
+        sheetUrl: target.sheetUrl,
+        selectedTabIds: target.selectedTabIds || [],
+      });
+
+      if (res.data?.success) {
+        const d = res.data.data || {};
+        handleUpdateSheetField(sheetId, {
+          isSavingTabs: false,
+          hasUnsavedTabChanges: false,
+          saveTabsMsg: `✓ Saved! ${d.selectedTabsData?.length || 0} active tabs for AI Agent.`,
+          selectedTabsData: d.selectedTabsData || target.selectedTabsData || [],
+          totalRows: d.totalRows !== undefined ? d.totalRows : target.totalRows,
+          totalDataRows: d.totalDataRows !== undefined ? d.totalDataRows : target.totalDataRows,
+          sheetColumns: d.columns || target.sheetColumns || [],
+        });
+        setTimeout(() => {
+          handleUpdateSheetField(sheetId, { saveTabsMsg: "" });
+        }, 3000);
+      } else {
+        handleUpdateSheetField(sheetId, {
+          isSavingTabs: false,
+          connectError: res.data?.message || "Failed to save tab selection.",
+        });
+      }
+    } catch (err) {
+      handleUpdateSheetField(sheetId, {
+        isSavingTabs: false,
+        connectError: err.response?.data?.message || err.message || "Failed to save tab selection.",
+      });
+    }
+  };
+
+  const handlePreviewTab = async (sheet, tab) => {
+    setPreviewModalData({
+      open: true,
+      title: tab.title,
+      sheetId: tab.sheetId,
+      isLoading: true,
+      headers: [],
+      rows: [],
+      totalRows: 0,
+      error: null,
+    });
+
+    try {
+      const res = await aiContextApi.previewTabData({
+        sheetUrl: sheet.sheetUrl,
+        sheetTitle: tab.title,
+        sheetId: tab.sheetId,
+      });
+
+      if (res.data?.success) {
+        const d = res.data.data || {};
+        setPreviewModalData({
+          open: true,
+          title: tab.title,
+          sheetId: tab.sheetId,
+          isLoading: false,
+          headers: d.columns || [],
+          rows: d.rows || [],
+          totalRows: d.totalRows || (d.rows || []).length,
+          error: null,
+        });
+      } else {
+        setPreviewModalData((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: res.data?.message || "Failed to load tab preview.",
+        }));
+      }
+    } catch (err) {
+      setPreviewModalData((prev) => ({
+        ...prev,
+        isLoading: false,
+        error: err.response?.data?.message || err.message || "Failed to load tab preview.",
+      }));
     }
   };
 
@@ -934,6 +1089,9 @@ export const NodeDetailDrawer = ({
             excelProvider: s.excelProvider || "Google Sheets",
             workbookName: s.workbookName || "",
             worksheetName: s.worksheetName || "Sheet1",
+            availableTabs: Array.isArray(s.availableTabs) ? s.availableTabs : [],
+            selectedTabIds: Array.isArray(s.selectedTabIds) ? s.selectedTabIds : (Array.isArray(s.availableTabs) ? s.availableTabs.map((t) => t.sheetId !== undefined ? t.sheetId : t.title) : []),
+            selectedTabsData: Array.isArray(s.selectedTabsData) ? s.selectedTabsData : [],
             excelSyncStatus: s.excelSyncStatus || (s.sheetUrl ? "SYNCED" : "NOT_CONNECTED"),
             dataLabels: s.dataLabels || s.dataLevel || "",
             totalRows: s.totalRows || 0,
@@ -975,6 +1133,9 @@ export const NodeDetailDrawer = ({
           excelProvider: node.data?.excelProvider || "Google Sheets",
           workbookName: node.data?.workbookName || "",
           worksheetName: node.data?.worksheetName || "Sheet1",
+          availableTabs: Array.isArray(node.data?.availableTabs) ? node.data.availableTabs : [],
+          selectedTabIds: Array.isArray(node.data?.selectedTabIds) ? node.data.selectedTabIds : (Array.isArray(node.data?.availableTabs) ? node.data.availableTabs.map((t) => t.sheetId !== undefined ? t.sheetId : t.title) : []),
+          selectedTabsData: Array.isArray(node.data?.selectedTabsData) ? node.data.selectedTabsData : [],
           excelSyncStatus: node.data?.excelSyncStatus || "SYNCED",
           dataLabels: node.data?.dataLabels || node.data?.dataLevel || "",
           totalRows: node.data?.totalRows || 0,
@@ -1354,6 +1515,9 @@ export const NodeDetailDrawer = ({
         excelProvider: s.excelProvider || "Google Sheets",
         workbookName: (s.workbookName || "").trim(),
         worksheetName: (s.worksheetName || "Sheet1").trim(),
+        availableTabs: Array.isArray(s.availableTabs) ? s.availableTabs : [],
+        selectedTabIds: Array.isArray(s.selectedTabIds) ? s.selectedTabIds : [],
+        selectedTabsData: Array.isArray(s.selectedTabsData) ? s.selectedTabsData : [],
         excelSyncStatus: s.excelSyncStatus || (s.sheetUrl ? "SYNCED" : "NOT_CONNECTED"),
         totalRows: Number(s.totalRows || 0),
         totalDataRows: Number(s.totalDataRows || s.totalRows || 0),
@@ -1386,6 +1550,9 @@ export const NodeDetailDrawer = ({
         excelProvider: primaryConnected ? primaryConnected.excelProvider : "Google Sheets",
         workbookName: primaryConnected ? primaryConnected.workbookName : "",
         worksheetName: primaryConnected ? primaryConnected.worksheetName : "Sheet1",
+        availableTabs: primaryConnected ? (primaryConnected.availableTabs || []) : (node.data?.availableTabs || []),
+        selectedTabIds: primaryConnected ? (primaryConnected.selectedTabIds || []) : (node.data?.selectedTabIds || []),
+        selectedTabsData: primaryConnected ? (primaryConnected.selectedTabsData || []) : (node.data?.selectedTabsData || []),
         excelSyncStatus: primaryConnected ? primaryConnected.excelSyncStatus : "NOT_CONNECTED",
         totalRows: primaryConnected ? Number(primaryConnected.totalRows || 0) : 0,
         totalDataRows: primaryConnected ? Number(primaryConnected.totalDataRows || 0) : 0,
@@ -3180,6 +3347,260 @@ export const NodeDetailDrawer = ({
                             />
                           </div>
 
+                          {/* Individual Worksheet Tab Selection Section */}
+                          {(isSynced || (sheet.availableTabs && sheet.availableTabs.length > 0)) && (
+                            <div
+                              style={{
+                                backgroundColor: "#F8FAFC",
+                                border: "1.5px solid #E2E8F0",
+                                borderRadius: 10,
+                                padding: "12px 12px",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: 10,
+                              }}
+                            >
+                              {/* Header: Title, Count badge, Select/Deselect All */}
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "space-between",
+                                  flexWrap: "wrap",
+                                  gap: 6,
+                                }}
+                              >
+                                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                  <Layers size={14} color="#2563EB" />
+                                  <span style={{ fontSize: "12px", fontWeight: 700, color: "#0F172A" }}>
+                                    Worksheet Tabs
+                                  </span>
+                                  <span
+                                    style={{
+                                      fontSize: "10.5px",
+                                      fontWeight: 700,
+                                      padding: "2px 7px",
+                                      borderRadius: 12,
+                                      backgroundColor: (sheet.selectedTabIds || []).length > 0 ? "#EFF6FF" : "#FEF2F2",
+                                      color: (sheet.selectedTabIds || []).length > 0 ? "#1D4ED8" : "#991B1B",
+                                      border: (sheet.selectedTabIds || []).length > 0 ? "1px solid #BFDBFE" : "1px solid #FECACA",
+                                    }}
+                                  >
+                                    {(sheet.selectedTabIds || []).length} of {(sheet.availableTabs || []).length || 1} Selected
+                                  </span>
+                                </div>
+
+                                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSelectAllTabs(sheet.id)}
+                                    style={{
+                                      background: "none",
+                                      border: "none",
+                                      padding: 0,
+                                      fontSize: "11px",
+                                      fontWeight: 700,
+                                      color: "#2563EB",
+                                      cursor: "pointer",
+                                      textDecoration: "underline",
+                                    }}
+                                  >
+                                    Select All
+                                  </button>
+                                  <span style={{ color: "#CBD5E1", fontSize: "10px" }}>|</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeselectAllTabs(sheet.id)}
+                                    style={{
+                                      background: "none",
+                                      border: "none",
+                                      padding: 0,
+                                      fontSize: "11px",
+                                      fontWeight: 700,
+                                      color: "#64748B",
+                                      cursor: "pointer",
+                                      textDecoration: "underline",
+                                    }}
+                                  >
+                                    Deselect All
+                                  </button>
+                                </div>
+                              </div>
+
+                              <p style={{ margin: 0, fontSize: "11px", color: "#64748B", lineHeight: 1.35 }}>
+                                Check the tabs you want the AI Agent to access. Unchecked tabs will remain private and excluded from AI execution.
+                              </p>
+
+                              {/* List of Discovered Tabs */}
+                              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                {(sheet.availableTabs && sheet.availableTabs.length > 0 ? sheet.availableTabs : [
+                                  { sheetId: 0, title: sheet.worksheetName || "Sheet1", rowCount: sheet.totalRows || 0 }
+                                ]).map((tab, tIdx) => {
+                                  const tabKey = tab.sheetId !== undefined ? tab.sheetId : tab.title;
+                                  const isTabSelected = (sheet.selectedTabIds || []).some(
+                                    (sel) => String(sel) === String(tab.sheetId) || String(sel).toLowerCase() === String(tab.title || "").toLowerCase()
+                                  );
+
+                                  return (
+                                    <div
+                                      key={tabKey !== undefined ? String(tabKey) : tIdx}
+                                      style={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "space-between",
+                                        padding: "7px 10px",
+                                        borderRadius: 8,
+                                        backgroundColor: isTabSelected ? "#FFFFFF" : "#F1F5F9",
+                                        border: isTabSelected ? "1.5px solid #93C5FD" : "1px solid #E2E8F0",
+                                        boxShadow: isTabSelected ? "0 1px 3px rgba(37,99,235,0.06)" : "none",
+                                        transition: "all 0.15s ease",
+                                      }}
+                                    >
+                                      <label
+                                        style={{
+                                          display: "flex",
+                                          alignItems: "center",
+                                          gap: 8,
+                                          cursor: "pointer",
+                                          userSelect: "none",
+                                          minWidth: 0,
+                                          flex: 1,
+                                        }}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={isTabSelected}
+                                          onChange={() => handleToggleTabSelection(sheet.id, tabKey)}
+                                          style={{
+                                            width: 15,
+                                            height: 15,
+                                            accentColor: "#2563EB",
+                                            cursor: "pointer",
+                                          }}
+                                        />
+                                        <span
+                                          style={{
+                                            fontSize: "12px",
+                                            fontWeight: isTabSelected ? 700 : 500,
+                                            color: isTabSelected ? "#0F172A" : "#64748B",
+                                            whiteSpace: "nowrap",
+                                            overflow: "hidden",
+                                            textOverflow: "ellipsis",
+                                          }}
+                                        >
+                                          {tab.title}
+                                        </span>
+                                        {tab.rowCount > 0 && (
+                                          <span
+                                            style={{
+                                              fontSize: "10px",
+                                              color: "#64748B",
+                                              backgroundColor: "#F1F5F9",
+                                              padding: "1px 6px",
+                                              borderRadius: 10,
+                                            }}
+                                          >
+                                            {tab.rowCount} rows
+                                          </span>
+                                        )}
+                                      </label>
+
+                                      <button
+                                        type="button"
+                                        onClick={() => handlePreviewTab(sheet, tab)}
+                                        style={{
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: 4,
+                                          padding: "3px 8px",
+                                          borderRadius: 6,
+                                          border: "1px solid #CBD5E1",
+                                          backgroundColor: "#FFFFFF",
+                                          fontSize: "11px",
+                                          fontWeight: 600,
+                                          color: "#334155",
+                                          cursor: "pointer",
+                                          flexShrink: 0,
+                                          transition: "all 0.15s ease",
+                                        }}
+                                        onMouseEnter={(e) => {
+                                          e.currentTarget.style.borderColor = "#93C5FD";
+                                          e.currentTarget.style.backgroundColor = "#EFF6FF";
+                                          e.currentTarget.style.color = "#1D4ED8";
+                                        }}
+                                        onMouseLeave={(e) => {
+                                          e.currentTarget.style.borderColor = "#CBD5E1";
+                                          e.currentTarget.style.backgroundColor = "#FFFFFF";
+                                          e.currentTarget.style.color = "#334155";
+                                        }}
+                                      >
+                                        <Eye size={12} />
+                                        <span>Preview Data</span>
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+
+                              {/* Save Selection Button & Feedback */}
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "space-between",
+                                  flexWrap: "wrap",
+                                  gap: 8,
+                                  marginTop: 4,
+                                }}
+                              >
+                                <button
+                                  type="button"
+                                  disabled={sheet.isSavingTabs}
+                                  onClick={() => handleSaveTabSelection(sheet.id)}
+                                  style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 6,
+                                    padding: "7px 14px",
+                                    borderRadius: 8,
+                                    border: "none",
+                                    background: "linear-gradient(135deg, #1D4ED8 0%, #1E40AF 100%)",
+                                    color: "#FFFFFF",
+                                    fontSize: "11.5px",
+                                    fontWeight: 700,
+                                    cursor: sheet.isSavingTabs ? "not-allowed" : "pointer",
+                                    boxShadow: "0 1px 4px rgba(29, 78, 216, 0.25)",
+                                    transition: "all 0.15s ease",
+                                  }}
+                                >
+                                  {sheet.isSavingTabs ? (
+                                    <>
+                                      <RefreshCw size={12} style={{ animation: "spin 1s linear infinite" }} />
+                                      Saving Selection...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Check size={13} strokeWidth={2.5} />
+                                      Save Selection
+                                    </>
+                                  )}
+                                </button>
+
+                                {sheet.saveTabsMsg && (
+                                  <span style={{ fontSize: "11px", fontWeight: 700, color: "#059669", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                    <CheckCircle2 size={13} color="#059669" />
+                                    {sheet.saveTabsMsg}
+                                  </span>
+                                )}
+                                {sheet.hasUnsavedTabChanges && !sheet.saveTabsMsg && (
+                                  <span style={{ fontSize: "11px", fontWeight: 600, color: "#D97706" }}>
+                                    Unsaved selection changes
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
                         </div>
                       </div>
                     );
@@ -3469,6 +3890,169 @@ export const NodeDetailDrawer = ({
           )}
         </div>
       </form>
+
+      {/* DATA PREVIEW MODAL */}
+      {previewModalData?.open && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(15, 23, 42, 0.65)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 99999,
+            padding: 16,
+            backdropFilter: "blur(3px)",
+          }}
+          onClick={() => setPreviewModalData(null)}
+        >
+          <div
+            style={{
+              backgroundColor: "#FFFFFF",
+              borderRadius: 14,
+              maxWidth: 780,
+              width: "100%",
+              maxHeight: "82vh",
+              display: "flex",
+              flexDirection: "column",
+              boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
+              overflow: "hidden",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "14px 20px",
+                borderBottom: "1px solid #E2E8F0",
+                backgroundColor: "#F8FAFC",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                <FileSpreadsheet size={19} color="#2563EB" />
+                <span style={{ fontSize: "14px", fontWeight: 700, color: "#0F172A" }}>
+                  Worksheet Preview: {previewModalData.title}
+                </span>
+                <span
+                  style={{
+                    fontSize: "11px",
+                    padding: "2px 8px",
+                    borderRadius: 12,
+                    backgroundColor: "#EFF6FF",
+                    color: "#1D4ED8",
+                    fontWeight: 600,
+                    border: "1px solid #DBEAFE",
+                  }}
+                >
+                  Tab ID: {previewModalData.sheetId}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setPreviewModalData(null)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  color: "#64748B",
+                  padding: 4,
+                  borderRadius: 6,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div style={{ padding: "16px 20px", overflow: "auto", flex: 1 }}>
+              {previewModalData.isLoading ? (
+                <div style={{ padding: "40px 0", textAlign: "center", color: "#64748B" }}>
+                  <RefreshCw size={26} style={{ animation: "spin 1s linear infinite", margin: "0 auto 10px" }} />
+                  <p style={{ margin: 0, fontSize: "12.5px", fontWeight: 600 }}>Loading tab data from Google Sheets...</p>
+                </div>
+              ) : previewModalData.error ? (
+                <div style={{ backgroundColor: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, padding: 14, color: "#991B1B", fontSize: "12px" }}>
+                  {previewModalData.error}
+                </div>
+              ) : previewModalData.rows?.length === 0 ? (
+                <div style={{ padding: "35px 0", textAlign: "center", color: "#64748B", fontSize: "12.5px" }}>
+                  No rows found in worksheet tab "{previewModalData.title}".
+                </div>
+              ) : (
+                <div>
+                  <div style={{ marginBottom: 12, fontSize: "12px", color: "#64748B", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <span>Showing first {Math.min(10, previewModalData.rows.length)} rows</span>
+                    <span style={{ fontWeight: 600, color: "#1E293B" }}>Total rows: {previewModalData.totalRows || previewModalData.rows.length}</span>
+                  </div>
+                  <div style={{ overflowX: "auto", border: "1px solid #E2E8F0", borderRadius: 8, maxHeight: "50vh" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11.5px", textAlign: "left" }}>
+                      <thead>
+                        <tr style={{ backgroundColor: "#F8FAFC", borderBottom: "1.5px solid #CBD5E1", position: "sticky", top: 0 }}>
+                          {(previewModalData.headers || []).map((h, i) => (
+                            <th key={i} style={{ padding: "8px 12px", fontWeight: 700, color: "#0F172A", whiteSpace: "nowrap" }}>
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(previewModalData.rows || []).slice(0, 10).map((r, rIdx) => (
+                          <tr key={rIdx} style={{ borderBottom: "1px solid #F1F5F9", backgroundColor: rIdx % 2 === 0 ? "#FFFFFF" : "#F8FAFC" }}>
+                            {(previewModalData.headers || []).map((h, cIdx) => (
+                              <td key={cIdx} style={{ padding: "7px 12px", color: "#334155", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {String(r[h] !== undefined ? r[h] : (r[`col_${cIdx}`] !== undefined ? r[`col_${cIdx}`] : "-"))}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div
+              style={{
+                padding: "12px 20px",
+                borderTop: "1px solid #E2E8F0",
+                backgroundColor: "#F8FAFC",
+                display: "flex",
+                justifyContent: "flex-end",
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setPreviewModalData(null)}
+                style={{
+                  padding: "7px 16px",
+                  borderRadius: 7,
+                  border: "1px solid #CBD5E1",
+                  backgroundColor: "#FFFFFF",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  color: "#334155",
+                }}
+              >
+                Close Preview
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </motion.aside>
   );
 };

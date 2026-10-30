@@ -331,6 +331,9 @@ export function sanitizeNode(n, parent = null, userName = "Customer User", defau
     workbookName: String(s.workbookName || ""),
     worksheetId: String(s.worksheetId || ""),
     worksheetName: String(s.worksheetName || "Sheet1"),
+    availableTabs: Array.isArray(s.availableTabs) ? s.availableTabs : [],
+    selectedTabIds: Array.isArray(s.selectedTabIds) ? s.selectedTabIds : [],
+    selectedTabsData: Array.isArray(s.selectedTabsData) ? s.selectedTabsData : [],
     excelSyncStatus: String(s.excelSyncStatus || (s.sheetUrl ? "SYNCED" : "NOT_CONNECTED")),
     lastSyncedAt: s.lastSyncedAt || null,
     totalRows: Number(s.totalRows) || 0,
@@ -353,6 +356,9 @@ export function sanitizeNode(n, parent = null, userName = "Customer User", defau
         workbookName: String(n.data.workbookName || ""),
         worksheetId: String(n.data.worksheetId || ""),
         worksheetName: String(n.data.worksheetName || "Sheet1"),
+        availableTabs: Array.isArray(n.data.availableTabs) ? n.data.availableTabs : [],
+        selectedTabIds: Array.isArray(n.data.selectedTabIds) ? n.data.selectedTabIds : [],
+        selectedTabsData: Array.isArray(n.data.selectedTabsData) ? n.data.selectedTabsData : [],
         excelSyncStatus: String(n.data.excelSyncStatus || "NOT_CONNECTED"),
         lastSyncedAt: n.data.lastSyncedAt || null,
         totalRows: Number(n.data.totalRows) || 0,
@@ -429,6 +435,9 @@ export function sanitizeNode(n, parent = null, userName = "Customer User", defau
         : String(cleanSheets[0]?.workbookName || n.data?.workbookName || ""),
       worksheetId: String(cleanSheets.find((s) => s.sheetUrl)?.worksheetId || cleanSheets[0]?.worksheetId || ""),
       worksheetName: String(cleanSheets.find((s) => s.sheetUrl)?.worksheetName || cleanSheets[0]?.worksheetName || "Sheet1"),
+      availableTabs: cleanSheets.find((s) => s.sheetUrl)?.availableTabs || cleanSheets[0]?.availableTabs || (Array.isArray(n.data?.availableTabs) ? n.data.availableTabs : []),
+      selectedTabIds: cleanSheets.find((s) => s.sheetUrl)?.selectedTabIds || cleanSheets[0]?.selectedTabIds || (Array.isArray(n.data?.selectedTabIds) ? n.data.selectedTabIds : []),
+      selectedTabsData: cleanSheets.find((s) => s.sheetUrl)?.selectedTabsData || cleanSheets[0]?.selectedTabsData || (Array.isArray(n.data?.selectedTabsData) ? n.data.selectedTabsData : []),
       excelSyncStatus: hasExplicitSheets
         ? String(cleanSheets.find((s) => s.sheetUrl)?.excelSyncStatus || (cleanSheets.length > 0 ? cleanSheets[0].excelSyncStatus : "NOT_CONNECTED"))
         : String(cleanSheets[0]?.excelSyncStatus || n.data?.excelSyncStatus || "NOT_CONNECTED"),
@@ -913,6 +922,63 @@ export class AiContextController {
       const rows = ingestionResult.rows || [];
       const sheetId = ingestionResult.sourceIdentifier || "";
 
+      // Discover all worksheet tabs dynamically
+      let discoveredTabs = (Array.isArray(ingestionResult.availableTabs) && ingestionResult.availableTabs.length > 0)
+        ? ingestionResult.availableTabs
+        : [];
+
+      if (discoveredTabs.length === 0) {
+        try {
+          const disc = await sheetsService.discoverWorksheetTabs({ spreadsheetIdOrUrl: cleanUrl });
+          if (disc?.tabs?.length > 0) {
+            discoveredTabs = disc.tabs;
+          }
+        } catch (discErr) {
+          console.warn("[connectSheet] Dynamic tab discovery fallback notice:", discErr.message);
+        }
+      }
+
+      if (discoveredTabs.length === 0) {
+        discoveredTabs = [
+          {
+            sheetId: 0,
+            title: ingestionResult.worksheetName || "Sheet1",
+            index: 0,
+            rowCount: rows.length,
+            columnCount: headers.length,
+          },
+        ];
+      }
+
+      // Default initial selection: select all discovered tabs
+      const initialSelectedTabIds = discoveredTabs.map((t) => (t.sheetId !== undefined ? t.sheetId : t.title));
+
+      // Independently fetch rows for each discovered worksheet tab without mixing data structures
+      let selectedTabsData = [];
+      try {
+        selectedTabsData = await sheetsService.fetchMultipleWorksheetsData({
+          spreadsheetIdOrUrl: cleanUrl,
+          selectedTabs: discoveredTabs,
+        });
+      } catch (multiErr) {
+        console.warn("[connectSheet] fetchMultipleWorksheetsData notice:", multiErr.message);
+      }
+
+      if (!selectedTabsData || selectedTabsData.length === 0) {
+        selectedTabsData = [
+          {
+            sheetId: 0,
+            tabName: ingestionResult.worksheetName || "Sheet1",
+            columns: headers,
+            rows: rows.map((r) => r.values || r),
+            totalRows: rows.length,
+            totalDataRows: rows.filter((r) => r.isPopulated).length,
+            detectedHeaderRowIndex: ingestionResult.detectedHeaderRowIndex || 0,
+            lastSyncedAt: new Date(),
+          },
+        ];
+      }
+
       // Update MongoDB AiContext if userId exists
       if (userId) {
         const context = await AiContext.findOne({ userId });
@@ -937,13 +1003,48 @@ export class AiContextController {
               const totalDataRows = ingestionResult.totalDataRows || diffInit.totalDataRows || rows.filter((r) => r.isPopulated).length;
               const headerRowNumber = ingestionResult.headerRowNumber || diffInit.headerRowNumber || 1;
 
+              // Synchronize sheet into multi-sheets array
+              const sheetCardId = req.body.sheetCardId || req.body.sheetId;
+              let sheetsArr = Array.isArray(node.data?.sheets) ? [...node.data.sheets] : [];
+              const sIdx = sheetsArr.findIndex((s) => (sheetCardId && s.id === sheetCardId) || s.sheetUrl === cleanUrl);
+
+              const updatedSheetObj = {
+                id: sheetCardId || (sIdx >= 0 ? sheetsArr[sIdx].id : `sheet_${Date.now()}`),
+                sheetUrl: cleanUrl,
+                excelProvider: detectedProvider,
+                workbookName: ingestionResult.spreadsheetName,
+                worksheetName: ingestionResult.worksheetName,
+                availableTabs: discoveredTabs,
+                selectedTabIds: initialSelectedTabIds,
+                selectedTabsData,
+                excelSyncStatus: "SYNCED",
+                lastSyncedAt: new Date(),
+                totalRows: selectedTabsData.reduce((sum, t) => sum + (t.totalRows || 0), 0) || rows.length,
+                totalDataRows: selectedTabsData.reduce((sum, t) => sum + (t.totalDataRows || 0), 0) || totalDataRows,
+                totalSheetRows,
+                sheetColumns: headers,
+                sheetRows: rows.map((r) => r.values),
+                dataLabels: sIdx >= 0 ? (sheetsArr[sIdx].dataLabels || "") : (node.data?.dataLabels || ""),
+                dataLevel: sIdx >= 0 ? (sheetsArr[sIdx].dataLevel || "") : (node.data?.dataLevel || ""),
+              };
+
+              if (sIdx >= 0) {
+                sheetsArr[sIdx] = { ...sheetsArr[sIdx], ...updatedSheetObj };
+              } else {
+                sheetsArr.push(updatedSheetObj);
+              }
+
               node.data = {
                 ...node.data,
+                sheets: sheetsArr,
                 sheetUrl: cleanUrl,
                 excelProvider: detectedProvider,
                 workbookName: ingestionResult.spreadsheetName,
                 worksheetName: ingestionResult.worksheetName,
                 availableWorksheets: ingestionResult.availableWorksheets,
+                availableTabs: discoveredTabs,
+                selectedTabIds: initialSelectedTabIds,
+                selectedTabsData,
                 excelSyncStatus: "SYNCED",
                 lastSyncedAt: new Date(),
                 totalRows: rows.length,
@@ -984,7 +1085,7 @@ export class AiContextController {
                   },
                 },
               };
-              node.subtitle = `🔗 ${cleanUrl.slice(0, 36)}... (${totalDataRows} data rows, through Row #${lastRowNumber})`;
+              node.subtitle = `🔗 ${cleanUrl.slice(0, 36)}... (${discoveredTabs.length} tabs discovered, ${totalDataRows} rows)`;
               modified = true;
             }
           });
@@ -1003,7 +1104,7 @@ export class AiContextController {
 
       return res.status(200).json({
         success: true,
-        message: `Successfully connected to sheet! Sheet data through Row #${lastRowNumber} (${totalSheetRows} total rows with data). Discovered ${totalDataRows} data rows (${mapped.readyRowsCount} eligible for ads, ${mapped.correctionRequiredRowsCount} require correction).`,
+        message: `Successfully connected to sheet! Discovered ${discoveredTabs.length} worksheet tabs. All tabs active (${totalDataRows} total rows).`,
         data: {
           sheetUrl: cleanUrl,
           provider: detectedProvider,
@@ -1011,6 +1112,15 @@ export class AiContextController {
           spreadsheetName: ingestionResult.spreadsheetName,
           worksheetName: ingestionResult.worksheetName,
           availableWorksheets: ingestionResult.availableWorksheets,
+          availableTabs: discoveredTabs,
+          selectedTabIds: initialSelectedTabIds,
+          selectedTabsData: selectedTabsData.map((t) => ({
+            sheetId: t.sheetId,
+            tabName: t.tabName,
+            columns: t.columns,
+            totalRows: t.totalRows,
+            totalDataRows: t.totalDataRows,
+          })),
           totalRows: rows.length,
           totalDataRows,
           totalSheetRows,
@@ -1036,6 +1146,236 @@ export class AiContextController {
       return res.status(500).json({
         success: false,
         message: "Failed to connect to sheet.",
+        error: err.message,
+      });
+    }
+  }
+
+  /**
+   * Discover all worksheet tabs dynamically for a Google Spreadsheet URL
+   * POST /api/ai-context/discover-sheet-tabs
+   */
+  static async discoverSheetTabs(req, res) {
+    try {
+      const { sheetUrl } = req.body;
+      if (!sheetUrl || typeof sheetUrl !== "string" || !sheetUrl.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Please provide a valid Google Sheet URL.",
+        });
+      }
+
+      const result = await sheetsService.discoverWorksheetTabs({ spreadsheetIdOrUrl: sheetUrl.trim() });
+      return res.status(200).json({
+        success: true,
+        data: result,
+      });
+    } catch (err) {
+      console.error("[AiContextController.discoverSheetTabs Error]:", err);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to discover worksheet tabs.",
+        error: err.message,
+      });
+    }
+  }
+
+  /**
+   * Save individual worksheet tab selections and fetch independent data for selected tabs
+   * POST /api/ai-context/save-tab-selection
+   */
+  static async saveTabSelection(req, res) {
+    try {
+      const userId = req.user?.id || req.user?._id;
+      const { nodeId, sheetId, sheetUrl, selectedTabIds } = req.body;
+
+      if (!Array.isArray(selectedTabIds)) {
+        return res.status(400).json({
+          success: false,
+          message: "selectedTabIds must be an array of worksheet tab IDs or names.",
+        });
+      }
+
+      if (!sheetUrl && !sheetId) {
+        return res.status(400).json({
+          success: false,
+          message: "Please provide sheetUrl or sheetId.",
+        });
+      }
+
+      const context = await AiContext.findOne({ userId });
+      if (!context) {
+        return res.status(404).json({
+          success: false,
+          message: "AI Context not found for user.",
+        });
+      }
+
+      const warehouseNode = context.nodes.find(
+        (n) => n.type === "data_warehouse" && (!nodeId || n.id === nodeId)
+      );
+
+      if (!warehouseNode) {
+        return res.status(404).json({
+          success: false,
+          message: "Warehouse node not found in AI Context.",
+        });
+      }
+
+      // Find target sheet entry in sheets array or root
+      let targetSheet = null;
+      let targetSheetIdx = -1;
+      const sheetsArr = Array.isArray(warehouseNode.data?.sheets) ? [...warehouseNode.data.sheets] : [];
+
+      if (sheetId) {
+        targetSheetIdx = sheetsArr.findIndex((s) => s.id === sheetId);
+        if (targetSheetIdx >= 0) targetSheet = sheetsArr[targetSheetIdx];
+      }
+      if (!targetSheet && sheetUrl) {
+        targetSheetIdx = sheetsArr.findIndex((s) => s.sheetUrl === sheetUrl.trim());
+        if (targetSheetIdx >= 0) targetSheet = sheetsArr[targetSheetIdx];
+      }
+
+      const effectiveSheetUrl = (targetSheet?.sheetUrl || sheetUrl || warehouseNode.data?.sheetUrl || "").trim();
+      if (!effectiveSheetUrl) {
+        return res.status(400).json({
+          success: false,
+          message: "No connected Google Sheet URL found for this sheet.",
+        });
+      }
+
+      // Discover or retrieve available tabs
+      let availableTabs = targetSheet?.availableTabs || warehouseNode.data?.availableTabs || [];
+      if (!availableTabs || availableTabs.length === 0) {
+        const disc = await sheetsService.discoverWorksheetTabs({ spreadsheetIdOrUrl: effectiveSheetUrl });
+        availableTabs = disc.tabs || [];
+      }
+
+      // Match selected tabs against available tabs
+      const tabsToFetch = availableTabs.filter((t) =>
+        selectedTabIds.some(
+          (sel) =>
+            String(sel) === String(t.sheetId) ||
+            String(sel).toLowerCase() === String(t.title || "").toLowerCase()
+        )
+      );
+
+      console.log(`[saveTabSelection] Fetching data for ${tabsToFetch.length} selected tabs out of ${availableTabs.length} discovered:`, tabsToFetch.map(t => t.title));
+
+      // Fetch actual data independently from each selected worksheet using its sheetId or tab name
+      const selectedTabsData = await sheetsService.fetchMultipleWorksheetsData({
+        spreadsheetIdOrUrl: effectiveSheetUrl,
+        selectedTabs: tabsToFetch,
+      });
+
+      // Recalculate totals
+      const totalRows = selectedTabsData.reduce((sum, t) => sum + (t.totalRows || 0), 0);
+      const totalDataRows = selectedTabsData.reduce((sum, t) => sum + (t.totalDataRows || 0), 0);
+      const allColumns = Array.from(new Set(selectedTabsData.flatMap((t) => t.columns || [])));
+
+      // Combine rows from selected tabs only, tagging each row with _worksheetTab
+      const combinedSelectedRows = [];
+      selectedTabsData.forEach((tab) => {
+        (tab.rows || []).forEach((row) => {
+          combinedSelectedRows.push({
+            ...(row.values || row),
+            _worksheetTab: tab.tabName,
+            _worksheetId: tab.sheetId,
+          });
+        });
+      });
+
+      // Update target sheet in sheets array
+      if (targetSheetIdx >= 0) {
+        sheetsArr[targetSheetIdx] = {
+          ...sheetsArr[targetSheetIdx],
+          selectedTabIds,
+          availableTabs,
+          selectedTabsData,
+          totalRows,
+          totalDataRows,
+          sheetColumns: allColumns,
+          sheetRows: combinedSelectedRows,
+          lastSyncedAt: new Date(),
+        };
+      }
+
+      // Also sync to top-level warehouseNode data
+      warehouseNode.data = {
+        ...warehouseNode.data,
+        selectedTabIds,
+        availableTabs,
+        selectedTabsData,
+        totalRows,
+        totalDataRows,
+        sheetColumns: allColumns,
+        sheetRows: combinedSelectedRows,
+        lastSyncedAt: new Date(),
+        sheets: sheetsArr,
+      };
+
+      context.markModified("nodes");
+      await context.save();
+
+      return res.status(200).json({
+        success: true,
+        message: `Worksheet tab selection saved! AI Agent now has access to ${selectedTabsData.length} selected tabs (${totalDataRows} data rows).`,
+        data: {
+          sheetId: targetSheet?.id || sheetId,
+          selectedTabIds,
+          availableTabs,
+          selectedTabsData: selectedTabsData.map((t) => ({
+            sheetId: t.sheetId,
+            tabName: t.tabName,
+            columns: t.columns,
+            totalRows: t.totalRows,
+            totalDataRows: t.totalDataRows,
+          })),
+          totalRows,
+          totalDataRows,
+          columns: allColumns,
+        },
+      });
+    } catch (err) {
+      console.error("[AiContextController.saveTabSelection Error]:", err);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to save worksheet tab selection.",
+        error: err.message,
+      });
+    }
+  }
+
+  /**
+   * Preview actual rows and columns from a specific worksheet tab
+   * POST /api/ai-context/preview-tab-data
+   */
+  static async previewTabData(req, res) {
+    try {
+      const { sheetUrl, sheetTitle, sheetId } = req.body;
+      if (!sheetUrl || typeof sheetUrl !== "string" || !sheetUrl.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Please provide a valid sheetUrl.",
+        });
+      }
+
+      const tabData = await sheetsService.fetchWorksheetData({
+        spreadsheetIdOrUrl: sheetUrl.trim(),
+        sheetTitle,
+        sheetId,
+        maxRows: 15,
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: tabData,
+      });
+    } catch (err) {
+      console.error("[AiContextController.previewTabData Error]:", err);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to preview worksheet tab data.",
         error: err.message,
       });
     }

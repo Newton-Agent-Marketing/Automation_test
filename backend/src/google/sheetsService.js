@@ -203,9 +203,10 @@ class SheetsService {
       const auth = await googleOAuth.getAuthenticatedClient();
 
       let targetSheetTitle = "";
+      let discoveredTabs = [];
       try {
         const metaRes = await auth.axiosInstance.get(
-          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties/title,sheets.properties(sheetId,title)`
+          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties/title,sheets.properties(sheetId,title,index,sheetType,gridProperties)`
         );
 
         if (metaRes.data?.properties?.title) {
@@ -214,6 +215,13 @@ class SheetsService {
 
         const sheetsList = metaRes.data?.sheets || [];
         availableWorksheets = sheetsList.map((s) => s.properties?.title).filter(Boolean);
+        discoveredTabs = sheetsList.map((s) => ({
+          sheetId: s.properties?.sheetId !== undefined ? s.properties.sheetId : 0,
+          title: s.properties?.title || `Tab_${s.properties?.sheetId}`,
+          index: s.properties?.index ?? 0,
+          rowCount: s.properties?.gridProperties?.rowCount || 0,
+          columnCount: s.properties?.gridProperties?.columnCount || 0,
+        }));
 
         if (sheetsList.length > 0) {
           if (sheetTitle) {
@@ -437,6 +445,7 @@ class SheetsService {
           spreadsheetName,
           sheetTitle: targetSheetTitle || "Sheet1",
           availableWorksheets: availableWorksheets.length > 0 ? availableWorksheets : [targetSheetTitle || "Sheet1"],
+          availableTabs: discoveredTabs.length > 0 ? discoveredTabs : [{ sheetId: 0, title: targetSheetTitle || "Sheet1", index: 0, rowCount: totalPopulatedRows, columnCount: headers.length }],
           detectedHeaderRowIndex: headerRowIdx,
           headerRowNumber: headerRowIdx + 1,
           lastRowNumber: maxPopulatedRowNumber,
@@ -698,6 +707,186 @@ class SheetsService {
     );
 
     return res.data?.valueRanges || [];
+  }
+
+  /**
+   * Discover all worksheet tabs dynamically for a connected Google Spreadsheet
+   */
+  async discoverWorksheetTabs({ spreadsheetIdOrUrl }) {
+    const spreadsheetId = this.extractSpreadsheetId(spreadsheetIdOrUrl);
+    if (!spreadsheetId) {
+      throw new Error("No valid Google Sheet ID or URL provided.");
+    }
+
+    let spreadsheetName = `Google_Sheet_${spreadsheetId.slice(0, 8)}`;
+    const tabs = [];
+
+    // Attempt 1: Authenticated Google Sheets API v4
+    try {
+      const auth = await googleOAuth.getAuthenticatedClient();
+      const metaRes = await auth.axiosInstance.get(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties/title,sheets.properties(sheetId,title,index,sheetType,gridProperties)`
+      );
+
+      if (metaRes.data?.properties?.title) {
+        spreadsheetName = metaRes.data.properties.title;
+      }
+
+      const sheetsList = metaRes.data?.sheets || [];
+      sheetsList.forEach((s) => {
+        const p = s.properties || {};
+        if (p.sheetType && p.sheetType !== "GRID") return;
+        tabs.push({
+          sheetId: p.sheetId !== undefined ? p.sheetId : 0,
+          title: p.title || `Sheet_${p.index || 0}`,
+          index: p.index ?? tabs.length,
+          rowCount: p.gridProperties?.rowCount || 0,
+          columnCount: p.gridProperties?.columnCount || 0,
+        });
+      });
+
+      if (tabs.length > 0) {
+        return {
+          success: true,
+          spreadsheetId,
+          spreadsheetName,
+          tabs,
+          source: "oauth_sheets_api",
+        };
+      }
+    } catch (authErr) {
+      console.warn(`[SheetsService] discoverWorksheetTabs OAuth notice: ${authErr.message}. Trying public view fallback...`);
+    }
+
+    // Attempt 2: Public Google Sheets HTML view tab extraction
+    try {
+      const htmlUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/htmlview`;
+      const res = await axios.get(htmlUrl, {
+        timeout: 10000,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+      });
+
+      if (res.data && typeof res.data === "string") {
+        const titleMatch = res.data.match(/<title>([^<]+)<\/title>/i);
+        if (titleMatch && titleMatch[1]) {
+          spreadsheetName = titleMatch[1].replace(/ - Google Sheets/i, "").trim();
+        }
+
+        const tabRegex = /id="sheet-button-([0-9]+)"[^>]*>[\s\S]*?<a[^>]*>([^<]+)<\/a>/gi;
+        let match;
+        let idx = 0;
+        while ((match = tabRegex.exec(res.data)) !== null) {
+          const sId = parseInt(match[1], 10);
+          const sTitle = match[2].trim();
+          if (sTitle && !tabs.some((t) => t.sheetId === sId || t.title === sTitle)) {
+            tabs.push({
+              sheetId: sId,
+              title: sTitle,
+              index: idx++,
+              rowCount: 0,
+              columnCount: 0,
+            });
+          }
+        }
+      }
+
+      if (tabs.length > 0) {
+        return {
+          success: true,
+          spreadsheetId,
+          spreadsheetName,
+          tabs,
+          source: "public_html_view",
+        };
+      }
+    } catch (htmlErr) {
+      console.warn(`[SheetsService] discoverWorksheetTabs HTML view fallback notice: ${htmlErr.message}`);
+    }
+
+    return {
+      success: true,
+      spreadsheetId,
+      spreadsheetName,
+      tabs: [{ sheetId: 0, title: "Sheet1", index: 0, rowCount: 0, columnCount: 0 }],
+      source: "default_fallback",
+    };
+  }
+
+  /**
+   * Fetch data independently for a single worksheet tab
+   */
+  async fetchWorksheetData({ spreadsheetIdOrUrl, sheetTitle, sheetId, maxRows = 500 }) {
+    const spreadsheetId = this.extractSpreadsheetId(spreadsheetIdOrUrl);
+    if (!spreadsheetId) {
+      throw new Error("No valid Google Sheet ID or URL provided.");
+    }
+
+    const result = await this.readSpreadsheet({
+      spreadsheetIdOrUrl,
+      sheetTitle: sheetTitle || null,
+      gid: sheetId !== undefined && sheetId !== null ? String(sheetId) : null,
+    });
+
+    const headers = result.headers || [];
+    const rawRows = result.rows || [];
+    const populatedRows = rawRows.filter((r) => r.isPopulated !== false && !r._isBlank);
+
+    return {
+      sheetId: sheetId !== undefined && sheetId !== null ? sheetId : (result.gid || 0),
+      tabName: result.sheetTitle || sheetTitle || "Sheet1",
+      columns: headers,
+      rows: rawRows.slice(0, maxRows),
+      totalRows: rawRows.length,
+      totalDataRows: populatedRows.length,
+      detectedHeaderRowIndex: result.detectedHeaderRowIndex || 0,
+      lastSyncedAt: new Date(),
+    };
+  }
+
+  /**
+   * Fetch independent data for multiple selected tabs without merging them incorrectly
+   */
+  async fetchMultipleWorksheetsData({ spreadsheetIdOrUrl, selectedTabs = [], maxRowsPerTab = 500 }) {
+    const spreadsheetId = this.extractSpreadsheetId(spreadsheetIdOrUrl);
+    if (!spreadsheetId) {
+      throw new Error("No valid Google Sheet ID or URL provided.");
+    }
+
+    if (!Array.isArray(selectedTabs) || selectedTabs.length === 0) {
+      return [];
+    }
+
+    const results = [];
+    for (const tab of selectedTabs) {
+      const sheetTitle = typeof tab === "string" ? tab : tab?.title || tab?.tabName;
+      const sheetId = typeof tab === "object" ? tab?.sheetId : null;
+
+      try {
+        const tabData = await this.fetchWorksheetData({
+          spreadsheetIdOrUrl,
+          sheetTitle,
+          sheetId,
+          maxRows: maxRowsPerTab,
+        });
+        results.push(tabData);
+      } catch (tabErr) {
+        console.warn(`[SheetsService] Failed to fetch data for tab "${sheetTitle}":`, tabErr.message);
+        results.push({
+          sheetId: sheetId !== null && sheetId !== undefined ? sheetId : 0,
+          tabName: sheetTitle || "Sheet1",
+          columns: [],
+          rows: [],
+          totalRows: 0,
+          totalDataRows: 0,
+          error: tabErr.message,
+          lastSyncedAt: new Date(),
+        });
+      }
+    }
+
+    return results;
   }
 }
 
