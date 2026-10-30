@@ -4,6 +4,45 @@
  * Eliminates value-based guessing, cross-row pollution, and hardcoded fallbacks.
  * Dynamically tracks spreadsheet metadata & unmapped columns for audit.
  */
+/**
+ * Clean and standardize Facebook Page ID
+ * Handles Excel float exports (.0), scientific notation, Facebook URLs, quotes, and whitespace.
+ */
+export function cleanPageId(val) {
+  if (val === undefined || val === null) return "";
+  let str = String(val).trim();
+  if (!str) return "";
+
+  // Remove surrounding quotes and brackets
+  str = str.replace(/^["'`\(\)\[\]]+|["'`\(\)\[\]]+$/g, "").trim();
+
+  // If Excel float export: "1405197426806546.0" or "1405197426806546.00"
+  if (/^\d+\.0+$/.test(str)) {
+    str = str.split(".")[0];
+  }
+
+  // If scientific notation: "1.4051974268e+15"
+  if (/^[0-9]+(?:\.[0-9]+)?[eE]\+[0-9]+$/.test(str)) {
+    try {
+      str = BigInt(Math.round(Number(str))).toString();
+    } catch (_) {}
+  }
+
+  // If Facebook Page URL: e.g. https://www.facebook.com/1405197426806546 or https://facebook.com/pages/.../1405197426806546
+  const fbUrlMatch = str.match(/facebook\.com\/(?:pages\/[^\/]+\/)?([0-9]{5,25})/i);
+  if (fbUrlMatch && fbUrlMatch[1]) {
+    return fbUrlMatch[1];
+  }
+
+  // Extract standalone 5-25 digit ID if text wraps it: e.g. "Page: 1405197426806546" or "act_... / 1405197426806546"
+  const digitsMatch = str.match(/\b(\d{5,25})\b/);
+  if (digitsMatch && digitsMatch[1]) {
+    return digitsMatch[1];
+  }
+
+  return str;
+}
+
 export class FieldMapper {
   static ALIASES = {
     campaignName: ["campaign_name", "campaignname", "camp_name", "campname", "campaign_title", "camptitle", "campaign_label", "campaign", "camp"],
@@ -36,7 +75,13 @@ export class FieldMapper {
     objectStoreUrl: ["object_store_url", "objectstoreurl", "app_store_url", "appstoreurl", "store_url", "storeurl", "play_store_url", "playstoreurl", "google_play_url", "apple_store_url", "app_url", "store_link"],
     campaignType: ["campaign_type", "campaigntype", "camptype", "promotion_type", "promotiontype", "type"],
     isSkadnetworkAttribution: ["is_skadnetwork_attribution", "skadnetwork", "skan_attribution", "skan", "is_skadnetwork"],
-    pageId: ["page_id", "pageid", "facebook_page_id", "facebookpageid", "fb_page_id", "fbpageid", "facebook_page", "page_account_id"],
+    pageId: [
+      "page_id", "pageid", "facebook_page_id", "facebookpageid",
+      "fb_page_id", "fbpageid", "facebook_page", "facebookpage",
+      "fb_page", "fbpage", "meta_page_id", "metapageid", "meta_page", "metapage",
+      "page_account_id", "pageaccountid", "promoted_page", "promotedpage",
+      "page_name", "pagename", "page", "pages"
+    ],
     instagramId: [
       "instagram_user_id", "instagramuserid", "instagram_actor_id", "instagramactorid",
       "instagram_account_id", "instagramaccountid", "ig_id", "igid", "instagram_id",
@@ -541,7 +586,11 @@ export class FieldMapper {
       driveUrl: getFieldValue("driveUrl"),
       pixelId: mappedPixel,
       appId: getFieldValue("appId"),
-      pageId: getFieldValue("pageId"),
+      pageId: (() => {
+        const p = getFieldValue("pageId");
+        if (p?.value) p.value = cleanPageId(p.value);
+        return p;
+      })(),
       instagramId: getFieldValue("instagramId"),
       cta: getFieldValue("cta"),
       status: getFieldValue("status"),

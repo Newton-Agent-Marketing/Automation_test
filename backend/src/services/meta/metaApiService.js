@@ -4,6 +4,7 @@ import fs from "fs";
 import path from "path";
 import MetaAssetResolver from "./metaAssetResolver.js";
 import { CampaignRouter } from "../data/campaignRouter.js";
+import { cleanPageId } from "../data/fieldMapper.js";
 
 const GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v24.0";
 const META_GRAPH_URL = `https://graph.facebook.com/${GRAPH_VERSION}`;
@@ -2378,11 +2379,13 @@ export class MetaApiService {
       }
     }
 
+    const cleanRequestedPageId = cleanPageId(pageId) || null;
+
     const pageResolution = await MetaAssetResolver.verifyAndResolvePageAsset({
       accountId: cleanId,
       accessToken,
-      requestedPageId: pageId,
-      allowFallbackPage: true,
+      requestedPageId: cleanRequestedPageId,
+      allowFallbackPage: !cleanRequestedPageId,
     });
 
     if (!pageResolution.valid || !pageResolution.pageId) {
@@ -3402,11 +3405,13 @@ export class MetaApiService {
       }
     }
 
+    const cleanRequestedPageId = cleanPageId(pageId) || null;
+
     const pageResolution = await MetaAssetResolver.verifyAndResolvePageAsset({
       accountId: cleanId,
       accessToken,
-      requestedPageId: pageId,
-      allowFallbackPage: true,
+      requestedPageId: cleanRequestedPageId,
+      allowFallbackPage: !cleanRequestedPageId,
     });
 
     if (!pageResolution.valid || !pageResolution.pageId) {

@@ -1,4 +1,4 @@
-import { FieldMapper } from "../data/fieldMapper.js";
+import { FieldMapper, cleanPageId } from "../data/fieldMapper.js";
 import { MediaAssetResolver } from "../data/mediaAssetResolver.js";
 import { CampaignRouter } from "../data/campaignRouter.js";
 import driveService from "../../google/driveService.js";
@@ -434,14 +434,16 @@ export class CampaignValidator {
         }
       }
 
-      const pageId =
+      const rawPageId =
         userAnswers.pageId ||
         userAnswers.page_id ||
         this.getFieldValue(vals, "pageId") ||
-        accountDoc?.pageId ||
-        contextNodeData?.pageId;
+        contextNodeData?.pageId ||
+        accountDoc?.pageId;
 
-      if (!pageId || !/^\d{5,20}$/.test(String(pageId).trim())) {
+      const pageId = cleanPageId(rawPageId);
+
+      if (!pageId || !/^\d{5,25}$/.test(pageId)) {
         missingPageRows.push(rowNo);
         adIssues.push({
           rowNumber: rowNo,

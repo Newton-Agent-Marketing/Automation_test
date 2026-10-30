@@ -8,6 +8,7 @@ import driveService from "../../google/driveService.js";
 import CampaignPreparationSession from "../../models/campaignPreparationSession.js";
 import MetaAccount from "../../models/metaAccount.js";
 import MetaUploadedMedia from "../../models/metaUploadedMedia.js";
+import { cleanPageId } from "../data/fieldMapper.js";
 
 export class MetaAdsOrchestrator {
   /**
@@ -644,7 +645,17 @@ export class MetaAdsOrchestrator {
           const adPixelId = adConfig.pixelId || session.pixelId || session.userAnswers?.pixelId || session.userAnswers?.pixel_id || session.chatInjectedValues?.pixelId || session.chatInjectedValues?.pixel_id || null;
           const adTrackingType = (adPixelId && adAppId) ? "BOTH" : (isAppCamp ? "APP" : (adPixelId ? "WEBSITE" : (adAppId ? "APP" : "WEBSITE")));
           const adStoreUrl = isAppCamp ? (objectStoreUrl || session.objectStoreUrl || session.userAnswers?.objectStoreUrl || session.userAnswers?.object_store_url || session.chatInjectedValues?.objectStoreUrl || session.chatInjectedValues?.object_store_url || adConfig.destination) : null;
-          const adPageId = adConfig.pageId || session.preview?.adDetails?.[0]?.pageId || session.userAnswers?.pageId || session.userAnswers?.page_id || session.chatInjectedValues?.pageId || session.chatInjectedValues?.page_id;
+          const adPageId = cleanPageId(
+            adConfig.pageId ||
+            session.preview?.adDetails?.[i]?.pageId ||
+            session.preview?.adDetails?.[0]?.pageId ||
+            session.pageId ||
+            session.userAnswers?.pageId ||
+            session.userAnswers?.page_id ||
+            session.chatInjectedValues?.pageId ||
+            session.chatInjectedValues?.page_id ||
+            session.contextNodeData?.pageId
+          );
           const adInstagramId = adConfig.instagramId || adConfig.instagram_user_id || adConfig.instagramUserId || session.userAnswers?.instagramId || session.userAnswers?.instagram_id || session.chatInjectedValues?.instagramId || null;
           let adUrlTags = adConfig.urlTags || adConfig.url_tags || adConfig.urlParameter || null;
           if (!adUrlTags && adConfig.tracking) {

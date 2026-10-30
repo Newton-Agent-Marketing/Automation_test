@@ -1,5 +1,6 @@
 import axios from "axios";
 import googleOAuth from "../auth/googleOAuth.js";
+import { cleanPageId } from "../services/data/fieldMapper.js";
 
 class SheetsService {
   constructor() {
@@ -627,11 +628,17 @@ class SheetsService {
         headline: findVal(["headline", "ad_headline", "creative_headline", "headline_1", "ad_title", "adheadline", "header", "title"]) || r.headline || r.title || "",
         primaryText: findVal(["primary_text", "primarytext", "main_text", "ad_text", "body_text", "body", "caption", "primary_text_1", "text", "copy", "ad_copy", "primary_copy", "post_text"]) || r.primary_text || r.body || r.description || "",
         description: findVal(["ad_description", "addescription", "description", "ad_desc", "desc", "link_description", "sub_headline", "subheadline", "description_1"]) || r.description || "",
-        linkUrl: findVal(["landing_page", "landingpage", "landing_page_url", "ad_landing_page_url", "ad_landing_page", "destination_url", "destination", "website_url", "website", "target_url", "site_url", "link_url", "link", "url", "page"]) || r.link || r.url || "",
+        linkUrl: findVal(["landing_page", "landingpage", "landing_page_url", "ad_landing_page_url", "ad_landing_page", "destination_url", "destination", "website_url", "website", "target_url", "site_url", "link_url", "link", "url"]) || r.link || r.url || "",
         displayLink: findVal(["ad_display_link", "display_link", "displaylink", "display_url", "display_domain", "show_link"]) || r.display_link || "",
         creativeUrl: findVal(["creative_smart_chips", "creative_smart_chip", "smart_chips", "smart_chip", "creativesmartchips", "google_drive_link", "drive_url", "media_url", "drive_link", "video_url", "image_url", "drive", "creative_url", "video", "media", "video_file", "creative"]) || r.creative_url || r.google_drive_link || r.drive_url || r.media_url || "",
         callToAction: findVal(["call_to_action", "cta"]) || r.call_to_action || r.cta || "LEARN_MORE",
-        pageId: findVal(["facebook_page_id", "page_id", "fb_page_id"]) || r.facebook_page_id || r.page_id || "",
+        pageId: cleanPageId(
+          findVal([
+            "facebook_page_id", "page_id", "fb_page_id", "pageid", "page",
+            "facebook_page", "fb_page", "fbpage", "meta_page", "meta_page_id",
+            "promoted_page", "page_account_id"
+          ]) || r.facebook_page_id || r.page_id || r.page || ""
+        ),
         instagramAccountId: findVal(["instagram_account_id", "instagram_id", "ig_account_id"]) || r.instagram_account_id || r.instagram_id || "",
         raw: r,
       };

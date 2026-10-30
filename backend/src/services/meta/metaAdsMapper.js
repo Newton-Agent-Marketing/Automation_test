@@ -2,6 +2,7 @@
 import MediaAssetResolver from "../data/mediaAssetResolver.js";
 import CampaignRouter from "../data/campaignRouter.js";
 import { MetaApiService } from "./metaApiService.js";
+import { cleanPageId } from "../data/fieldMapper.js";
 
 export const VALID_META_OBJECTIVES = [
   "OUTCOME_SALES",
@@ -50,7 +51,10 @@ export const ALIAS_DICTIONARY = {
   billing_event: ["billing_event", "billing"],
   conversion_location: ["conversion_location", "destination_type", "location_type"],
   target_audience: ["target_audience", "audience", "targeting", "interests", "locations"],
-  page_id: ["facebook_page_id", "page_id", "fb_page_id", "promoted_page"],
+  page_id: [
+    "facebook_page_id", "page_id", "fb_page_id", "pageid", "page",
+    "facebook_page", "fb_page", "meta_page_id", "meta_page", "promoted_page", "page_account_id"
+  ],
   pixel_id: ["pixel_id", "meta_pixel_id", "dataset_id"],
   app_id: ["app_id", "appid", "application_id", "applicationid", "fb_app_id", "fbappid", "meta_app_id", "metaappid"],
   object_store_url: ["object_store_url", "app_store_url", "store_url", "play_store_url", "appstore_url", "google_play_url", "apple_store_url", "app_url", "store_link"],
@@ -318,7 +322,7 @@ export class MetaAdsMapper {
             targetAudience: targetAudienceMatch.value || "Broad Target",
             targetAudienceSource: targetAudienceMatch.sourceHeader,
             optimizationGoal: optGoalMatch.value || (rowCampaignType === "APP_PROMOTION" ? (normalizedCustomEvent ? "OFFSITE_CONVERSIONS" : "APP_INSTALLS") : "OFFSITE_CONVERSIONS"),
-            pageId: pageIdMatch.value || null,
+            pageId: cleanPageId(pageIdMatch.value) || null,
             pixelId: pixelIdMatch.value || null,
             appId: appIdMatch.value || null,
             objectStoreUrl: storeUrlMatch.value || (destinationUrl && CampaignRouter.isAppStoreUrl(destinationUrl) ? destinationUrl : null),

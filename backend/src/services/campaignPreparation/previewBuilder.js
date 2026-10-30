@@ -1,3 +1,5 @@
+import { cleanPageId } from "../data/fieldMapper.js";
+
 export class PreviewBuilder {
   /**
    * Build complete preview tables and structured JSON object
@@ -147,6 +149,14 @@ export class PreviewBuilder {
         value: trackingConversionSettings,
         source: getSource("tracking", userAnswers.pixelId || userAnswers.appId, firstRowValues.pixel_id || firstRowValues.app_id, "Default"),
       },
+      {
+        field: "Facebook Page",
+        value: (() => {
+          const pId = cleanPageId(adLevelRows[0]?.pageId || userAnswers.pageId || userAnswers.page_id);
+          return pId ? `Page ID: \`${pId}\`` : "Auto-resolved from Account";
+        })(),
+        source: cleanPageId(adLevelRows[0]?.pageId) ? "Source Sheet" : "Connected Account",
+      },
     ];
 
     // Table 3: Ad Details
@@ -164,7 +174,7 @@ export class PreviewBuilder {
         displayLink: userAnswers.displayLink || userAnswers.display_link || ad.displayLink || "",
         urlTags: ad.urlTags || null,
         cta: ad.cta || (campaignType === "APP_PROMOTION" ? "DOWNLOAD" : "BOOK_NOW"),
-        pageId: userAnswers.pageId || userAnswers.page_id || ad.pageId || "",
+        pageId: cleanPageId(userAnswers.pageId || userAnswers.page_id || ad.pageId || ""),
         instagramId: userAnswers.instagramId || userAnswers.instagram_id || userAnswers.instagram_account_id || ad.instagramId || "",
         appId: ad.appId || effectiveAppId || "",
         pixelId: ad.pixelId || effectivePixelId || "",
