@@ -1396,17 +1396,6 @@ export class AiContextController {
       } else {
         sheetsArr.push(updatedSheetEntry);
       }
-          ...sheetsArr[targetSheetIdx],
-          selectedTabIds,
-          availableTabs,
-          selectedTabsData,
-          totalRows,
-          totalDataRows,
-          sheetColumns: allColumns,
-          sheetRows: combinedSelectedRows,
-          lastSyncedAt: new Date(),
-        };
-      }
 
       // Also sync to top-level warehouseNode data
       warehouseNode.data = {
