@@ -538,6 +538,36 @@ export class WorkflowExecutionEngine {
       metaAccountId = actMatch[1];
     }
 
+    // Auto-resolve user's active Meta Ad Account from AI Context Channel Node or connected accounts
+    if (!metaAccountId && userId) {
+      try {
+        const AiContext = (await import("../../models/aiContextModel.js")).default;
+        const aiCtx = await AiContext.findOne({ userId }).lean().catch(() => null);
+        const channelNodes = (aiCtx?.nodes || []).filter((n) => n.type === "ad_channel");
+        const metaChannelNode =
+          channelNodes.find((n) => {
+            const cName = (n.data?.channelName || n.data?.channel || n.label || "").toLowerCase();
+            return cName.includes("meta") || cName.includes("facebook");
+          }) || (channelNodes.length === 1 ? channelNodes[0] : null);
+        if (metaChannelNode?.data?.adAccountId) {
+          metaAccountId = String(metaChannelNode.data.adAccountId).replace(/^act_/, "").trim();
+        }
+      } catch (_) {}
+
+      if (!metaAccountId) {
+        try {
+          const MetaAccount = (await import("../../models/metaAccount.js")).default;
+          const metaAcc = await MetaAccount.findOne({
+            userId,
+            $or: [{ isConnected: true }, { isActive: true }, { accountStatus: 1 }, { accountId: { $exists: true } }],
+          }).lean().catch(() => null);
+          if (metaAcc?.accountId) {
+            metaAccountId = String(metaAcc.accountId).replace(/^act_/, "").trim();
+          }
+        } catch (_) {}
+      }
+    }
+
     let userMessage = instruction;
     if (previousNodeOutput) {
       let formattedPrev = "";
