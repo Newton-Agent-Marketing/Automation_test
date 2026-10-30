@@ -790,6 +790,25 @@ class SheetsService {
             });
           }
         }
+
+        if (tabs.length === 0) {
+          // Additional fallback 1: Google Sheets bootstrap / JSON embedded tab list
+          const gidPattern = /\[(\d{1,12}),"([^"\\]+)"/g;
+          let gMatch;
+          while ((gMatch = gidPattern.exec(res.data)) !== null) {
+            const sId = parseInt(gMatch[1], 10);
+            const sTitle = gMatch[2].trim();
+            if (sTitle && sTitle.length < 100 && !tabs.some((t) => t.sheetId === sId || t.title === sTitle)) {
+              tabs.push({
+                sheetId: sId,
+                title: sTitle,
+                index: idx++,
+                rowCount: 0,
+                columnCount: 0,
+              });
+            }
+          }
+        }
       }
 
       if (tabs.length > 0) {
