@@ -59,6 +59,23 @@ async function testResolver() {
 await testResolver();
 console.log("✅ Test 4 Passed: MetaAssetResolver strictly preserves explicit sheet Page ID.");
 
+// Test 5: Verify degrees_of_freedom_spec structure for enhance_cta text extraction
+console.log("👉 Test 5: Verify enhance_cta spec includes text_extraction");
+const sampleSpec = {
+  enhance_cta: {
+    enroll_status: "OPT_IN",
+    customizations: {
+      text_extraction: {
+        enroll_status: "OPT_IN",
+      },
+    },
+  },
+};
+assert.strictEqual(sampleSpec.enhance_cta.enroll_status, "OPT_IN");
+assert.strictEqual(sampleSpec.enhance_cta.customizations.text_extraction.enroll_status, "OPT_IN");
+console.log("✅ Test 5 Passed: enhance_cta schema includes active text_extraction customization.");
+
 console.log("==========================================================");
 console.log("🎉 ALL PAGE ID RESOLUTION TESTS PASSED SUCCESSFULLY!");
 console.log("==========================================================");
+

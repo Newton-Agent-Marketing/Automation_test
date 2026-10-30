@@ -2541,7 +2541,14 @@ export class MetaApiService {
       advantage_plus_creative: { enroll_status: "OPT_IN" },
       text_optimizations: { enroll_status: "OPT_IN" },
       inline_comment: { enroll_status: "OPT_IN" },
-      enhance_cta: { enroll_status: "OPT_IN" },
+      enhance_cta: {
+        enroll_status: "OPT_IN",
+        customizations: {
+          text_extraction: {
+            enroll_status: "OPT_IN",
+          },
+        },
+      },
       image_touchups: { enroll_status: "OPT_IN" },
       video_auto_crop: { enroll_status: "OPT_IN" },
       video_filtering: { enroll_status: "OPT_IN" },
@@ -2651,7 +2658,14 @@ export class MetaApiService {
             advantage_plus_creative: { enroll_status: "OPT_IN" },
             text_optimizations: { enroll_status: "OPT_IN" },
             inline_comment: { enroll_status: "OPT_IN" },
-            enhance_cta: { enroll_status: "OPT_IN" },
+            enhance_cta: {
+              enroll_status: "OPT_IN",
+              customizations: {
+                text_extraction: {
+                  enroll_status: "OPT_IN",
+                },
+              },
+            },
             image_touchups: { enroll_status: "OPT_IN" },
           },
         });
@@ -2678,8 +2692,17 @@ export class MetaApiService {
               advantage_plus_creative: { enroll_status: "OPT_IN" },
               text_optimizations: { enroll_status: "OPT_IN" },
               inline_comment: { enroll_status: "OPT_IN" },
-              enhance_cta: { enroll_status: "OPT_IN" },
+              enhance_cta: {
+                enroll_status: "OPT_IN",
+                customizations: {
+                  text_extraction: {
+                    enroll_status: "OPT_IN",
+                  },
+                },
+              },
               image_touchups: { enroll_status: "OPT_IN" },
+              video_auto_crop: { enroll_status: "OPT_IN" },
+              video_filtering: { enroll_status: "OPT_IN" },
             },
           });
           const retryRes3 = await axios.post(creativeUrl, null, { params: creativeParams });
@@ -3636,7 +3659,14 @@ export class MetaApiService {
       advantage_plus_creative: { enroll_status: "OPT_IN" },
       text_optimizations: { enroll_status: "OPT_IN" },
       inline_comment: { enroll_status: "OPT_IN" },
-      enhance_cta: { enroll_status: "OPT_IN" },
+      enhance_cta: {
+        enroll_status: "OPT_IN",
+        customizations: {
+          text_extraction: {
+            enroll_status: "OPT_IN",
+          },
+        },
+      },
       image_touchups: { enroll_status: "OPT_IN" },
       video_auto_crop: { enroll_status: "OPT_IN" },
       video_filtering: { enroll_status: "OPT_IN" },
@@ -3749,7 +3779,14 @@ export class MetaApiService {
             advantage_plus_creative: { enroll_status: "OPT_IN" },
             text_optimizations: { enroll_status: "OPT_IN" },
             inline_comment: { enroll_status: "OPT_IN" },
-            enhance_cta: { enroll_status: "OPT_IN" },
+            enhance_cta: {
+              enroll_status: "OPT_IN",
+              customizations: {
+                text_extraction: {
+                  enroll_status: "OPT_IN",
+                },
+              },
+            },
             image_touchups: { enroll_status: "OPT_IN" },
             video_auto_crop: { enroll_status: "OPT_IN" },
             video_filtering: { enroll_status: "OPT_IN" },
@@ -3774,8 +3811,17 @@ export class MetaApiService {
               advantage_plus_creative: { enroll_status: "OPT_IN" },
               text_optimizations: { enroll_status: "OPT_IN" },
               inline_comment: { enroll_status: "OPT_IN" },
-              enhance_cta: { enroll_status: "OPT_IN" },
+              enhance_cta: {
+                enroll_status: "OPT_IN",
+                customizations: {
+                  text_extraction: {
+                    enroll_status: "OPT_IN",
+                  },
+                },
+              },
               image_touchups: { enroll_status: "OPT_IN" },
+              video_auto_crop: { enroll_status: "OPT_IN" },
+              video_filtering: { enroll_status: "OPT_IN" },
             },
           });
           const retryRes3 = await axios.post(creativeUrl, null, { params: creativeParams });
