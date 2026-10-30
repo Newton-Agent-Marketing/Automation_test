@@ -1,4 +1,6 @@
-import { generateFallbackMarketingResponse } from '../src/controller/chat.controller.js';
+import mongoose from "mongoose";
+mongoose.set("bufferCommands", false);
+import { runAgentChat } from '../src/controller/chat.controller.js';
 
 async function runTests() {
   console.log("=================================================");
@@ -14,11 +16,12 @@ async function runTests() {
   console.log(">>> Running Test 1: Creative Ranking by CTR & Efficiency (TASK E0)...");
   const prompt1 = `act_2152730341920713, Use the actual data from the previous node to rank creatives by CTR and conversion efficiency. Identify the strongest and weakest creatives where data supports a comparison. Flag low-impression or low-conversion creatives as insufficient data instead of treating them as proven failures. Explain the ranking criteria.`;
 
-  const res1 = await generateFallbackMarketingResponse({
+  const res1 = await runAgentChat({
     userMessage: prompt1,
     userId,
     conversationId: `${conversationBase}_node1`,
     accountId: "act_2152730341920713",
+    metaAccountId: "2152730341920713",
   });
 
   const content1 = typeof res1 === "object" ? res1.content : res1;
@@ -55,7 +58,7 @@ async function runTests() {
 [Context from previous step]:
 ${content1}`;
 
-  const res2 = await generateFallbackMarketingResponse({
+  const res2 = await runAgentChat({
     userMessage: prompt2,
     userId,
     conversationId: `${conversationBase}_node2`,
@@ -94,7 +97,7 @@ ${content2}`;
 
 ${combinedContext}`;
 
-  const res3 = await generateFallbackMarketingResponse({
+  const res3 = await runAgentChat({
     userMessage: prompt3,
     userId,
     conversationId: `${conversationBase}_node3`,
@@ -131,7 +134,7 @@ ${combinedContext}`;
 [Context from previous step]:
 ${content1}`;
 
-  const res4 = await generateFallbackMarketingResponse({
+  const res4 = await runAgentChat({
     userMessage: prompt4,
     userId,
     conversationId: `${conversationBase}_node4`,
@@ -172,7 +175,7 @@ ${content1}`;
 [Context from previous step]:
 ${upstreamTableMetrics}`;
 
-  const res5 = await generateFallbackMarketingResponse({
+  const res5 = await runAgentChat({
     userMessage: prompt5,
     userId,
     conversationId: `${conversationBase}_node5`,
@@ -212,7 +215,7 @@ ${upstreamTableMetrics}`;
 [Context from previous step]:
 ${content5}`;
 
-  const res6 = await generateFallbackMarketingResponse({
+  const res6 = await runAgentChat({
     userMessage: prompt6,
     userId,
     conversationId: `${conversationBase}_node6`,
