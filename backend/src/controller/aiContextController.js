@@ -981,119 +981,164 @@ export class AiContextController {
 
       // Update MongoDB AiContext if userId exists
       if (userId) {
-        const context = await AiContext.findOne({ userId });
+        let context = await AiContext.findOne({ userId });
+        if (!context) {
+          context = await AiContext.create({
+            userId,
+            name: "Primary Marketing Context",
+            nodes: [],
+            edges: [],
+            flows: [],
+          });
+        }
         if (context) {
-          let modified = false;
-          context.nodes.forEach((node) => {
-            if (node.type === "data_warehouse" && (!nodeId || node.id === nodeId)) {
-              const previousTracked = (node.data?.sheetUrl === cleanUrl && node.data?.sheetMetadata?.trackedRows) ? node.data.sheetMetadata.trackedRows : [];
-              const rawRowObjects = rows.map((r) => ({
-                ...(r.values || {}),
-                _originalRowNumber: r.originalRowNumber,
-                isPopulated: r.isPopulated,
-                _isBlank: r._isBlank,
-              }));
-              const diffInit = SpreadsheetSyncService.diffSpreadsheetRows(previousTracked, rawRowObjects, headers);
-              diffInit.trackedRows.forEach((tr, i) => {
-                if (rows[i]) tr.cachedValues = { ...(rows[i].values || rows[i]) };
-              });
+          // Resilient warehouse node resolution:
+          // 1. By nodeId
+          // 2. By containing cleanUrl
+          // 3. Fallback to any data_warehouse / storage node
+          // 4. Auto-create if none exists
+          let targetWarehouseNode = null;
+          if (nodeId) {
+            targetWarehouseNode = (context.nodes || []).find(
+              (n) =>
+                (n.type === "data_warehouse" || n.type === "storage") &&
+                (String(n.id) === String(nodeId) || String(n._id || "") === String(nodeId))
+            );
+          }
+          if (!targetWarehouseNode && cleanUrl) {
+            targetWarehouseNode = (context.nodes || []).find((n) => {
+              if (n.type !== "data_warehouse" && n.type !== "storage") return false;
+              if (n.data?.sheetUrl === cleanUrl) return true;
+              const sArr = Array.isArray(n.data?.sheets) ? n.data.sheets : [];
+              return sArr.some((s) => s.sheetUrl === cleanUrl);
+            });
+          }
+          if (!targetWarehouseNode) {
+            targetWarehouseNode = (context.nodes || []).find(
+              (n) => n.type === "data_warehouse" || n.type === "storage"
+            );
+          }
+          if (!targetWarehouseNode) {
+            targetWarehouseNode = {
+              id: nodeId || `warehouse_${Date.now()}`,
+              type: "data_warehouse",
+              label: "Excel & Drive Warehouse",
+              subtitle: "Connected Spreadsheet",
+              data: {
+                sheets: [],
+              },
+            };
+            context.nodes = context.nodes || [];
+            context.nodes.push(targetWarehouseNode);
+          }
 
-              const lastRowNumber = ingestionResult.lastRowNumber || diffInit.lastRowNumber || (rows.length > 0 ? rows[rows.length - 1].originalRowNumber : 1);
-              const totalSheetRows = ingestionResult.totalSheetRows || diffInit.totalSheetRows || (rows.length + 1);
-              const totalDataRows = ingestionResult.totalDataRows || diffInit.totalDataRows || rows.filter((r) => r.isPopulated).length;
-              const headerRowNumber = ingestionResult.headerRowNumber || diffInit.headerRowNumber || 1;
+          if (nodeId && targetWarehouseNode.id !== nodeId) {
+            targetWarehouseNode.id = nodeId;
+          }
 
-              // Synchronize sheet into multi-sheets array
-              const sheetCardId = req.body.sheetCardId || req.body.sheetId;
-              let sheetsArr = Array.isArray(node.data?.sheets) ? [...node.data.sheets] : [];
-              const sIdx = sheetsArr.findIndex((s) => (sheetCardId && s.id === sheetCardId) || s.sheetUrl === cleanUrl);
-
-              const updatedSheetObj = {
-                id: sheetCardId || (sIdx >= 0 ? sheetsArr[sIdx].id : `sheet_${Date.now()}`),
-                sheetUrl: cleanUrl,
-                excelProvider: detectedProvider,
-                workbookName: ingestionResult.spreadsheetName,
-                worksheetName: ingestionResult.worksheetName,
-                availableTabs: discoveredTabs,
-                selectedTabIds: initialSelectedTabIds,
-                selectedTabsData,
-                excelSyncStatus: "SYNCED",
-                lastSyncedAt: new Date(),
-                totalRows: selectedTabsData.reduce((sum, t) => sum + (t.totalRows || 0), 0) || rows.length,
-                totalDataRows: selectedTabsData.reduce((sum, t) => sum + (t.totalDataRows || 0), 0) || totalDataRows,
-                totalSheetRows,
-                sheetColumns: headers,
-                sheetRows: rows.map((r) => r.values),
-                dataLabels: sIdx >= 0 ? (sheetsArr[sIdx].dataLabels || "") : (node.data?.dataLabels || ""),
-                dataLevel: sIdx >= 0 ? (sheetsArr[sIdx].dataLevel || "") : (node.data?.dataLevel || ""),
-              };
-
-              if (sIdx >= 0) {
-                sheetsArr[sIdx] = { ...sheetsArr[sIdx], ...updatedSheetObj };
-              } else {
-                sheetsArr.push(updatedSheetObj);
-              }
-
-              node.data = {
-                ...node.data,
-                sheets: sheetsArr,
-                sheetUrl: cleanUrl,
-                excelProvider: detectedProvider,
-                workbookName: ingestionResult.spreadsheetName,
-                worksheetName: ingestionResult.worksheetName,
-                availableWorksheets: ingestionResult.availableWorksheets,
-                availableTabs: discoveredTabs,
-                selectedTabIds: initialSelectedTabIds,
-                selectedTabsData,
-                excelSyncStatus: "SYNCED",
-                lastSyncedAt: new Date(),
-                totalRows: rows.length,
-                totalDataRows,
-                totalSheetRows,
-                lastRowNumber,
-                headerRowNumber,
-                dataRowStart: headerRowNumber + 1,
-                eligibleAdRowsCount: diffInit.eligibleAdRowsCount,
-                validationErrorRowsCount: diffInit.validationErrorRowsCount,
-                readyRowsCount: diffInit.eligibleAdRowsCount,
-                correctionRequiredRowsCount: diffInit.validationErrorRowsCount,
-                sheetColumns: headers,
-                sheetRows: rows.map((r) => r.values),
-                mappedHierarchy: mapped.groupedCampaigns,
-                warnings: ingestionResult.warnings,
-                sheetMetadata: {
-                  ...(node.data?.sheetMetadata || {}),
-                  trackedRows: diffInit.trackedRows,
-                  lastSyncDiff: {
-                    totalSheetRows,
-                    totalDataRows,
-                    lastRowNumber,
-                    headerRowNumber,
-                    eligibleAdRowsCount: diffInit.eligibleAdRowsCount,
-                    validationErrorRowsCount: diffInit.validationErrorRowsCount,
-                    newRowsCount: diffInit.newRowsCount,
-                    updatedRowsCount: diffInit.updatedRowsCount,
-                    unchangedRowsCount: diffInit.unchangedRowsCount,
-                    blankRowsCount: diffInit.blankRowsCount,
-                    newRowNumbers: diffInit.newRowNumbers,
-                    updatedRowNumbers: diffInit.updatedRowNumbers,
-                    validationErrorRowNumbers: diffInit.validationErrorRowNumbers,
-                    eligibleAdRowNumbers: diffInit.eligibleAdRowNumbers,
-                    blankRowNumbers: diffInit.blankRowNumbers,
-                    syncedAt: new Date().toISOString(),
-                    trigger: "connect",
-                  },
-                },
-              };
-              node.subtitle = `🔗 ${cleanUrl.slice(0, 36)}... (${discoveredTabs.length} tabs discovered, ${totalDataRows} rows)`;
-              modified = true;
-            }
+          const previousTracked = (targetWarehouseNode.data?.sheetUrl === cleanUrl && targetWarehouseNode.data?.sheetMetadata?.trackedRows) ? targetWarehouseNode.data.sheetMetadata.trackedRows : [];
+          const rawRowObjects = rows.map((r) => ({
+            ...(r.values || {}),
+            _originalRowNumber: r.originalRowNumber,
+            isPopulated: r.isPopulated,
+            _isBlank: r._isBlank,
+          }));
+          const diffInit = SpreadsheetSyncService.diffSpreadsheetRows(previousTracked, rawRowObjects, headers);
+          diffInit.trackedRows.forEach((tr, i) => {
+            if (rows[i]) tr.cachedValues = { ...(rows[i].values || rows[i]) };
           });
 
-          if (modified) {
-            context.markModified("nodes");
-            await context.save();
+          const lastRowNumber = ingestionResult.lastRowNumber || diffInit.lastRowNumber || (rows.length > 0 ? rows[rows.length - 1].originalRowNumber : 1);
+          const totalSheetRows = ingestionResult.totalSheetRows || diffInit.totalSheetRows || (rows.length + 1);
+          const totalDataRows = ingestionResult.totalDataRows || diffInit.totalDataRows || rows.filter((r) => r.isPopulated).length;
+          const headerRowNumber = ingestionResult.headerRowNumber || diffInit.headerRowNumber || 1;
+
+          // Synchronize sheet into multi-sheets array
+          const sheetCardId = req.body.sheetCardId || req.body.sheetId;
+          let sheetsArr = Array.isArray(targetWarehouseNode.data?.sheets) ? [...targetWarehouseNode.data.sheets] : [];
+          const sIdx = sheetsArr.findIndex((s) => (sheetCardId && s.id === sheetCardId) || s.sheetUrl === cleanUrl);
+
+          const updatedSheetObj = {
+            id: sheetCardId || (sIdx >= 0 ? sheetsArr[sIdx].id : `sheet_${Date.now()}`),
+            sheetUrl: cleanUrl,
+            excelProvider: detectedProvider,
+            workbookName: ingestionResult.spreadsheetName,
+            worksheetName: ingestionResult.worksheetName,
+            availableTabs: discoveredTabs,
+            selectedTabIds: initialSelectedTabIds,
+            selectedTabsData,
+            excelSyncStatus: "SYNCED",
+            lastSyncedAt: new Date(),
+            totalRows: selectedTabsData.reduce((sum, t) => sum + (t.totalRows || 0), 0) || rows.length,
+            totalDataRows: selectedTabsData.reduce((sum, t) => sum + (t.totalDataRows || 0), 0) || totalDataRows,
+            totalSheetRows,
+            sheetColumns: headers,
+            sheetRows: rows.map((r) => r.values),
+            dataLabels: sIdx >= 0 ? (sheetsArr[sIdx].dataLabels || "") : (targetWarehouseNode.data?.dataLabels || ""),
+            dataLevel: sIdx >= 0 ? (sheetsArr[sIdx].dataLevel || "") : (targetWarehouseNode.data?.dataLevel || ""),
+          };
+
+          if (sIdx >= 0) {
+            sheetsArr[sIdx] = { ...sheetsArr[sIdx], ...updatedSheetObj };
+          } else {
+            sheetsArr.push(updatedSheetObj);
           }
+
+          targetWarehouseNode.data = {
+            ...targetWarehouseNode.data,
+            sheets: sheetsArr,
+            sheetUrl: cleanUrl,
+            excelProvider: detectedProvider,
+            workbookName: ingestionResult.spreadsheetName,
+            worksheetName: ingestionResult.worksheetName,
+            availableWorksheets: ingestionResult.availableWorksheets,
+            availableTabs: discoveredTabs,
+            selectedTabIds: initialSelectedTabIds,
+            selectedTabsData,
+            excelSyncStatus: "SYNCED",
+            lastSyncedAt: new Date(),
+            totalRows: rows.length,
+            totalDataRows,
+            totalSheetRows,
+            lastRowNumber,
+            headerRowNumber,
+            dataRowStart: headerRowNumber + 1,
+            eligibleAdRowsCount: diffInit.eligibleAdRowsCount,
+            validationErrorRowsCount: diffInit.validationErrorRowsCount,
+            readyRowsCount: diffInit.eligibleAdRowsCount,
+            correctionRequiredRowsCount: diffInit.validationErrorRowsCount,
+            sheetColumns: headers,
+            sheetRows: rows.map((r) => r.values),
+            mappedHierarchy: mapped.groupedCampaigns,
+            warnings: ingestionResult.warnings,
+            sheetMetadata: {
+              ...(targetWarehouseNode.data?.sheetMetadata || {}),
+              trackedRows: diffInit.trackedRows,
+              lastSyncDiff: {
+                totalSheetRows,
+                totalDataRows,
+                lastRowNumber,
+                headerRowNumber,
+                eligibleAdRowsCount: diffInit.eligibleAdRowsCount,
+                validationErrorRowsCount: diffInit.validationErrorRowsCount,
+                newRowsCount: diffInit.newRowsCount,
+                updatedRowsCount: diffInit.updatedRowsCount,
+                unchangedRowsCount: diffInit.unchangedRowsCount,
+                blankRowsCount: diffInit.blankRowsCount,
+                newRowNumbers: diffInit.newRowNumbers,
+                updatedRowNumbers: diffInit.updatedRowNumbers,
+                validationErrorRowNumbers: diffInit.validationErrorRowNumbers,
+                eligibleAdRowNumbers: diffInit.eligibleAdRowNumbers,
+                blankRowNumbers: diffInit.blankRowNumbers,
+                syncedAt: new Date().toISOString(),
+                trigger: "connect",
+              },
+            },
+          };
+          targetWarehouseNode.subtitle = `🔗 ${cleanUrl.slice(0, 36)}... (${discoveredTabs.length} tabs discovered, ${totalDataRows} rows)`;
+
+          context.markModified("nodes");
+          await context.save();
         }
       }
 
@@ -1203,23 +1248,69 @@ export class AiContextController {
         });
       }
 
-      const context = await AiContext.findOne({ userId });
+      let context = await AiContext.findOne({ userId });
       if (!context) {
-        return res.status(404).json({
-          success: false,
-          message: "AI Context not found for user.",
+        context = await AiContext.create({
+          userId,
+          name: "Primary Marketing Context",
+          nodes: [],
+          edges: [],
+          flows: [],
         });
       }
 
-      const warehouseNode = context.nodes.find(
-        (n) => n.type === "data_warehouse" && (!nodeId || n.id === nodeId)
-      );
+      // Resilient Multi-Strategy Warehouse Node Resolution:
+      // 1. Direct match by nodeId (string comparison)
+      // 2. Match by containing sheetId or sheetUrl
+      // 3. Fallback to any node of type "data_warehouse" or "storage"
+      // 4. Auto-create warehouse node if none exists in context.nodes
+      let warehouseNode = null;
+
+      if (nodeId) {
+        warehouseNode = (context.nodes || []).find(
+          (n) =>
+            (n.type === "data_warehouse" || n.type === "storage") &&
+            (String(n.id) === String(nodeId) || String(n._id || "") === String(nodeId))
+        );
+      }
+
+      if (!warehouseNode && (sheetId || sheetUrl)) {
+        const cleanTargetUrl = (sheetUrl || "").trim().toLowerCase();
+        warehouseNode = (context.nodes || []).find((n) => {
+          if (n.type !== "data_warehouse" && n.type !== "storage") return false;
+          if (cleanTargetUrl && (n.data?.sheetUrl || "").toLowerCase().includes(cleanTargetUrl)) return true;
+          const sArr = Array.isArray(n.data?.sheets) ? n.data.sheets : [];
+          return sArr.some(
+            (s) =>
+              (sheetId && String(s.id) === String(sheetId)) ||
+              (cleanTargetUrl && (s.sheetUrl || "").toLowerCase().includes(cleanTargetUrl))
+          );
+        });
+      }
 
       if (!warehouseNode) {
-        return res.status(404).json({
-          success: false,
-          message: "Warehouse node not found in AI Context.",
-        });
+        warehouseNode = (context.nodes || []).find(
+          (n) => n.type === "data_warehouse" || n.type === "storage"
+        );
+      }
+
+      if (!warehouseNode) {
+        warehouseNode = {
+          id: nodeId || `warehouse_${Date.now()}`,
+          type: "data_warehouse",
+          label: "Excel & Drive Warehouse",
+          subtitle: "Connected Spreadsheet",
+          data: {
+            sheetUrl: sheetUrl || "",
+            sheets: [],
+          },
+        };
+        context.nodes = context.nodes || [];
+        context.nodes.push(warehouseNode);
+      }
+
+      if (nodeId && warehouseNode.id !== nodeId) {
+        warehouseNode.id = nodeId;
       }
 
       // Find target sheet entry in sheets array or root
@@ -1285,9 +1376,26 @@ export class AiContextController {
         });
       });
 
-      // Update target sheet in sheets array
+      // Update target sheet in sheets array (resiliently update or push)
+      const updatedSheetEntry = {
+        ...(targetSheetIdx >= 0 ? sheetsArr[targetSheetIdx] : {}),
+        id: sheetId || targetSheet?.id || `sheet_${Date.now()}`,
+        sheetUrl: effectiveSheetUrl,
+        selectedTabIds,
+        availableTabs,
+        selectedTabsData,
+        totalRows,
+        totalDataRows,
+        sheetColumns: allColumns,
+        sheetRows: combinedSelectedRows,
+        lastSyncedAt: new Date(),
+      };
+
       if (targetSheetIdx >= 0) {
-        sheetsArr[targetSheetIdx] = {
+        sheetsArr[targetSheetIdx] = updatedSheetEntry;
+      } else {
+        sheetsArr.push(updatedSheetEntry);
+      }
           ...sheetsArr[targetSheetIdx],
           selectedTabIds,
           availableTabs,

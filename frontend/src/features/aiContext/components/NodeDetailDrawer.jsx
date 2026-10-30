@@ -459,7 +459,7 @@ export const NodeDetailDrawer = ({
     const target = sheetsList.find((s) => s.id === sheetId);
     if (!target) return;
 
-    handleUpdateSheetField(sheetId, { isSavingTabs: true, saveTabsMsg: "" });
+    handleUpdateSheetField(sheetId, { isSavingTabs: true, saveTabsMsg: "", connectError: "" });
 
     try {
       const res = await aiContextApi.saveTabSelection({
@@ -474,6 +474,7 @@ export const NodeDetailDrawer = ({
         handleUpdateSheetField(sheetId, {
           isSavingTabs: false,
           hasUnsavedTabChanges: false,
+          connectError: "",
           saveTabsMsg: `✓ Saved! ${d.selectedTabsData?.length || 0} active tabs for AI Agent.`,
           selectedTabsData: d.selectedTabsData || target.selectedTabsData || [],
           totalRows: d.totalRows !== undefined ? d.totalRows : target.totalRows,
