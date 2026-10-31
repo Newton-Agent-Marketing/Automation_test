@@ -2549,9 +2549,14 @@ export class MetaApiService {
           },
         },
       },
+      dynamic_cta_text: { enroll_status: "OPT_IN" },
+      generate_cta: { enroll_status: "OPT_IN" },
+      text_extraction_for_tap_target: { enroll_status: "OPT_IN" },
       image_touchups: { enroll_status: "OPT_IN" },
       video_auto_crop: { enroll_status: "OPT_IN" },
       video_filtering: { enroll_status: "OPT_IN" },
+      video_highlight: { enroll_status: "OPT_IN" },
+      video_highlights: { enroll_status: "OPT_IN" },
     };
 
     creativeParams.degrees_of_freedom_spec = JSON.stringify({
@@ -2700,9 +2705,14 @@ export class MetaApiService {
                   },
                 },
               },
+              dynamic_cta_text: { enroll_status: "OPT_IN" },
+              generate_cta: { enroll_status: "OPT_IN" },
+              text_extraction_for_tap_target: { enroll_status: "OPT_IN" },
               image_touchups: { enroll_status: "OPT_IN" },
               video_auto_crop: { enroll_status: "OPT_IN" },
               video_filtering: { enroll_status: "OPT_IN" },
+              video_highlight: { enroll_status: "OPT_IN" },
+              video_highlights: { enroll_status: "OPT_IN" },
             },
           });
           const retryRes3 = await axios.post(creativeUrl, null, { params: creativeParams });
@@ -3667,9 +3677,14 @@ export class MetaApiService {
           },
         },
       },
+      dynamic_cta_text: { enroll_status: "OPT_IN" },
+      generate_cta: { enroll_status: "OPT_IN" },
+      text_extraction_for_tap_target: { enroll_status: "OPT_IN" },
       image_touchups: { enroll_status: "OPT_IN" },
       video_auto_crop: { enroll_status: "OPT_IN" },
       video_filtering: { enroll_status: "OPT_IN" },
+      video_highlight: { enroll_status: "OPT_IN" },
+      video_highlights: { enroll_status: "OPT_IN" },
     };
 
     creativeParams.degrees_of_freedom_spec = JSON.stringify({
@@ -3787,9 +3802,14 @@ export class MetaApiService {
                 },
               },
             },
+            dynamic_cta_text: { enroll_status: "OPT_IN" },
+            generate_cta: { enroll_status: "OPT_IN" },
+            text_extraction_for_tap_target: { enroll_status: "OPT_IN" },
             image_touchups: { enroll_status: "OPT_IN" },
             video_auto_crop: { enroll_status: "OPT_IN" },
             video_filtering: { enroll_status: "OPT_IN" },
+            video_highlight: { enroll_status: "OPT_IN" },
+            video_highlights: { enroll_status: "OPT_IN" },
           },
         });
         const retryRes2 = await axios.post(creativeUrl, null, { params: creativeParams });
@@ -3819,9 +3839,14 @@ export class MetaApiService {
                   },
                 },
               },
+              dynamic_cta_text: { enroll_status: "OPT_IN" },
+              generate_cta: { enroll_status: "OPT_IN" },
+              text_extraction_for_tap_target: { enroll_status: "OPT_IN" },
               image_touchups: { enroll_status: "OPT_IN" },
               video_auto_crop: { enroll_status: "OPT_IN" },
               video_filtering: { enroll_status: "OPT_IN" },
+              video_highlight: { enroll_status: "OPT_IN" },
+              video_highlights: { enroll_status: "OPT_IN" },
             },
           });
           const retryRes3 = await axios.post(creativeUrl, null, { params: creativeParams });

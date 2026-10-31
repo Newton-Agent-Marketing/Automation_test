@@ -18,7 +18,30 @@ class DriveService {
       } catch (err) {
         console.error(`[DriveService] Failed to create scratch directory: ${err.message}`);
       }
+    } else {
+      this.cleanOldScratchFiles(12);
     }
+  }
+
+  /**
+   * Safely clean old scratch files to avoid "No space left on device" errors on server
+   */
+  cleanOldScratchFiles(maxAgeHours = 12) {
+    try {
+      if (!fs.existsSync(this.scratchDir)) return;
+      const files = fs.readdirSync(this.scratchDir);
+      const now = Date.now();
+      const maxAgeMs = maxAgeHours * 60 * 60 * 1000;
+      for (const file of files) {
+        try {
+          const filePath = path.join(this.scratchDir, file);
+          const stat = fs.statSync(filePath);
+          if (stat.isFile() && (now - stat.mtimeMs > maxAgeMs)) {
+            fs.unlinkSync(filePath);
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
   }
 
   /**
