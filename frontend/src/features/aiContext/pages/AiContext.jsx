@@ -311,7 +311,27 @@ export const AiContext = () => {
               overflow: "hidden",
             }}
           >
-            <span>{error || successMessage}</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span>{error || successMessage}</span>
+              {error && (
+                <button
+                  type="button"
+                  onClick={loadContext}
+                  style={{
+                    padding: "3px 8px",
+                    borderRadius: 6,
+                    border: "1px solid #FCA5A5",
+                    backgroundColor: "#FFFFFF",
+                    color: "#991B1B",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  ↻ Retry Loading
+                </button>
+              )}
+            </div>
             <button
               type="button"
               onClick={dismissMessages}
@@ -335,6 +355,73 @@ export const AiContext = () => {
           boxShadow: "0 4px 20px rgba(15, 23, 42, 0.05)",
         }}
       >
+        {nodes.length === 0 && !loading && error && (
+          <div
+            style={{
+              position: "absolute",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%, -50%)",
+              zIndex: 30,
+              backgroundColor: "#FFFFFF",
+              border: "1px solid #E2E8F0",
+              borderRadius: 12,
+              padding: "24px 32px",
+              boxShadow: "0 10px 25px rgba(0, 0, 0, 0.08)",
+              textAlign: "center",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 12,
+              maxWidth: 380,
+            }}
+          >
+            <div
+              style={{
+                width: 44,
+                height: 44,
+                borderRadius: "50%",
+                backgroundColor: "#FEF2F2",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "#DC2626",
+              }}
+            >
+              <Network size={22} />
+            </div>
+            <div>
+              <h3 style={{ fontSize: "14px", fontWeight: 700, margin: "0 0 4px 0", color: "#0F172A" }}>
+                Connection Interrupted
+              </h3>
+              <p style={{ fontSize: "12px", color: "#64748B", margin: 0, lineHeight: 1.4 }}>
+                The network connection was lost while loading your AI Context canvas. Click below to reconnect.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={loadContext}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "8px 18px",
+                borderRadius: 8,
+                backgroundColor: "#0081FB",
+                color: "#FFFFFF",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                border: "none",
+                cursor: "pointer",
+                boxShadow: "0 2px 6px rgba(0, 129, 251, 0.3)",
+              }}
+            >
+              <RefreshCw size={13} />
+              Reload Canvas
+            </button>
+          </div>
+        )}
+
         <AiContextCanvas
           nodes={nodes}
           edges={edges}

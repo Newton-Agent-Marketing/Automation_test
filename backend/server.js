@@ -21,6 +21,10 @@ SpreadsheetSyncService.startPolling(60);
 const server = http.createServer(app);
 initSocket(server);
 
+// Keep-alive timeouts for reverse proxies (Nginx / Cloudflare) to prevent socket drops & "The network connection was lost"
+server.keepAliveTimeout = 65000; // 65 seconds (must be higher than Nginx keepalive_timeout 60s)
+server.headersTimeout = 66000;   // 66 seconds (must be higher than keepAliveTimeout)
+
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });

@@ -132,12 +132,27 @@ export const ALLOWED_NEW_NODES = [
 export const fetchAiContext = createAsyncThunk(
   "aiContext/fetch",
   async (_, { rejectWithValue }) => {
-    try {
-      const response = await aiContextApi.getContext();
-      return response.data.data;
-    } catch (err) {
-      return rejectWithValue(getErrorMessage(err, "Failed to load AI Context"));
+    let lastError = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const response = await aiContextApi.getContext();
+        return response.data.data;
+      } catch (err) {
+        lastError = err;
+        const isNetworkErr =
+          !err.response ||
+          err.code === "ERR_NETWORK" ||
+          err.code === "ECONNABORTED" ||
+          String(err.message || "").toLowerCase().includes("network") ||
+          String(err.message || "").toLowerCase().includes("lost");
+        if (isNetworkErr && attempt < 3) {
+          await new Promise((res) => setTimeout(res, 1200 * attempt));
+          continue;
+        }
+        break;
+      }
     }
+    return rejectWithValue(getErrorMessage(lastError, "Failed to load AI Context"));
   }
 );
 
