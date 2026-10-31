@@ -528,8 +528,16 @@ export class CampaignValidator {
       const driveUrls = MediaAssetResolver.extractRowDriveUrls(vals);
       const directImageUrl = vals.image_url || vals.imageUrl || vals.creative_url || vals.creativeUrl;
       const directVideoUrl = vals.google_drive_video_url || vals.video_url;
+      const smartChipVal =
+        vals.creative_smart_chips ||
+        vals["Creative Smart Chips"] ||
+        vals.smart_chips ||
+        vals["Smart Chips"] ||
+        vals.smart_chip ||
+        null;
       const mediaRef =
         driveUrls[0] ||
+        (smartChipVal && String(smartChipVal).trim() !== "" ? String(smartChipVal).trim() : null) ||
         this.getFieldValue(vals, "driveUrl") ||
         directImageUrl ||
         directVideoUrl ||

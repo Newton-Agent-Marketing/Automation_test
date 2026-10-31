@@ -53,41 +53,61 @@ export class MediaAssetResolver {
         }
         continue;
       }
+
+      // 3. Media filename (e.g. video.mp4, creative.mov from Smart Chip text)
+      if (/\.(mp4|mov|avi|webm|m4v|mkv|png|jpg|jpeg|webp)$/i.test(cand) && cand.length > 4) {
+        if (!seen.has(cand)) {
+          seen.add(cand);
+          urls.push(cand);
+        }
+        continue;
+      }
     }
 
     return urls;
   }
 
   /**
-   * Search all potential creative asset columns in a row and extract all Google Drive URLs
+   * Search all potential creative asset columns in a row and extract all Google Drive URLs.
+   * Priority: Row-specific Smart Chips first, direct video/media columns second, generic folders last.
    */
   static extractRowDriveUrls(rowValues = {}) {
     const keys = Object.keys(rowValues || {});
-    const possibleColumnKeywords = [
-      "creative_smart_chips", "creative_smart_chip", "smart_chips", "smart_chip",
-      "google_drive_link", "drive_url", "media_url", "drive_link", "video_url",
-      "image_url", "creative_url", "creative", "media", "video", "image", "asset"
+    const priorityTiers = [
+      ["creative_smart_chips", "creative_smart_chip", "smart_chips", "smart_chip", "creativesmartchips"],
+      ["video_url", "video_file", "video", "image_url", "creative_url", "media_url", "media", "creative"],
+      ["google_drive_link", "drive_url", "drive_link", "drive", "asset"]
     ];
 
     const extractedUrls = [];
     const seen = new Set();
 
-    keys.forEach((k) => {
-      const kClean = k.toLowerCase().replace(/[^a-z0-9]/g, "");
-      const isTargetCol = possibleColumnKeywords.some((kw) => kClean.includes(kw.replace(/[^a-z0-9]/g, "")));
-
-      if (isTargetCol) {
-        const val = rowValues[k];
-        if (val) {
-          const found = this.extractDriveUrls(val);
-          found.forEach((url) => {
-            if (!seen.has(url)) {
-              seen.add(url);
-              extractedUrls.push(url);
-            }
-          });
+    for (const tier of priorityTiers) {
+      for (const k of keys) {
+        const kClean = k.toLowerCase().replace(/[^a-z0-9]/g, "");
+        const matchesTier = tier.some((kw) => kClean.includes(kw.replace(/[^a-z0-9]/g, "")));
+        if (matchesTier) {
+          const val = rowValues[k];
+          if (val) {
+            const found = this.extractDriveUrls(val);
+            found.forEach((url) => {
+              if (!seen.has(url)) {
+                seen.add(url);
+                extractedUrls.push(url);
+              }
+            });
+          }
         }
       }
+    }
+
+    // Direct file URLs (/file/d/ or standalone file IDs) take strict priority over folder URLs (/folders/)
+    extractedUrls.sort((a, b) => {
+      const aIsFolder = a.includes("/folders/");
+      const bIsFolder = b.includes("/folders/");
+      if (!aIsFolder && bIsFolder) return -1;
+      if (aIsFolder && !bIsFolder) return 1;
+      return 0;
     });
 
     return extractedUrls;

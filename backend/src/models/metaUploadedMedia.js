@@ -63,6 +63,11 @@ const metaUploadedMediaSchema = new mongoose.Schema(
       type: String, // Google Drive share link, direct URL, etc.
       default: "",
     },
+    fileId: {
+      type: String, // Google Drive File ID
+      default: null,
+      index: true,
+    },
     localFilePath: {
       type: String,
       default: "",
@@ -116,6 +121,7 @@ const metaUploadedMediaSchema = new mongoose.Schema(
 // Compound indexes for fast querying & deduplication
 metaUploadedMediaSchema.index({ accountId: 1, sourceRow: 1, mediaType: 1 });
 metaUploadedMediaSchema.index({ accountId: 1, sourceUrl: 1, mediaType: 1 });
+metaUploadedMediaSchema.index({ accountId: 1, fileId: 1, mediaType: 1 });
 metaUploadedMediaSchema.index({ accountId: 1, metaMediaId: 1 });
 
 /**
@@ -133,6 +139,7 @@ metaUploadedMediaSchema.statics.recordMedia = async function ({
   adName = "",
   creativeName = "",
   sourceUrl = "",
+  fileId = null,
   localFilePath = "",
   campaignName = "",
   adSetName = "",
@@ -167,6 +174,7 @@ metaUploadedMediaSchema.statics.recordMedia = async function ({
     if (adName) updateDoc.adName = adName;
     if (creativeName || adName) updateDoc.creativeName = creativeName || adName;
     if (sourceUrl) updateDoc.sourceUrl = sourceUrl;
+    if (fileId) updateDoc.fileId = fileId;
     if (localFilePath) updateDoc.localFilePath = localFilePath;
     if (campaignName) updateDoc.campaignName = campaignName;
     if (adSetName) updateDoc.adSetName = adSetName;

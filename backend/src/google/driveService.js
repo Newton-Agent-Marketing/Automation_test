@@ -737,7 +737,7 @@ class DriveService {
     try {
       const existingFiles = fs.readdirSync(this.scratchDir);
       const matched = existingFiles.find(
-        (f) => f.includes(fileId.substring(0, 10)) || (destinationFilename && f === destinationFilename)
+        (f) => f.startsWith(`${fileId}_`) || f.includes(fileId.substring(0, 10)) || (destinationFilename && f === destinationFilename)
       );
       if (matched) {
         const cachedPath = path.join(this.scratchDir, matched);
@@ -810,7 +810,9 @@ class DriveService {
         filename = `drive_asset_${Date.now()}_${fileId.substring(0, 8)}${ext}`;
       }
 
-      const savePath = path.join(this.scratchDir, filename);
+      // Prefix filename with fileId to guarantee 100% isolation across rows and campaigns
+      const safeBasename = filename.startsWith(`${fileId}_`) ? filename : `${fileId}_${filename.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+      const savePath = path.join(this.scratchDir, safeBasename);
 
       const streamRes = await auth.axiosInstance.get(
         `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
@@ -1061,6 +1063,14 @@ class DriveService {
     if (typeof driveLinkOrId === "string" && driveLinkOrId.includes("/folders/")) {
       const folderRes = await this.processDriveLink(driveLinkOrId, expectedMediaType);
       if (folderRes?.assets && folderRes.assets.length > 0) {
+        if (destinationFilename) {
+          const cleanDest = destinationFilename.toLowerCase().trim();
+          const matched = folderRes.assets.find((a) => {
+            const aName = (a.fileName || "").toLowerCase().trim();
+            return aName.includes(cleanDest) || cleanDest.includes(aName);
+          });
+          if (matched) return matched;
+        }
         return folderRes.assets[0];
       }
     }
