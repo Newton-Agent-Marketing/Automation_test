@@ -1143,6 +1143,8 @@ export async function getUserAiContext({ userId }) {
       platform: n.data?.databasePlatform || "Excel Sheet & Google Drive",
       warehouseSource: n.data?.warehouseSource || "both",
       sheetUrl: n.data?.sheetUrl || "",
+      activeSheetId: n.data?.activeSheetId || null,
+      activeSheetIndex: n.data?.activeSheetIndex !== undefined ? n.data.activeSheetIndex : null,
       excelProvider: n.data?.excelProvider || "Google Sheets",
       workbookId: n.data?.workbookId || "",
       workbookName: n.data?.workbookName || "",
@@ -1168,8 +1170,11 @@ export async function getUserAiContext({ userId }) {
         totalDataRows: t.totalDataRows,
         sampleRows: (t.rows || []).slice(0, 5),
       })),
-      sheets: (Array.isArray(n.data?.sheets) ? n.data.sheets : []).map((s) => ({
+      sheets: (Array.isArray(n.data?.sheets) ? n.data.sheets : []).map((s, idx) => ({
         ...s,
+        sheetIndex: idx,
+        sheetNumber: idx + 1,
+        isSelected: Boolean(s.isSelected || (n.data?.activeSheetId && s.id === n.data.activeSheetId)),
         availableTabs: s.availableTabs || [],
         selectedTabIds: s.selectedTabIds || [],
         selectedTabs: (s.selectedTabsData || []).map((t) => ({
@@ -1364,29 +1369,70 @@ export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedCh
   if (allSheets.length === 1) {
     matchedSheet = allSheets[0];
   } else if (allSheets.length > 1) {
-    // 5a. Match by sheet name in message (exact or keyword)
-    matchedSheet = allSheets.find((s) => {
-      const sName = (s.sheetName || s.workbookName || s.name || "").toLowerCase().trim();
-      if (!sName) return false;
-      if (msgLower.includes(sName)) return true;
-      const words = sName.split(/[\s_-]+/).filter((w) => w.length >= 3 && !["sheet", "sheets", "data", "table"].includes(w));
-      return words.some((w) => msgLower.includes(w));
-    });
+    // 5a. Match Ordinal reference to SPREADSHEET in userMessage (Hindi & English):
+    // e.g. "2nd sheet", "second sheet", "sheet #2", "sheet 2", "sheet2", "2 sheet", "two sheet", "dusra sheet", "dusri sheet", "doosra sheet", "doosri sheet"
+    const isSheet2 = /\b(second|2nd|two|2|dusra|dusri|doosra|doosri)\s*(?:google\s*)?sheet\b|\bsheet\s*#?\s*2\b|\bsheet2\b/i.test(msgLower) &&
+      !/\b(first|1st|one|1|pehla|pehli)\s*(?:google\s*)?sheet\b/i.test(msgLower);
+    const isSheet3 = /\b(third|3rd|three|3|teesra|teesri)\s*(?:google\s*)?sheet\b|\bsheet\s*#?\s*3\b|\bsheet3\b/i.test(msgLower);
+    const isSheet4 = /\b(fourth|4th|four|4|chautha|chauthi)\s*(?:google\s*)?sheet\b|\bsheet\s*#?\s*4\b|\bsheet4\b/i.test(msgLower);
+    const isSheet5 = /\b(fifth|5th|five|5|paanchwa|paanchwi)\s*(?:google\s*)?sheet\b|\bsheet\s*#?\s*5\b|\bsheet5\b/i.test(msgLower);
+    const isSheet1 = /\b(first|1st|one|1|pehla|pehli)\s*(?:google\s*)?sheet\b|\bsheet\s*#?\s*1\b|\bsheet1\b/i.test(msgLower) && !isSheet2 && !isSheet3;
+    const isLastSheet = /\b(last|aakhri|final)\s*(?:google\s*)?sheet\b/i.test(msgLower);
 
-    // 5b. Match by matched product name
-    
-    if (!matchedSheet && matchedProduct) {
-      const pName = (matchedProduct.productName || matchedProduct.name || "").toLowerCase().trim();
-      const pWords = pName.split(/[\s_-]+/).filter((w) => w.length >= 3 && !["item", "product", "premium"].includes(w));
+    if (isSheet2 && allSheets.length >= 2) {
+      matchedSheet = allSheets[1];
+    } else if (isSheet3 && allSheets.length >= 3) {
+      matchedSheet = allSheets[2];
+    } else if (isSheet4 && allSheets.length >= 4) {
+      matchedSheet = allSheets[3];
+    } else if (isSheet5 && allSheets.length >= 5) {
+      matchedSheet = allSheets[4];
+    } else if (isSheet1 && allSheets.length >= 1) {
+      matchedSheet = allSheets[0];
+    } else if (isLastSheet && allSheets.length > 0) {
+      matchedSheet = allSheets[allSheets.length - 1];
+    }
+
+    // 5b. Match by worksheet tab name mentioned in userMessage across all sheets (e.g. user says "Eveil Eye", "Protection", "Wealth")
+    if (!matchedSheet) {
       matchedSheet = allSheets.find((s) => {
-        const sName = (s.sheetName || s.workbookName || s.name || "").toLowerCase().trim();
-        const sLabel = (s.dataLabels || "").toLowerCase().trim();
-        return (pName && (sName.includes(pName) || sLabel.includes(pName))) ||
-          pWords.some((w) => sName.includes(w) || sLabel.includes(w));
+        const tabs = s.availableTabs || [];
+        return tabs.some((t) => {
+          const tName = (t.title || t.name || t.tabName || "").toLowerCase().trim();
+          if (!tName || tName.length < 3) return false;
+          if (msgLower.includes(tName)) return true;
+          const parts = tName.split(/[|\-_/]+/).map((p) => p.trim().toLowerCase()).filter((p) => p.length >= 3);
+          return parts.some((p) => msgLower.includes(p));
+        });
       });
     }
 
-    // 5c. Match by dataLabels in message (e.g. "retargeting", "cold", "video")
+    // 5c. Match by sheet name / workbook name in message (exact or keyword)
+    if (!matchedSheet) {
+      matchedSheet = allSheets.find((s) => {
+        const sName = (s.sheetName || s.workbookName || s.name || "").toLowerCase().trim();
+        if (!sName) return false;
+        if (msgLower.includes(sName)) return true;
+        const words = sName.split(/[\s_-]+/).filter((w) => w.length >= 3 && !["sheet", "sheets", "data", "table", "google"].includes(w));
+        return words.some((w) => msgLower.includes(w));
+      });
+    }
+
+    // 5d. Match by matched product name (only if product was specifically mentioned in userMessage)
+    if (!matchedSheet && matchedProduct) {
+      const pName = (matchedProduct.productName || matchedProduct.name || "").toLowerCase().trim();
+      if (pName && msgLower.includes(pName)) {
+        const pWords = pName.split(/[\s_-]+/).filter((w) => w.length >= 3 && !["item", "product", "premium", "utsav", "nwtn"].includes(w));
+        matchedSheet = allSheets.find((s) => {
+          const sName = (s.sheetName || s.workbookName || s.name || "").toLowerCase().trim();
+          const sLabel = (s.dataLabels || "").toLowerCase().trim();
+          return (sName.includes(pName) || sLabel.includes(pName)) ||
+            pWords.some((w) => sName.includes(w) || sLabel.includes(w));
+        });
+      }
+    }
+
+    // 5e. Match by dataLabels in message (e.g. "retargeting", "cold", "video")
     if (!matchedSheet) {
       matchedSheet = allSheets.find((s) => {
         const sLabel = (s.dataLabels || "").toLowerCase().trim();
@@ -1394,13 +1440,25 @@ export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedCh
       });
     }
 
-    // 5d. Fallback to first sheet
+    // 5f. Fallback to active/selected sheet or most recently modified/synced sheet in AI Context
     if (!matchedSheet) {
-      matchedSheet = allSheets[0];
+      if (matchedWarehouse?.activeSheetId) {
+        matchedSheet = allSheets.find((s) => s.id === matchedWarehouse.activeSheetId);
+      }
+      if (!matchedSheet && matchedWarehouse?.activeSheetIndex !== undefined && allSheets[matchedWarehouse.activeSheetIndex]) {
+        matchedSheet = allSheets[matchedWarehouse.activeSheetIndex];
+      }
+      if (!matchedSheet) {
+        matchedSheet = allSheets.find((s) => s.isSelected || s.isDefault);
+      }
+      if (!matchedSheet) {
+        const sorted = [...allSheets].sort((a, b) => new Date(b.lastSyncedAt || 0) - new Date(a.lastSyncedAt || 0));
+        matchedSheet = sorted[0] || allSheets[0];
+      }
     }
   }
 
-  // 5e. MATCH TARGET WORKSHEET TAB (Honor User's AI Context Selection & Intent)
+  // 5g. MATCH TARGET WORKSHEET TAB (Honor User's AI Context Selection & Intent)
   let targetWorksheetName = null;
   const availableTabs = (matchedSheet?.availableTabs?.length ? matchedSheet.availableTabs : matchedWarehouse?.availableTabs) || [];
   const selectedTabIds = (matchedSheet?.selectedTabIds?.length ? matchedSheet.selectedTabIds : matchedWarehouse?.selectedTabIds) || [];
@@ -1420,24 +1478,25 @@ export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedCh
     }
   }
 
-  // Strategy 2: User mentions ordinal reference in userMessage ("second worksheet", "2nd sheet", "dusra worksheet", "second tab")
+  // Strategy 2: User mentions ordinal reference for TAB/WORKSHEET (e.g. "second tab", "2nd tab", "second worksheet", "2nd worksheet", "tab #2", "dusra tab", "dusra worksheet")
+  // NOTE: Does NOT match "2nd sheet" or "sheet #2" which is for SPREADSHEET (handled in 5a)
   if (!targetWorksheetName && availableTabs.length > 0) {
-    const isSecond = /\b(second|2nd|sheet\s*#?\s*2|sheet2|two\s*sheet|2\s*sheet|dusra|dusri|doosra|doosri|second\s*tab|2nd\s*tab)\b/i.test(msgLower) &&
-      !/\b(first|1st|sheet\s*#?\s*1|sheet1)\b/i.test(msgLower);
-    const isThird = /\b(third|3rd|sheet\s*#?\s*3|sheet3|three\s*sheet|3\s*sheet|teesra|teesri|third\s*tab|3rd\s*tab)\b/i.test(msgLower);
-    const isFirst = /\b(first|1st|sheet\s*#?\s*1|sheet1|one\s*sheet|1\s*sheet|pehla|pehli|first\s*tab|1st\s*tab)\b/i.test(msgLower) && !isSecond && !isThird;
+    const isTab2 = /\b(second|2nd|two|2|dusra|dusri|doosra|doosri)\s*(?:tab|worksheet)\b|\b(?:tab|worksheet)\s*#?\s*2\b/i.test(msgLower) &&
+      !/\b(first|1st|one|1|pehla|pehli)\s*(?:tab|worksheet)\b/i.test(msgLower);
+    const isTab3 = /\b(third|3rd|three|3|teesra|teesri)\s*(?:tab|worksheet)\b|\b(?:tab|worksheet)\s*#?\s*3\b/i.test(msgLower);
+    const isTab1 = /\b(first|1st|one|1|pehla|pehli)\s*(?:tab|worksheet)\b|\b(?:tab|worksheet)\s*#?\s*1\b/i.test(msgLower) && !isTab2 && !isTab3;
 
-    if (isSecond && availableTabs.length >= 2) {
+    if (isTab2 && availableTabs.length >= 2) {
       targetWorksheetName = availableTabs[1].title || availableTabs[1].name;
-    } else if (isThird && availableTabs.length >= 3) {
+    } else if (isTab3 && availableTabs.length >= 3) {
       targetWorksheetName = availableTabs[2].title || availableTabs[2].name;
-    } else if (isFirst) {
+    } else if (isTab1 && availableTabs.length >= 1) {
       targetWorksheetName = availableTabs[0].title || availableTabs[0].name;
     }
   }
 
   // Strategy 3: Check AI Context UI Selection (selectedTabIds)
-  // When user selected specific tab(s) in AI Context (e.g. checkbox checked for 2nd tab)
+  // When user selected specific tab(s) in AI Context (e.g. checkbox checked for Eveil Eye | Protection)
   if (!targetWorksheetName && selectedTabIds.length > 0 && availableTabs.length > 0) {
     const selectedTabObjects = availableTabs.filter((t) =>
       selectedTabIds.some((id) =>
@@ -1455,9 +1514,12 @@ export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedCh
     targetWorksheetName = selectedTabsData[0].tabName || selectedTabsData[0].title;
   }
 
-  // Strategy 5: Fallback to sheet's configured worksheetName if customized (not "Sheet1")
-  if (!targetWorksheetName && matchedSheet?.worksheetName && matchedSheet.worksheetName !== "Sheet1") {
-    targetWorksheetName = matchedSheet.worksheetName;
+  // Strategy 5: Fallback to sheet's configured worksheetName or targetTab if customized (not "Sheet1")
+  if (!targetWorksheetName && (matchedSheet?.worksheetName || matchedSheet?.targetTab)) {
+    const wName = matchedSheet.targetTab || matchedSheet.worksheetName;
+    if (wName && wName !== "Sheet1") {
+      targetWorksheetName = wName;
+    }
   }
 
   // Strategy 6: If availableTabs exist and no tab was specified, default to first available tab's title

@@ -1392,7 +1392,15 @@ export class AiContextController {
         sheetColumns: allColumns,
         sheetRows: combinedSelectedRows,
         lastSyncedAt: new Date(),
+        isSelected: true,
       };
+
+      // Mark other sheets as not selected so this sheet is explicitly active
+      sheetsArr.forEach((s, idx) => {
+        if (idx !== targetSheetIdx) {
+          s.isSelected = false;
+        }
+      });
 
       if (targetSheetIdx >= 0) {
         sheetsArr[targetSheetIdx] = updatedSheetEntry;
@@ -1400,9 +1408,14 @@ export class AiContextController {
         sheetsArr.push(updatedSheetEntry);
       }
 
+      const activeIdx = targetSheetIdx >= 0 ? targetSheetIdx : sheetsArr.length - 1;
+
       // Also sync to top-level warehouseNode data
       warehouseNode.data = {
         ...warehouseNode.data,
+        sheetUrl: effectiveSheetUrl,
+        activeSheetId: updatedSheetEntry.id,
+        activeSheetIndex: activeIdx,
         worksheetName: primarySelectedTitle,
         targetTab: primarySelectedTitle,
         selectedTabIds,

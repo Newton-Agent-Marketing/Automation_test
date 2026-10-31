@@ -813,7 +813,7 @@ export class CampaignPreparationService {
       null;
 
     const campaignName = promptCampName || (existingCampaignId ? `Target Campaign (${existingCampaignId})` : (session?.campaignName || (contextNodeData?.productName ? `${contextNodeData.productName}|Campaign` : "NWTS|Image_Test")));
-    const adSetName = promptAdSetName || (existingAdSetId ? `Target AdSet (${existingAdSetId})` : (session?.adSetName || (effectiveWorksheetName ? `${effectiveWorksheetName}` : (contextNodeData?.funnelEvent ? `${contextNodeData.funnelEvent}|AdSet` : "NWTS|test"))));
+    const adSetName = promptAdSetName || (existingAdSetId ? `Target AdSet (${existingAdSetId})` : (effectiveWorksheetName ? `${effectiveWorksheetName}` : (session?.adSetName || (contextNodeData?.funnelEvent ? `${contextNodeData.funnelEvent}|AdSet` : "NWTS|test"))));
 
     // 2. Read complete dataset from source
     let explicitSheetUrl = null;

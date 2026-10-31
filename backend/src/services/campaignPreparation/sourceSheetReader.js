@@ -75,7 +75,7 @@ export class SourceSheetReader {
                 (wh.data?.sheetUrl && sheetsService.extractSpreadsheetId(wh.data.sheetUrl) === spreadsheetId ? wh.data : null);
             }
             if (!target) {
-              target = sheets[0] || wh.data;
+              target = sheets.find((s) => s.isSelected || (wh.data?.activeSheetId && s.id === wh.data.activeSheetId)) || sheets[0] || wh.data;
             }
             if (target) {
               const selIds = (Array.isArray(target.selectedTabIds) && target.selectedTabIds.length > 0)
@@ -158,7 +158,7 @@ export class SourceSheetReader {
 
       if (primaryNode) {
         const multiSheets = Array.isArray(primaryNode.data?.sheets) ? primaryNode.data.sheets.filter((s) => s.sheetUrl) : [];
-        const primaryConnectedSheet = multiSheets[0] || null;
+        const primaryConnectedSheet = multiSheets.find((s) => s.isSelected || (primaryNode.data?.activeSheetId && s.id === primaryNode.data.activeSheetId)) || multiSheets[0] || null;
 
         const nodeSheetUrl = primaryNode.data?.sheetUrl || primaryConnectedSheet?.sheetUrl;
         spreadsheetName =

@@ -219,7 +219,8 @@ Hierarchy: Direct / Single Account (No Manager MCC)`;
               const sUrl = s.sheetUrl ? ` [URL: "${s.sheetUrl}"]` : "";
               const sStatus = s.excelSyncStatus ? ` (Status: ${s.excelSyncStatus})` : "";
               const sLabel = s.dataLabels ? ` - Data Label: "${s.dataLabels}"` : "";
-              return `\n    * Sheet #${idx + 1}: ${sName}${sStatus}${sRows}${sUrl}${sLabel}`;
+              const sTab = (s.worksheetName || s.targetTab || s.selectedTabsData?.[0]?.tabName) ? ` (Selected Tab: "${s.worksheetName || s.targetTab || s.selectedTabsData?.[0]?.tabName}")` : "";
+              return `\n    * Sheet #${idx + 1}: ${sName}${sStatus}${sTab}${sRows}${sUrl}${sLabel}`;
             }).join("");
             parts.push(`Connected Sheets (${d.sheets.length} total, max 10):${sheetDetails}`);
           } else {
