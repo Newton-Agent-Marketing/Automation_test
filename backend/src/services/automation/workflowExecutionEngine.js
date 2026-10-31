@@ -879,7 +879,16 @@ export class WorkflowExecutionEngine {
 
             switch (node.type) {
               case "trigger": {
-                const instructionText = (node.text || node.label || "").trim();
+                const instructionText = (
+                  (node.text && node.text.trim()) ||
+                  (node.config?.message && node.config.message.trim()) ||
+                  (node.config?.task && node.config.task.trim()) ||
+                  (node.config?.instruction && node.config.instruction.trim()) ||
+                  (node.data?.instruction && node.data.instruction.trim()) ||
+                  (node.data?.text && node.data.text.trim()) ||
+                  (node.label && node.label.trim()) ||
+                  ""
+                );
                 const isCustomInstruction =
                   instructionText &&
                   instructionText.toLowerCase() !== "start workflow" &&
@@ -960,24 +969,67 @@ export class WorkflowExecutionEngine {
 
               case "action": {
                 await new Promise((r) => setTimeout(r, 1000));
-                resolvedInput = {
-                  actionType: node.config?.actionType || "send_notification",
-                  message: node.config?.message || node.text || "Scheduled Automation Triggered",
-                  priority: node.config?.priority || "Medium",
-                  inputFromPreviousNode: previousNodeOutput,
-                };
+                const actionType = node.config?.actionType || "send_notification";
+                const instructionText = (
+                  (node.text && node.text.trim()) ||
+                  (node.config?.message && node.config.message.trim()) ||
+                  (node.config?.task && node.config.task.trim()) ||
+                  (node.config?.instruction && node.config.instruction.trim()) ||
+                  ""
+                );
 
-                const actionResult = await ActionExecutor.execute(node, userId, triggerType);
-                if (actionResult.status === "failed") {
-                  throw new Error(actionResult.error || "Action execution failed");
+                const isAiTask =
+                  actionType === "ai_agent_task" ||
+                  (instructionText &&
+                   !["scheduled automation triggered", "action node", "action"].includes(instructionText.toLowerCase()));
+
+                if (isAiTask) {
+                  resolvedInput = {
+                    actionType,
+                    task: instructionText || "Execute AI Agent Task",
+                    config: node.config || {},
+                    inputContext: previousNodeOutput,
+                  };
+
+                  const aiResult = await WorkflowExecutionEngine.executeWithAiAgent({
+                    instruction: instructionText || "Execute AI Agent Task",
+                    node,
+                    previousNodeOutput,
+                    userId,
+                    executionId,
+                    onProgress: handleProgress,
+                  });
+
+                  resolvedOutput = aiResult;
+                } else {
+                  resolvedInput = {
+                    actionType,
+                    message: instructionText || "Scheduled Automation Triggered",
+                    priority: node.config?.priority || "Medium",
+                    inputFromPreviousNode: previousNodeOutput,
+                  };
+
+                  const actionResult = await ActionExecutor.execute(node, userId, triggerType);
+                  if (actionResult.status === "failed") {
+                    throw new Error(actionResult.error || "Action execution failed");
+                  }
+                  resolvedOutput = actionResult.result || { message: actionResult.message };
                 }
-                resolvedOutput = actionResult.result || { message: actionResult.message };
                 break;
               }
 
               case "generic":
               default: {
-                const instructionText = node.text || node.label || "Custom Task Step";
+                const instructionText = (
+                  (node.text && node.text.trim()) ||
+                  (node.config?.message && node.config.message.trim()) ||
+                  (node.config?.task && node.config.task.trim()) ||
+                  (node.config?.instruction && node.config.instruction.trim()) ||
+                  (node.data?.instruction && node.data.instruction.trim()) ||
+                  (node.data?.text && node.data.text.trim()) ||
+                  (node.label && node.label.trim()) ||
+                  "Custom Task Step"
+                );
                 const instructionLower = instructionText.toLowerCase();
 
                 // Determine context from predecessors in workflow graph
