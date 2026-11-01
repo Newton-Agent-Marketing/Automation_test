@@ -3671,11 +3671,23 @@ export class MetaApiService {
       throw new Error("A valid Meta video_id, videoFilePath, or videoUrl is required to create a video ad.");
     }
 
+    // Resolve thumbnail for video creative (Requirement: Must include image_url OR image_hash in video_data)
+    let effectiveImageUrl = null;
+    let effectiveImageHash = null;
+
+    if (imageUrl && typeof imageUrl === "string" && imageUrl.trim()) {
+      const trimmedUrl = imageUrl.trim();
+      const isVideoLink = /\.(mp4|mov|avi|mkv|webm)($|\?)/i.test(trimmedUrl) || trimmedUrl === videoUrl || trimmedUrl === driveUrl;
+      if ((trimmedUrl.startsWith("http://") || trimmedUrl.startsWith("https://")) && !isVideoLink) {
+        effectiveImageUrl = trimmedUrl;
+      }
+    }
+
     // Wait for Meta video transcoding to reach 'ready' status to avoid transient HTTP 500 errors
     let waitResult = null;
     if (accessToken && !accessToken.startsWith("EAAB_simulated")) {
       waitResult = await this.waitForVideoReady(effectiveVideoId, accessToken, 25);
-      if (waitResult?.thumbnailUri || waitResult?.picture) {
+      if (!effectiveImageUrl && (waitResult?.thumbnailUri || waitResult?.picture)) {
         effectiveImageUrl = waitResult.thumbnailUri || waitResult.picture;
         console.log(`🎬 [Meta Video Creative]: Auto-resolved native video thumbnail from waitForVideoReady for video ${effectiveVideoId}: ${effectiveImageUrl}`);
       }
@@ -3707,18 +3719,6 @@ export class MetaApiService {
     const cleanHeadline = sanitizeFieldValue(headline);
     const cleanPrimaryText = sanitizeFieldValue(primaryText);
     const cleanDescription = sanitizeFieldValue(description);
-
-    // Resolve thumbnail for video creative (Requirement: Must include image_url OR image_hash in video_data)
-    let effectiveImageUrl = null;
-    let effectiveImageHash = null;
-
-    if (imageUrl && typeof imageUrl === "string" && imageUrl.trim()) {
-      const trimmedUrl = imageUrl.trim();
-      const isVideoLink = /\.(mp4|mov|avi|mkv|webm)($|\?)/i.test(trimmedUrl) || trimmedUrl === videoUrl || trimmedUrl === driveUrl;
-      if ((trimmedUrl.startsWith("http://") || trimmedUrl.startsWith("https://")) && !isVideoLink) {
-        effectiveImageUrl = trimmedUrl;
-      }
-    }
 
     // If no valid image URL from Sheet, generate/extract thumbnail from local video file & upload to Meta /adimages
     if (!effectiveImageUrl && !effectiveImageHash) {
