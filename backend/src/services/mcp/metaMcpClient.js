@@ -567,29 +567,59 @@ export class MetaMcpClient {
 
       case "get_live_adsets": {
         try {
-          const adSets = await MetaApiService.getAdSets(effectiveAccountId, effectiveToken, {
-            campaignId: args.campaignId || null,
-            limit: args.limit || 200,
+          const [adSets, campaigns] = await Promise.all([
+            MetaApiService.getAdSets(effectiveAccountId, effectiveToken, {
+              campaignId: args.campaignId || null,
+              limit: args.limit || 200,
+            }),
+            MetaApiService.getCampaigns(effectiveAccountId, effectiveToken).catch(() => []),
+          ]);
+
+          const campNameById = new Map();
+          (campaigns || []).forEach((c) => {
+            if (c.id) campNameById.set(String(c.id), c.name || "");
           });
-          return {
-            status: "LIVE_DATA_FROM_META",
-            accountId: effectiveAccountId,
-            accountName: account.accountName,
-            currency: account.currency || "INR",
-            totalAdSets: adSets.length,
-            pagination: adSets._pagination || { totalFetched: adSets.length, hasMore: false },
-            adSets: adSets.map((as) => ({
+
+          const filterCampIds = Array.isArray(args.campaignIds) && args.campaignIds.length > 0
+            ? new Set(args.campaignIds.map((id) => String(id).trim()))
+            : null;
+          const filterCampNames = Array.isArray(args.campaignNames) && args.campaignNames.length > 0
+            ? args.campaignNames.map((n) => String(n).trim().toLowerCase()).filter(Boolean)
+            : null;
+
+          const mappedAdSets = (adSets || [])
+            .map((as) => ({
               id: as.id,
               name: as.name,
               status: as.status,
               effectiveStatus: as.effective_status,
               campaignId: as.campaign_id,
+              campaignName: campNameById.get(String(as.campaign_id)) || as.campaign?.name || null,
               dailyBudget: as.daily_budget ? Number(as.daily_budget) / 100 : 0,
               lifetimeBudget: as.lifetime_budget ? Number(as.lifetime_budget) / 100 : 0,
               optimizationGoal: as.optimization_goal,
               billingEvent: as.billing_event,
               bidStrategy: as.bid_strategy || null,
-            })),
+            }))
+            .filter((as) => {
+              if (filterCampIds && !filterCampIds.has(String(as.campaignId))) return false;
+              if (filterCampNames && as.campaignName) {
+                const cLower = as.campaignName.toLowerCase();
+                if (!filterCampNames.some((fn) => cLower === fn || cLower.includes(fn) || fn.includes(cLower))) {
+                  return false;
+                }
+              }
+              return true;
+            });
+
+          return {
+            status: "LIVE_DATA_FROM_META",
+            accountId: effectiveAccountId,
+            accountName: account.accountName,
+            currency: account.currency || "INR",
+            totalAdSets: mappedAdSets.length,
+            pagination: adSets._pagination || { totalFetched: mappedAdSets.length, hasMore: false },
+            adSets: mappedAdSets,
           };
         } catch (err) {
           if (MetaApiService.isTokenRevokedOrExpired(err)) {
@@ -600,11 +630,26 @@ export class MetaMcpClient {
         }
       }
 
+      case "get_live_ads":
       case "get_live_ad_creatives": {
         try {
-          const { campaignId = null, adSetId = null, includeInsights = true, datePreset = "maximum", timeRange = null, limit = 100 } = args;
-          const [adsList, adInsights] = await Promise.all([
+          const {
+            campaignId = null,
+            adSetId = null,
+            campaignIds = null,
+            campaignNames = null,
+            adSetIds = null,
+            adSetNames = null,
+            includeInsights = true,
+            datePreset = "maximum",
+            timeRange = null,
+            limit = 200,
+          } = args;
+
+          const [adsList, campaignsList, adSetsList, adInsights] = await Promise.all([
             MetaApiService.getAdCreatives(effectiveAccountId, effectiveToken, { campaignId, adSetId, limit }),
+            MetaApiService.getCampaigns(effectiveAccountId, effectiveToken).catch(() => []),
+            MetaApiService.getAdSets(effectiveAccountId, effectiveToken, { campaignId, limit: 200 }).catch(() => []),
             includeInsights
               ? MetaApiService.getInsights(effectiveAccountId, effectiveToken, {
                   level: "ad",
@@ -615,12 +660,22 @@ export class MetaMcpClient {
               : Promise.resolve([]),
           ]);
 
+          const campMap = new Map();
+          (campaignsList || []).forEach((c) => {
+            if (c.id) campMap.set(String(c.id), c.name || "");
+          });
+          const adSetMap = new Map();
+          (adSetsList || []).forEach((as) => {
+            if (as.id) adSetMap.set(String(as.id), as.name || "");
+          });
+
           const insightByAdId = new Map();
           (adInsights || []).forEach((row) => {
             if (!row.ad_id) return;
             const spend = Number(row.spend || 0);
             const impressions = Number(row.impressions || 0);
             const clicks = Number(row.clicks || 0);
+            const reach = Number(row.reach || 0);
             const act = (row.actions || []).find((a) =>
               ["purchase", "omni_purchase", "lead", "offsite_conversion.fb_pixel_purchase"].includes(a.action_type)
             ) || (row.actions || [])[0];
@@ -632,64 +687,103 @@ export class MetaMcpClient {
             insightByAdId.set(String(row.ad_id), {
               spend,
               impressions,
+              reach,
               clicks,
               ctr: impressions > 0 ? Number(((clicks / impressions) * 100).toFixed(2)) : 0,
               cpc: clicks > 0 ? Number((spend / clicks).toFixed(2)) : null,
               cpm: impressions > 0 ? Number(((spend / impressions) * 1000).toFixed(2)) : null,
               conversions,
               cpa: conversions > 0 ? Number((spend / conversions).toFixed(2)) : null,
+              cpr: conversions > 0 ? Number((spend / conversions).toFixed(2)) : null,
               conversionValue,
               roas: spend > 0 && conversionValue > 0 ? Number((conversionValue / spend).toFixed(2)) : null,
             });
           });
 
-          const creatives = (adsList || []).map((ad) => {
-            const cr = ad.creative || {};
-            const spec = cr.object_story_spec || {};
-            const linkData = spec.link_data || {};
-            const videoData = spec.video_data || {};
-            const headline = cr.title || linkData.name || videoData.title || null;
-            const primaryText = cr.body || linkData.message || videoData.message || null;
-            const callToAction =
-              cr.call_to_action_type ||
-              linkData.call_to_action?.type ||
-              videoData.call_to_action?.type ||
-              null;
-            const destinationUrl =
-              linkData.link ||
-              videoData.call_to_action?.value?.link ||
-              null;
-            const videoId = cr.video_id || videoData.video_id || null;
-            const mediaType = videoId ? "VIDEO" : (cr.image_url || linkData.image_hash ? "IMAGE" : "CREATIVE");
-            const perf = insightByAdId.get(String(ad.id)) || null;
+          const filterCampIdSet = Array.isArray(campaignIds) && campaignIds.length > 0
+            ? new Set(campaignIds.map((id) => String(id).trim()))
+            : null;
+          const filterAdSetIdSet = Array.isArray(adSetIds) && adSetIds.length > 0
+            ? new Set(adSetIds.map((id) => String(id).trim()))
+            : null;
+          const filterCampNameList = Array.isArray(campaignNames) && campaignNames.length > 0
+            ? campaignNames.map((n) => String(n).trim().toLowerCase()).filter(Boolean)
+            : null;
+          const filterAdSetNameList = Array.isArray(adSetNames) && adSetNames.length > 0
+            ? adSetNames.map((n) => String(n).trim().toLowerCase()).filter(Boolean)
+            : null;
 
-            return {
-              adId: ad.id,
-              adName: ad.name,
-              status: ad.status || ad.effective_status,
-              effectiveStatus: ad.effective_status,
-              campaignId: ad.campaign_id,
-              adSetId: ad.adset_id,
-              creativeId: cr.id || null,
-              creativeName: cr.name || null,
-              mediaType,
-              videoId,
-              imageUrl: cr.image_url || cr.thumbnail_url || null,
-              headline,
-              primaryText,
-              callToAction,
-              destinationUrl,
-              performance: perf,
-            };
-          });
+          const creatives = (adsList || [])
+            .map((ad) => {
+              const cr = ad.creative || {};
+              const spec = cr.object_story_spec || {};
+              const linkData = spec.link_data || {};
+              const videoData = spec.video_data || {};
+              const headline = cr.title || linkData.name || videoData.title || null;
+              const primaryText = cr.body || linkData.message || videoData.message || null;
+              const callToAction =
+                cr.call_to_action_type ||
+                linkData.call_to_action?.type ||
+                videoData.call_to_action?.type ||
+                null;
+              const destinationUrl =
+                linkData.link ||
+                videoData.call_to_action?.value?.link ||
+                null;
+              const videoId = cr.video_id || videoData.video_id || null;
+              const mediaType = videoId ? "VIDEO" : (cr.image_url || linkData.image_hash ? "IMAGE" : "CREATIVE");
+              const perf = insightByAdId.get(String(ad.id)) || null;
+              const resolvedCampaignName = campMap.get(String(ad.campaign_id)) || ad.campaign?.name || null;
+              const resolvedAdSetName = adSetMap.get(String(ad.adset_id)) || ad.adset?.name || null;
+
+              return {
+                adId: ad.id,
+                adName: ad.name,
+                status: ad.status || ad.effective_status,
+                effectiveStatus: ad.effective_status,
+                campaignId: ad.campaign_id,
+                campaignName: resolvedCampaignName,
+                adSetId: ad.adset_id,
+                adSetName: resolvedAdSetName,
+                creativeId: cr.id || null,
+                creativeName: cr.name || null,
+                mediaType,
+                videoId,
+                imageUrl: cr.image_url || cr.thumbnail_url || null,
+                headline,
+                primaryText,
+                callToAction,
+                destinationUrl,
+                performance: perf,
+              };
+            })
+            .filter((ad) => {
+              if (filterCampIdSet && !filterCampIdSet.has(String(ad.campaignId))) return false;
+              if (filterAdSetIdSet && !filterAdSetIdSet.has(String(ad.adSetId))) return false;
+              if (filterCampNameList && ad.campaignName) {
+                const cLower = ad.campaignName.toLowerCase();
+                if (!filterCampNameList.some((fn) => cLower === fn || cLower.includes(fn) || fn.includes(cLower))) {
+                  return false;
+                }
+              }
+              if (filterAdSetNameList && ad.adSetName) {
+                const asLower = ad.adSetName.toLowerCase();
+                if (!filterAdSetNameList.some((fn) => asLower === fn || asLower.includes(fn) || fn.includes(asLower))) {
+                  return false;
+                }
+              }
+              return true;
+            });
 
           return {
             status: "LIVE_DATA_FROM_META",
             accountId: effectiveAccountId,
             accountName: account.accountName,
             currency: account.currency || "INR",
+            totalAds: creatives.length,
             totalCreatives: creatives.length,
             pagination: adsList._pagination || { totalFetched: creatives.length, hasMore: false },
+            ads: creatives,
             creatives,
           };
         } catch (err) {

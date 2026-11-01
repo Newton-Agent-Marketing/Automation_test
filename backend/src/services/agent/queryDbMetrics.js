@@ -12,6 +12,7 @@ import { GoogleSyncPipeline } from "../google/googleSyncPipe.js";
 import { googleDriveService } from "../google/googleDriveService.js";
 import CampaignRouter from "../data/campaignRouter.js";
 import SheetInspectorService from "./sheetInspectorService.js";
+import DynamicSheetExecutionService from "./dynamicSheetExecutionService.js";
 
 // 1. LLM Tool Schema (OpenAI / Anthropic standard format)
 export const AGENT_TOOLS_DEFINITIONS = [
@@ -84,14 +85,51 @@ export const AGENT_TOOLS_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "inspect_sheet_and_map_fields",
+      description: "Dynamically inspect a connected Google Spreadsheet's actual worksheet tab, column headers, column order, existing rows, and date format, and semantically classify which fields correspond to Date, Campaign, Ad Set, Ad, and performance/derived metrics (Impressions, Reach, Clicks, Spend, Conversions, CPR, CPA, CTR, CPC, CPM, ROAS).",
+      parameters: {
+        type: "object",
+        properties: {
+          sheetIndex: { type: "number", description: "Optional 1-based connected spreadsheet index (e.g. 1 or 2)" },
+          sheetUrl: { type: "string", description: "Optional explicit Google Sheet URL or spreadsheetId" },
+          tabName: { type: "string", description: "Optional target worksheet tab name" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "append_rows_to_connected_sheet",
+      description: "Semantically map structured records (from Meta Ads, Google Ads, or previous workflow nodes) to the connected Google Spreadsheet's exact header columns, format the reporting date to match the sheet's format, append the rows to the target worksheet tab, and verify the written rows.",
+      parameters: {
+        type: "object",
+        properties: {
+          sheetIndex: { type: "number", description: "Optional 1-based connected spreadsheet index" },
+          sheetUrl: { type: "string", description: "Optional explicit Google Sheet URL or spreadsheetId" },
+          tabName: { type: "string", description: "Optional target worksheet tab name" },
+          reportingDate: { type: "string", description: "Optional explicit reporting date (YYYY-MM-DD)" },
+          records: {
+            type: "array",
+            description: "Array of structured record objects to map and append into the spreadsheet",
+            items: { type: "object" },
+          },
+        },
+        required: ["records"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "sync_meta_ads_to_sheet",
-      description: "Automated daily reporting sync: queries Meta Ads performance insights for yesterday (Asia/Kolkata), dynamically detects Google Sheet headers, maps fields, prevents duplicate rows, and appends records to the target worksheet tab (e.g. BGMI, Free Fire, GPRC).",
+      description: "Dynamically inspect the connected Google Spreadsheet's headers, fetch matching live Meta Ads campaign/adSet/ad and performance data for the resolved reporting date, map every column semantically, append rows to the selected worksheet tab, and verify insertion.",
       parameters: {
         type: "object",
         properties: {
           instruction: { type: "string", description: "The reporting instruction or workflow action text" },
-          targetTab: { type: "string", description: "The target worksheet tab title (e.g. BGMI, FreeFire, GPRC)" },
-          metaAccountId: { type: "string", description: "The connected Meta Ad Account ID" },
+          targetTab: { type: "string", description: "Optional target worksheet tab title" },
+          metaAccountId: { type: "string", description: "Optional connected Meta Ad Account ID" },
         },
       },
     },
@@ -141,19 +179,22 @@ export const AGENT_TOOLS_DEFINITIONS = [
     type: "function",
     function: {
       name: "fetch_live_meta_ads_mcp",
-      description: "Use this to fetch CURRENT, LIVE, REAL-TIME Meta Ads performance insights (spend, impressions, clicks, conversions, conversion value, ROAS) across date ranges, live campaign status, or today's spend directly from Meta Ads.",
+      description: "Fetch live real-time Meta Ads performance insights (spend, impressions, reach, clicks, conversions, conversion value, CTR, CPC, CPM, CPA, CPR, ROAS) at campaign/adset/ad level across date ranges, live campaign status, or today's spend directly from Meta Ads.",
       parameters: {
         type: "object",
         properties: {
-          accountId: { type: "string", description: "Meta Account ID e.g. 'act_517557233790148'" },
+          accountId: { type: "string", description: "Optional Meta Account ID (defaults to selected account in AI Context)" },
           toolType: {
             type: "string",
-            enum: ["get_live_campaign_insights", "get_live_campaigns_status", "get_live_today_insights"],
-            description: "Which live MCP tool to call: 'get_live_campaign_insights' for performance/spend/clicks/conversions/ROAS across date ranges; 'get_live_campaigns_status' for campaigns and ads status; 'get_live_today_insights' for today's spend.",
+            enum: ["get_live_campaign_insights", "get_live_campaigns_status", "get_live_today_insights", "get_live_adsets", "get_live_ad_creatives", "get_live_ads"],
+            description: "Which live MCP tool to call.",
           },
-          datePreset: { type: "string", description: "Preset: 'last_7d', 'last_14d', 'last_30d', 'today'" },
-          startDate: { type: "string", description: "Start date YYYY-MM-DD" },
-          endDate: { type: "string", description: "End date YYYY-MM-DD" },
+          level: { type: "string", enum: ["campaign", "adset", "ad"], description: "Insights breakdown level" },
+          datePreset: { type: "string", description: "Preset: 'today', 'yesterday', 'last_7d', 'last_14d', 'last_30d', 'this_month', 'last_month', 'maximum'" },
+          campaignIds: { type: "array", items: { type: "string" }, description: "Optional filter by Campaign IDs" },
+          campaignNames: { type: "array", items: { type: "string" }, description: "Optional filter by Campaign names" },
+          adSetIds: { type: "array", items: { type: "string" }, description: "Optional filter by Ad Set IDs" },
+          adSetNames: { type: "array", items: { type: "string" }, description: "Optional filter by Ad Set names" },
           timeRange: {
             type: "object",
             properties: {
@@ -162,7 +203,44 @@ export const AGENT_TOOLS_DEFINITIONS = [
             },
           },
         },
-        required: ["accountId", "toolType"],
+        required: ["toolType"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_live_adsets",
+      description: "Fetch live Ad Sets from a connected Meta Ads account, optionally filtered by Campaign ID(s) or Campaign name(s).",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Optional Meta Ad Account ID" },
+          campaignId: { type: "string", description: "Optional single Campaign ID filter" },
+          campaignIds: { type: "array", items: { type: "string" }, description: "Optional array of Campaign IDs to filter by" },
+          campaignNames: { type: "array", items: { type: "string" }, description: "Optional array of Campaign names to filter by" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_live_ad_creatives",
+      description: "Fetch live Ads and Ad Creatives (with campaign, Ad Set, status, creative details, and optional ad-level performance metrics) from a connected Meta Ads account, optionally filtered by Campaign or Ad Set IDs/names.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Optional Meta Ad Account ID" },
+          campaignId: { type: "string", description: "Optional Campaign ID filter" },
+          adSetId: { type: "string", description: "Optional Ad Set ID filter" },
+          campaignIds: { type: "array", items: { type: "string" }, description: "Optional array of Campaign IDs" },
+          campaignNames: { type: "array", items: { type: "string" }, description: "Optional array of Campaign names" },
+          adSetIds: { type: "array", items: { type: "string" }, description: "Optional array of Ad Set IDs" },
+          adSetNames: { type: "array", items: { type: "string" }, description: "Optional array of Ad Set names" },
+          includeInsights: { type: "boolean", description: "Include live ad-level performance insights (default true)" },
+          datePreset: { type: "string", description: "Insights date preset (default 'maximum')" },
+        },
       },
     },
   },
@@ -2429,11 +2507,119 @@ export async function executeAgentTool(toolName, args) {
     });
   }
 
+  if (toolName === "inspect_sheet_and_map_fields") {
+    const sheetRes = await SheetInspectorService.resolveAndReadSheet({
+      userId: args.userId,
+      sheetIndex: args.sheetIndex || null,
+      sheetUrl: args.sheetUrl || null,
+      tabName: args.tabName || args.worksheetName || null,
+      userMessage: args.userMessage || args.userInstruction || "",
+      sessionSheetContext: args.sessionSheetContext || null,
+    });
+    if (!sheetRes.success) return sheetRes;
+
+    const classification = DynamicSheetExecutionService.classifySheetColumns(
+      sheetRes.headers || [],
+      sheetRes.rows || []
+    );
+
+    const sampleRows = (sheetRes.rows || []).slice(0, 5).map((r, idx) => {
+      const copy = { _rowNumber: r._originalRowNumber || idx + 2 };
+      for (const h of sheetRes.headers || []) {
+        copy[h] = r[h] ?? "";
+      }
+      return copy;
+    });
+
+    return {
+      success: true,
+      sheetIndex: sheetRes.sheetIndex,
+      spreadsheetId: sheetRes.spreadsheetId,
+      sheetName: sheetRes.sheetName,
+      sheetUrl: sheetRes.sheetUrl,
+      targetTab: sheetRes.targetTab,
+      availableTabs: sheetRes.availableTabs,
+      selectedTabNames: sheetRes.selectedTabNames,
+      headers: sheetRes.headers,
+      existingRowCount: sheetRes.totalRows || 0,
+      sampleExistingRows: sampleRows,
+      classification,
+    };
+  }
+
+  if (toolName === "append_rows_to_connected_sheet") {
+    const sheetRes = await SheetInspectorService.resolveAndReadSheet({
+      userId: args.userId,
+      sheetIndex: args.sheetIndex || null,
+      sheetUrl: args.sheetUrl || null,
+      tabName: args.tabName || args.worksheetName || null,
+      userMessage: args.userMessage || args.userInstruction || "",
+      sessionSheetContext: args.sessionSheetContext || null,
+    });
+    if (!sheetRes.success) {
+      throw new Error(sheetRes.message || "Failed to resolve target Google Sheet for appending.");
+    }
+
+    const classification = DynamicSheetExecutionService.classifySheetColumns(
+      sheetRes.headers || [],
+      sheetRes.rows || []
+    );
+
+    const dateResolution = DynamicSheetExecutionService.resolveReportingDate({
+      instruction: args.reportingDate
+        ? String(args.reportingDate)
+        : args.userMessage || args.userInstruction || "",
+      dateNodeConfig: args.dateNodeConfig || null,
+      timeNodeConfig: args.timeNodeConfig || null,
+      scheduledDate: args.scheduledDate || null,
+      upstreamReportingDate: args.upstreamReportingDate || null,
+      timezone: args.timezone || null,
+      existingSheetRows: sheetRes.rows || [],
+      dateHeaders: classification.dateHeaders,
+    });
+
+    if (!dateResolution.ok) {
+      return {
+        success: false,
+        status: dateResolution.status || "WAITING_FOR_INPUT",
+        clarificationQuestion: dateResolution.clarificationQuestion,
+      };
+    }
+
+    const rawRecords = Array.isArray(args.records) ? args.records : [];
+    const mapping = DynamicSheetExecutionService.mapRecordsToSheetColumns({
+      records: rawRecords,
+      headers: sheetRes.headers || [],
+      columnClassification: classification,
+      dateResolution,
+    });
+
+    const appendRes = await DynamicSheetExecutionService.appendMappedRowsToSheet({
+      userId: args.userId,
+      resolvedSheet: sheetRes,
+      rowArrays: mapping.rowArrays,
+    });
+
+    return {
+      ...appendRes,
+      headers: mapping.headers,
+      reportingDateUsed: mapping.reportingDateUsed,
+      reportingDateIso: mapping.reportingDateIso,
+      dateResolutionSource: dateResolution.source,
+      sheetDateFormat: mapping.sheetDateFormat,
+      recordsProcessed: rawRecords.length,
+      recordsMapped: mapping.recordsMapped,
+      fieldMappings: mapping.fieldMappings,
+      unmappedFields: mapping.unmappedFields,
+      appendedPreviewRows: mapping.rowObjects.slice(0, 10),
+    };
+  }
+
   if (toolName === "get_live_adsets") {
     return await MetaMcpClient.executeLiveTool("get_live_adsets", args);
   }
 
-  if (toolName === "get_live_ad_creatives") {
+  if (toolName === "get_live_ads" || toolName === "get_live_ad_creatives") {
     return await MetaMcpClient.executeLiveTool("get_live_ad_creatives", args);
   }
 

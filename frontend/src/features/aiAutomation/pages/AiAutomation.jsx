@@ -1021,7 +1021,52 @@ export const AiAutomation = () => {
 
         setValidationBanner({
           type: "error",
-          message: `Node execution failed: ${error || node?.error?.message || "Unknown error"}. You can retry this node.`,
+          message: `Node execution failed: ${error || node?.error?.message || "Unknown error"}. Downstream nodes were skipped.`,
+        });
+      } else if (event === "node_skipped" || event === "node_blocked") {
+        setNodeStatusMap((prev) => ({
+          ...prev,
+          [nodeId]: {
+            ...(prev[nodeId] || {}),
+            status: "skipped",
+            error: node?.error,
+          },
+        }));
+        setCurrentExecution((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            nodes: (prev.nodes || []).map((n) =>
+              n.nodeId === nodeId ? { ...n, ...node, status: "skipped" } : n
+            ),
+          };
+        });
+      } else if (event === "node_waiting_for_input") {
+        setNodeStatusMap((prev) => ({
+          ...prev,
+          [nodeId]: {
+            ...(prev[nodeId] || {}),
+            status: "waiting_for_input",
+            output: node?.output,
+          },
+        }));
+        setExecutingNodeId(null);
+        setExecutingEdgeIds([]);
+        setIsExecutingWorkflow(false);
+        isExecutingWorkflowRef.current = false;
+        setCurrentExecution((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            status: "waiting_for_input",
+            nodes: (prev.nodes || []).map((n) =>
+              n.nodeId === nodeId ? { ...n, ...node, status: "waiting_for_input" } : n
+            ),
+          };
+        });
+        setValidationBanner({
+          type: "error",
+          message: `Clarification required: ${node?.output?.clarificationQuestion || node?.output?.response || "Waiting for user input."}`,
         });
       } else if (event === "paused") {
         setIsWorkflowPaused(true);
@@ -1077,122 +1122,25 @@ export const AiAutomation = () => {
 
     const handleScheduledRun = (payload) => {
       console.log("[AiAutomation] ⏰ Scheduled run notification from server:", payload);
-      // Notification update only; do not re-trigger execution flow
+      // Sync live visual state from authoritative backend scheduler (never double-trigger from client!)
       if (payload?.executionId) {
+        setIsExecutingWorkflow(true);
+        isExecutingWorkflowRef.current = true;
         setValidationBanner({
           type: "info",
-          message: `⏰ Scheduled workflow run active [ID: ${payload.executionId}]`,
+          message: `⏰ Scheduled workflow run started (${payload.scheduledDate || ""} ${payload.scheduledTime || ""} ${payload.timezone || ""}) [ID: ${payload.executionId}]`,
         });
       }
     };
 
     socket.on("automation:execution_update", handleExecutionUpdate);
     socket.on("automation:scheduled_start", handleScheduledRun);
-    socket.on("automation:scheduled_run", handleScheduledRun);
 
     return () => {
       socket.off("automation:execution_update", handleExecutionUpdate);
       socket.off("automation:scheduled_start", handleScheduledRun);
-      socket.off("automation:scheduled_run", handleScheduledRun);
     };
   }, [handleExecuteWorkflow]);
-
-  // Automatic Client-side Scheduler: Checks every 4 seconds if the configured Date & Time match current time
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (!isActive) return;
-      if (isExecutingWorkflowRef.current) return;
-      if (!nodes || !nodes.length) return;
-
-      const workflows = getAllWorkflowSubgraphs(nodes, edges);
-      const now = new Date();
-      const currentYear = now.getFullYear();
-      const currentMonth = String(now.getMonth() + 1).padStart(2, "0");
-      const currentDay = String(now.getDate()).padStart(2, "0");
-      const currentDateStr = `${currentYear}-${currentMonth}-${currentDay}`;
-      const currentHours = now.getHours();
-      const currentMinutes = now.getMinutes();
-      const currentDayOfWeek = now.toLocaleDateString("en-US", { weekday: "long" }).toLowerCase();
-
-      for (const sub of workflows) {
-        const dateNode = sub.nodes.find((n) => n.type === "date");
-        const timeNode = sub.nodes.find((n) => n.type === "time");
-
-        // Needs at least a configured time node in this specific workflow
-        if (!timeNode?.config?.time) continue;
-
-        // Check Time Match
-        const rawTime = String(timeNode.config.time || "").trim();
-        let ampm = timeNode.config.ampm || null;
-        let cleanTime = rawTime;
-        if (/pm/i.test(cleanTime)) {
-          ampm = "PM";
-          cleanTime = cleanTime.replace(/pm/i, "").trim();
-        } else if (/am/i.test(cleanTime)) {
-          ampm = "AM";
-          cleanTime = cleanTime.replace(/am/i, "").trim();
-        }
-
-        const parts = cleanTime.split(":");
-        let targetHour = parseInt(parts[0], 10);
-        let targetMin = parseInt(parts[1], 10);
-        if (isNaN(targetHour) || isNaN(targetMin)) continue;
-
-        if (ampm === "PM" && targetHour < 12) targetHour += 12;
-        if (ampm === "AM" && targetHour === 12) targetHour = 0;
-
-        if (currentHours !== targetHour || currentMinutes !== targetMin) {
-          continue;
-        }
-
-        // Check Date Match (if dateNode is present in this workflow)
-        if (dateNode?.config) {
-          const mode = dateNode.config.dateType || dateNode.config.dateMode || "specific";
-          if (mode === "specific") {
-            let targetDate = (dateNode.config.specificDate || "").trim();
-            if (targetDate) {
-              const dParts = targetDate.split("-");
-              if (dParts.length === 3) {
-                targetDate = `${dParts[0]}-${String(dParts[1]).padStart(2, "0")}-${String(dParts[2]).padStart(2, "0")}`;
-              }
-              if (currentDateStr !== targetDate) continue;
-            }
-          } else if (mode === "recurring") {
-            const pattern = dateNode.config.recurrencePattern || dateNode.config.recurringPattern || "every_day";
-            if (pattern === "every_week") {
-              const days = Array.isArray(dateNode.config.selectedDaysOfWeek)
-                ? dateNode.config.selectedDaysOfWeek
-                : [dateNode.config.selectedDayOfWeek || "Monday"];
-              const matchDay = days.some((d) => d && currentDayOfWeek === d.toLowerCase());
-              if (!matchDay) continue;
-            } else if (pattern === "every_month") {
-              const targetDayOfMonth = parseInt(dateNode.config.dayOfMonth, 10);
-              if (!isNaN(targetDayOfMonth) && now.getDate() !== targetDayOfMonth) continue;
-            }
-          }
-        }
-
-        // Unique run key per workflow and per minute
-        const workflowKey = (sub.rootNode?.id || "wf") + `_${currentDateStr} ${String(currentHours).padStart(2, "0")}:${String(currentMinutes).padStart(2, "0")}`;
-        if (lastScheduledRunKeyRef.current === workflowKey) {
-          continue;
-        }
-
-        lastScheduledRunKeyRef.current = workflowKey;
-        console.log(
-          `[AiAutomation] ⏰ Scheduled Date & Time arrived for workflow "${sub.workflowName || sub.rootNode?.label || ""}". Automatically executing workflow without clicking action node!`
-        );
-
-        const actionNode = sub.actionNode || sub.nodes.find((n) => n.type === "action") || sub.nodes[0];
-        if (actionNode) {
-          handleExecuteWorkflow(actionNode.id, { isScheduled: true });
-          break; // Process one at a time
-        }
-      }
-    }, 4000);
-
-    return () => clearInterval(interval);
-  }, [nodes, edges, handleExecuteWorkflow, isActive]);
 
 
   // Run Now (Execute immediately on real backend + visual sequential flow)
@@ -1336,8 +1284,33 @@ export const AiAutomation = () => {
           </div>
         </div>
 
-        {/* Action Controls - Execution Controls, Results Panel, Normal Node and Trigger */}
+        {/* Action Controls - Schedule Toggle, Execution Results, Normal Node and Trigger */}
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {/* Activate / Pause Schedule Button */}
+          <button
+            type="button"
+            onClick={handleToggleActive}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "8px 13px",
+              borderRadius: 8,
+              border: isActive ? "1.5px solid #16A34A" : "1px solid #CBD5E1",
+              backgroundColor: isActive ? "#F0FDF4" : "#FFFFFF",
+              color: isActive ? "#15803D" : "#475569",
+              fontSize: "12.5px",
+              fontWeight: 600,
+              cursor: "pointer",
+              boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
+              transition: "all 0.15s ease",
+            }}
+            title={isActive ? "Pause daily scheduled execution" : "Activate daily scheduled execution"}
+          >
+            <Clock size={14} color={isActive ? "#16A34A" : "#64748B"} />
+            <span>{isActive ? "Pause Schedule" : "Activate Schedule"}</span>
+          </button>
+
           {/* Live Execution Results Panel Toggle Button */}
           <button
             type="button"

@@ -1,6 +1,7 @@
 import AiAutomation from "../models/aiAutomationModel.js";
 import ActionExecutor from "../services/automation/actionExecutor.js";
 import WorkflowExecutionEngine from "../services/automation/workflowExecutionEngine.js";
+import AiAutomationScheduler from "../Scheduler/aiAutomationScheduler.js";
 
 /**
  * Compute the sequential order and labels for automation nodes.
@@ -51,83 +52,68 @@ export function computeNodeSequences(nodes, edges) {
 
 export class AiAutomationController {
   /**
-   * Helper to validate complete workflow rules.
+   * Helper to validate complete workflow rules (supports both Custom Task nodes and Action nodes).
    */
   static validateWorkflow(automation) {
     const nodes = automation.nodes || [];
     const edges = automation.edges || [];
     const errors = [];
 
+    if (nodes.length === 0) {
+      errors.push("Add at least one task node to the workflow before activating.");
+      return { isValid: false, errors };
+    }
+
     const triggerNodes = nodes.filter((n) => n.type === "trigger");
-    if (triggerNodes.length === 0) {
-      errors.push("A Trigger node is required to start the automation.");
-    } else if (triggerNodes.length > 1) {
+    if (triggerNodes.length > 1) {
       errors.push("Only one Trigger node is allowed per automation.");
     }
 
-    const triggerNode = triggerNodes[0];
-    const triggerMode = triggerNode?.config?.triggerMode || "schedule";
+    const executableNodes = nodes.filter(
+      (n) =>
+        n.type === "generic" ||
+        n.type === "action" ||
+        (n.type === "trigger" &&
+          n.text &&
+          !["start workflow", "trigger node", "trigger", "start"].includes(n.text.trim().toLowerCase()))
+    );
 
-    const actionNodes = nodes.filter((n) => n.type === "action");
-    if (actionNodes.length === 0) {
-      errors.push("Action node is missing. Add and configure an Action node before activating.");
-    } else {
-      const actionNode = actionNodes[0];
-      const hasTriggerActionEdge = edges.some(
-        (e) =>
-          (e.source === triggerNode?.id && e.target === actionNode.id) ||
-          (e.source === actionNode.id && e.target === triggerNode?.id)
-      );
-      if (!hasTriggerActionEdge) {
-        errors.push("Action node must be connected directly to the Trigger node.");
-      }
-      if (!actionNode.config?.actionType) {
-        errors.push("Action node is incomplete. Select an action type.");
+    if (executableNodes.length === 0) {
+      errors.push("At least one Custom Task node or Action node is required before activating.");
+    }
+
+    for (const taskNode of nodes.filter((n) => n.type === "generic")) {
+      const instruction = (
+        taskNode.text ||
+        taskNode.config?.instruction ||
+        taskNode.config?.task ||
+        taskNode.config?.message ||
+        ""
+      ).trim();
+      if (!instruction) {
+        errors.push(`Custom Task node "${taskNode.label || taskNode.id}" has an empty task instruction.`);
       }
     }
 
-    if (triggerMode === "schedule") {
-      const dateNodes = nodes.filter((n) => n.type === "date");
-      if (dateNodes.length === 0) {
-        errors.push("Date node is missing. Add and connect a Date node for scheduled automation.");
-      } else {
-        const dateNode = dateNodes[0];
-        const hasTriggerDateEdge = edges.some(
-          (e) =>
-            (e.source === triggerNode?.id && e.target === dateNode.id) ||
-            (e.source === dateNode.id && e.target === triggerNode?.id)
-        );
-        if (!hasTriggerDateEdge) {
-          errors.push("Date node must be connected directly to the Trigger node.");
-        }
-      }
-
-      const timeNodes = nodes.filter((n) => n.type === "time");
-      if (timeNodes.length === 0) {
-        errors.push("Time node is missing. Add and connect a Time node for scheduled automation.");
-      } else {
-        const timeNode = timeNodes[0];
-        const hasTriggerTimeEdge = edges.some(
-          (e) =>
-            (e.source === triggerNode?.id && e.target === timeNode.id) ||
-            (e.source === timeNode.id && e.target === triggerNode?.id)
-        );
-        if (!hasTriggerTimeEdge) {
-          errors.push("Time node must be connected directly to the Trigger node.");
+    const timeNodes = nodes.filter((n) => n.type === "time");
+    if (timeNodes.length > 0) {
+      for (const tn of timeNodes) {
+        if (!tn.config?.time) {
+          errors.push(`Time node "${tn.label || tn.id}" must have a valid execution time configured.`);
         }
       }
     }
 
-    // Check invalid edges between Date, Action, Time
+    // Check invalid direct edges between Date and Time metadata nodes
     for (const edge of edges) {
       const src = nodes.find((n) => n.id === edge.source);
       const tgt = nodes.find((n) => n.id === edge.target);
       if (src && tgt) {
-        const childTypes = ["date", "action", "time"];
-        if (childTypes.includes(src.type) && childTypes.includes(tgt.type)) {
-          errors.push(
-            `Invalid connection: ${src.type} and ${tgt.type} cannot connect to one another.`
-          );
+        if (
+          (src.type === "date" && tgt.type === "time") ||
+          (src.type === "time" && tgt.type === "date")
+        ) {
+          errors.push(`Invalid connection: ${src.type} and ${tgt.type} cannot connect directly to one another.`);
         }
       }
     }
@@ -199,17 +185,24 @@ export class AiAutomationController {
 
       computeNodeSequences(nodes, validEdges);
 
+      const existingAutomation = await AiAutomation.findOne({ userId }).select("isActive").lean();
       const hasScheduleNodes = nodes.some(
-        (n) => (n.type === "date" || n.type === "time") && n.status === "configured"
+        (n) => (n.type === "date" || n.type === "time") && (n.status === "configured" || n.config?.time)
       );
+      const nextRunAt = AiAutomationScheduler.calculateNextRun(nodes, new Date());
 
       const updateFields = {
         name: name || "AI Automation Workspace",
         nodes,
         edges: validEdges,
+        nextRunAt,
       };
 
-      if (hasScheduleNodes) {
+      if (typeof req.body.isActive === "boolean") {
+        updateFields.isActive = req.body.isActive;
+      } else if (!existingAutomation && hasScheduleNodes) {
+        updateFields.isActive = true;
+      } else if (existingAutomation && existingAutomation.isActive === undefined && hasScheduleNodes) {
         updateFields.isActive = true;
       }
 
@@ -623,8 +616,10 @@ export class AiAutomationController {
           });
         }
         automation.isActive = true;
+        automation.nextRunAt = AiAutomationScheduler.calculateNextRun(automation.nodes || [], new Date());
       } else {
         automation.isActive = false;
+        automation.nextRunAt = null;
       }
 
       await automation.save();

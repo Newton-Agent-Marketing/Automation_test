@@ -521,13 +521,18 @@ export class CampaignValidator {
 
       // Creative Media Inspection
       const creativeTypeRaw =
+        this.getFieldValue(vals, "creativeType") ||
         this.getFieldValue(vals, "creative_type") ||
-        (vals.google_drive_video_url || vals.video_url ? "VIDEO" : "IMAGE");
+        vals["Media Type"] ||
+        vals["Creative Format"] ||
+        vals["creative_format"] ||
+        vals["Format"] ||
+        (vals.google_drive_video_url || vals.video_url || vals.video_link ? "VIDEO" : "IMAGE");
       const creativeType = String(creativeTypeRaw).toUpperCase().includes("VID") ? "VIDEO" : "IMAGE";
 
-      const driveUrls = MediaAssetResolver.extractRowDriveUrls(vals);
+      const driveUrls = MediaAssetResolver.extractRowDriveUrls(vals, creativeType);
       const directImageUrl = vals.image_url || vals.imageUrl || vals.creative_url || vals.creativeUrl;
-      const directVideoUrl = vals.google_drive_video_url || vals.video_url;
+      const directVideoUrl = vals.google_drive_video_url || vals.video_url || vals.video_link || vals.videolink;
       const smartChipVal =
         vals.creative_smart_chips ||
         vals["Creative Smart Chips"] ||
@@ -536,6 +541,7 @@ export class CampaignValidator {
         vals.smart_chip ||
         null;
       const mediaRef =
+        (creativeType === "VIDEO" && directVideoUrl ? directVideoUrl : null) ||
         driveUrls[0] ||
         (smartChipVal && String(smartChipVal).trim() !== "" ? String(smartChipVal).trim() : null) ||
         this.getFieldValue(vals, "driveUrl") ||

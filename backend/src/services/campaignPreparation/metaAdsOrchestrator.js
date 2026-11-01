@@ -526,7 +526,8 @@ export class MetaAdsOrchestrator {
               );
 
               if (!isPathMatchingAsset) {
-                const dlInfo = await driveService.downloadCreative(adConfig.creative, null, "video");
+                const targetFilename = adConfig.adName || null;
+                const dlInfo = await driveService.downloadCreative(adConfig.creative, targetFilename, "video");
                 if (dlInfo?.filePath && fs.existsSync(dlInfo.filePath)) {
                   localFilePath = dlInfo.filePath;
                   adConfig.videoFilePath = localFilePath;

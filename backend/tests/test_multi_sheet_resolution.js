@@ -138,4 +138,29 @@ describe("Multi-Sheet & Worksheet Tab Resolution Test", () => {
     assert.ok(urls.length > 0, "Must extract at least 1 URL");
     assert.strictEqual(urls[0], "https://drive.google.com/file/d/1Wmqan58rnEPDUAoY_bwa-PHias8HjbKP/view?usp=drive_link");
   });
+
+  it("should prioritize 'Video Link' when Media Type is Video even if other columns exist", () => {
+    const rowValues = {
+      "Creative Format": "Face Video",
+      "Media Type": "Video",
+      "Creative Smart Chips": "https://drive.google.com/drive/folders/1abcFolderXYZ",
+      "Video Link": "https://drive.google.com/file/d/1VideoFileExact999/view?usp=sharing",
+      "Destination Link": "https://example.com/product",
+    };
+
+    const urls = MediaAssetResolver.extractRowDriveUrls(rowValues, "VIDEO");
+    assert.ok(urls.length >= 2, "Must extract both URLs");
+    assert.strictEqual(urls[0], "https://drive.google.com/file/d/1VideoFileExact999/view?usp=sharing", "Direct video file must be prioritized over folder");
+  });
+
+  it("should prioritize direct mp4 files over generic links", () => {
+    const rowValues = {
+      "format": "Video",
+      "Asset URL": "https://drive.google.com/drive/folders/folderOnly",
+      "Creative Code": "https://storage.googleapis.com/test-bucket/my-ad-creative.mp4",
+    };
+
+    const urls = MediaAssetResolver.extractRowDriveUrls(rowValues, "VIDEO");
+    assert.strictEqual(urls[0], "https://storage.googleapis.com/test-bucket/my-ad-creative.mp4");
+  });
 });

@@ -92,23 +92,31 @@ export const sanitizePayload = (data, seen = new WeakSet(), depth = 0) => {
   ]);
 
   if (Array.isArray(data)) {
-    return data.slice(0, 100).map((item) => sanitizePayload(item, seen, depth + 1));
+    try {
+      return data.slice(0, 100).map((item) => sanitizePayload(item, seen, depth + 1));
+    } finally {
+      seen.delete(data);
+    }
   }
 
   const clean = {};
-  for (const [key, val] of Object.entries(data)) {
-    if (IGNORED_INTERNAL_KEYS.has(key)) {
-      continue;
+  try {
+    for (const [key, val] of Object.entries(data)) {
+      if (IGNORED_INTERNAL_KEYS.has(key)) {
+        continue;
+      }
+      if (SENSITIVE_KEYS.has(key.toLowerCase())) {
+        clean[key] = "[REDACTED]";
+      } else if (typeof val === "object" && val !== null) {
+        clean[key] = sanitizePayload(val, seen, depth + 1);
+      } else {
+        clean[key] = val;
+      }
     }
-    if (SENSITIVE_KEYS.has(key.toLowerCase())) {
-      clean[key] = "[REDACTED]";
-    } else if (typeof val === "object" && val !== null) {
-      clean[key] = sanitizePayload(val, seen, depth + 1);
-    } else {
-      clean[key] = val;
-    }
+    return clean;
+  } finally {
+    seen.delete(data);
   }
-  return clean;
 };
 
 /**
@@ -336,43 +344,30 @@ export const buildExecutionOrder = (nodes = [], edges = [], startNodeId = null) 
     (startNodeId && taskNodeMap.get(startNodeId)) ||
     taskNodes[0];
 
-  // Natural canvas orientation for task nodes:
-  // 1. If edge connects to targetTaskNode, flow is ALWAYS from targetTaskNode -> otherNode!
-  // 2. Otherwise, flow is left-to-right (smaller x -> larger x)
+  // Respect explicit directed edges (edge.source -> edge.target) across connected task nodes
   workflowEdges.forEach((e) => {
-    if (taskNodeMap.has(e.source) && taskNodeMap.has(e.target)) {
-      const nodeA = taskNodeMap.get(e.source);
-      const nodeB = taskNodeMap.get(e.target);
-
-      let fromId = e.source;
-      let toId = e.target;
-
-      if (nodeA?.position && nodeB?.position) {
-        if (targetTaskNode && nodeA.id === targetTaskNode.id) {
-          fromId = nodeA.id;
-          toId = nodeB.id;
-        } else if (targetTaskNode && nodeB.id === targetTaskNode.id) {
-          fromId = nodeB.id;
-          toId = nodeA.id;
-        } else if ((nodeA.position.x ?? 0) <= (nodeB.position.x ?? 0)) {
-          fromId = nodeA.id;
-          toId = nodeB.id;
-        } else {
-          fromId = nodeB.id;
-          toId = nodeA.id;
-        }
-      } else {
-        // Fallback for tests without explicit positions: preserve edge.source -> edge.target
-        fromId = e.source;
-        toId = e.target;
-      }
-
-      adj.get(fromId).push(toId);
-      inDegree.set(toId, (inDegree.get(toId) || 0) + 1);
+    if (taskNodeMap.has(e.source) && taskNodeMap.has(e.target) && e.source !== e.target) {
+      adj.get(e.source).push(e.target);
+      inDegree.set(e.target, (inDegree.get(e.target) || 0) + 1);
     }
   });
 
-  const queue = [targetTaskNode.id];
+  // Seed topological BFS with all zero-in-degree task roots (prioritizing targetTaskNode when eligible)
+  const zeroInDegreeRoots = taskNodes
+    .filter((n) => (inDegree.get(n.id) || 0) === 0)
+    .sort((a, b) => {
+      if (targetTaskNode && a.id === targetTaskNode.id) return -1;
+      if (targetTaskNode && b.id === targetTaskNode.id) return 1;
+      if ((a.position?.x ?? 0) !== (b.position?.x ?? 0)) {
+        return (a.position?.x ?? 0) - (b.position?.x ?? 0);
+      }
+      return (a.position?.y ?? 0) - (b.position?.y ?? 0);
+    });
+
+  const queue =
+    zeroInDegreeRoots.length > 0
+      ? zeroInDegreeRoots.map((n) => n.id)
+      : [targetTaskNode.id];
   const order = [];
   const visited = new Set();
 
@@ -518,25 +513,22 @@ export class WorkflowExecutionEngine {
     instruction,
     node,
     previousNodeOutput,
+    sharedWorkflowContext = {},
+    workflowId = null,
     userId,
     executionId,
     onProgress,
   }) {
     if (!instruction || !instruction.trim()) {
-      return {
-        status: "completed",
-        result: `Node "${node.label || node.type}" completed without instructions.`,
-        task: node.label || node.type,
-        output: { status: "success", emptyInstruction: true },
-        toolCalls: [],
-        validation: { verified: true, checks: [] },
-      };
+      throw new Error(`Node "${node?.label || node?.id || "Custom Task"}" has no saved task instruction.`);
     }
 
     return await AiAgentOrchestrator.executeNodeTask({
       instruction,
       node,
       previousNodeOutput,
+      sharedWorkflowContext,
+      workflowId,
       userId,
       executionId,
       onProgress,
@@ -553,6 +545,9 @@ export class WorkflowExecutionEngine {
     rerunExecutionId = null,
     startNodeId = null,
     workflowNodeIds = null,
+    scheduledOccurrenceKey = null,
+    scheduledDate = null,
+    timezone = null,
   }) {
     let automation;
     if (automationId) {
@@ -582,6 +577,22 @@ export class WorkflowExecutionEngine {
     // Isolate the specific workflow connected to startNodeId (prevents other workflows on the canvas from running)
     const workflow = getWorkflowSubgraph(nodes, edges, startNodeId);
     const rootNodeId = workflow.rootTaskNode?.id || workflow.rootNode?.id || startNodeId || null;
+
+    // Guard: Prevent duplicate scheduled occurrence execution
+    if (scheduledOccurrenceKey) {
+      const existingScheduled = await AutomationExecution.findOne({
+        automationId: automation._id,
+        scheduledOccurrenceKey,
+      });
+      if (existingScheduled) {
+        return {
+          executionId: existingScheduled.executionId,
+          execution: existingScheduled,
+          duplicatePrevented: true,
+          completionPromise: Promise.resolve(existingScheduled),
+        };
+      }
+    }
 
     // Guard: Prevent multiple simultaneous runs of the exact same workflow component
     const runningQuery = {
@@ -641,21 +652,67 @@ export class WorkflowExecutionEngine {
       retryInfo: null,
     }));
 
-    const taskNodeExecutions = orderedNodes.map((node, index) => ({
-      nodeId: node.id,
-      nodeName: node.label || `${node.type.toUpperCase()} Node`,
-      nodeType: node.type,
-      status: "pending",
-      executionOrder: preludeNodeExecutions.length + index + 1,
-      attemptNumber: 1,
-      startedAt: null,
-      completedAt: null,
-      durationMs: 0,
-      input: { task: node.text || node.label || node.type, config: node.config || {} },
-      output: null,
-      error: null,
-      retryInfo: rerunExecutionId ? { rerunFrom: rerunExecutionId } : null,
-    }));
+    const dateNode = workflow.nodes.find((n) => n.type === "date") || null;
+    const timeNode = workflow.nodes.find((n) => n.type === "time") || null;
+    const effectiveTimezone =
+      timezone ||
+      timeNode?.config?.timezone ||
+      dateNode?.config?.timezone ||
+      "Asia/Kolkata";
+
+    const sharedContext = {
+      executionId,
+      workflowId: String(automation._id),
+      triggerType,
+      scheduledOccurrenceKey: scheduledOccurrenceKey || null,
+      scheduledDate: scheduledDate || null,
+      timezone: effectiveTimezone,
+      dateConfig: dateNode?.config || null,
+      timeConfig: timeNode?.config || null,
+      nodeResults: {},
+    };
+
+    const extractCompleteNodeInstruction = (n) => {
+      const candidates = [
+        n?.text,
+        n?.config?.instruction,
+        n?.config?.task,
+        n?.config?.aiPrompt,
+        n?.config?.message,
+        n?.data?.instruction,
+        n?.data?.text,
+        n?.taskDescription,
+      ];
+      for (const c of candidates) {
+        if (typeof c === "string" && c.trim().length > 0) {
+          return c.trim();
+        }
+      }
+      return typeof n?.label === "string" ? n.label.trim() : "";
+    };
+
+    const taskNodeExecutions = orderedNodes.map((node, index) => {
+      const origInst = extractCompleteNodeInstruction(node);
+      return {
+        nodeId: node.id,
+        nodeName: node.label || `${node.type.toUpperCase()} Node`,
+        nodeType: node.type,
+        status: "pending",
+        executionOrder: preludeNodeExecutions.length + index + 1,
+        attemptNumber: 1,
+        startedAt: null,
+        completedAt: null,
+        durationMs: 0,
+        originalInstruction: origInst,
+        executionSummary: null,
+        dataProcessing: null,
+        structuredData: null,
+        input: { task: origInst || node.label || node.type, config: node.config || {} },
+        output: null,
+        error: null,
+        retryInfo: rerunExecutionId ? { rerunFrom: rerunExecutionId } : null,
+      };
+    });
 
     const initialNodeExecutions = [...preludeNodeExecutions, ...taskNodeExecutions];
 
@@ -665,7 +722,9 @@ export class WorkflowExecutionEngine {
         level: "info",
         nodeId: null,
         nodeName: null,
-        message: `Workflow "${workflowName}" run started [Run ID: ${executionId}, Trigger: ${triggerType}]`,
+        message: `Workflow "${workflowName}" run started [Run ID: ${executionId}, Trigger: ${triggerType}${
+          scheduledDate ? `, Scheduled Date: ${scheduledDate}` : ""
+        }]`,
       },
     ];
 
@@ -677,11 +736,15 @@ export class WorkflowExecutionEngine {
       rootNodeId,
       userId,
       triggerType,
+      scheduledOccurrenceKey: scheduledOccurrenceKey || null,
+      scheduledDate: scheduledDate || null,
+      sharedContext,
       status: "running",
       startedAt: new Date(),
       totalNodes: initialNodeExecutions.length,
       successfulNodes: preludeNodeExecutions.length,
       failedNodes: 0,
+      skippedNodes: 0,
       nodes: initialNodeExecutions,
       logs: initialLogs,
     });
@@ -760,19 +823,62 @@ export class WorkflowExecutionEngine {
       execution: execution.toObject(),
     });
 
-    // Execute in background so the HTTP request can respond or return the running record
+    // Execute sequentially node-by-node, strictly awaiting tool execution and completion validation
     const executePromise = (async () => {
       let successfulCount = 0;
       let failedCount = 0;
+      let skippedCount = 0;
+      let waitingForInputCount = 0;
       let previousNodeOutput = null;
-      let workflowFailed = false;
+      let workflowHalted = false;
       const completedNodeOutputs = new Map();
+
+      const buildUpstreamContextForNode = (targetNode) => {
+        const incomingParentIds = new Set(
+          (workflow.edges || [])
+            .filter((e) => e.target === targetNode.id)
+            .map((e) => e.source)
+        );
+
+        const directParents = [];
+        const allCompleted = [];
+        for (const [cId, cEntry] of completedNodeOutputs.entries()) {
+          allCompleted.push(cEntry);
+          if (incomingParentIds.has(cId)) {
+            directParents.push(cEntry);
+          }
+        }
+
+        // Prefer direct connected upstream parents when present; also include transitive upstream context
+        const previousNodeResults =
+          directParents.length > 0
+            ? [
+                ...allCompleted.filter((e) => !incomingParentIds.has(e.nodeId)),
+                ...directParents,
+              ]
+            : allCompleted;
+
+        return {
+          ...sharedContext,
+          previousNodeResults,
+        };
+      };
 
       try {
         for (let i = 0; i < orderedNodes.length; i++) {
           const node = orderedNodes[i];
           const nodeIndex = execution.nodes.findIndex((n) => n.nodeId === node.id);
           if (nodeIndex === -1) continue;
+
+          // Reload latest saved node instruction from MongoDB so edits are never stale or truncated
+          let freshNode = node;
+          try {
+            const latestAuto = await AiAutomation.findById(automation._id).select("nodes").lean();
+            const dbNode = (latestAuto?.nodes || []).find((n) => n.id === node.id);
+            if (dbNode) {
+              freshNode = { ...node, ...dbNode };
+            }
+          } catch (_) {}
 
           // Check if execution was cancelled
           if (control.isCancelled) {
@@ -787,19 +893,18 @@ export class WorkflowExecutionEngine {
             execution.logs.push({
               timestamp: new Date(),
               level: "warn",
-              nodeId: node.id,
-              nodeName: node.label,
-              message: `Workflow execution paused at node "${node.label || node.type}"`,
+              nodeId: freshNode.id,
+              nodeName: freshNode.label,
+              message: `Workflow execution paused at node "${freshNode.label || freshNode.type}"`,
             });
             await safeSaveExecution();
 
             emitLiveUpdate("paused", {
-              nodeId: node.id,
+              nodeId: freshNode.id,
               nodeIndex,
               execution: execution.toObject(),
             });
 
-            // Wait until resume() is invoked
             await new Promise((resolve) => {
               control.resumeResolver = resolve;
             });
@@ -813,47 +918,43 @@ export class WorkflowExecutionEngine {
             execution.logs.push({
               timestamp: new Date(),
               level: "info",
-              nodeId: node.id,
-              nodeName: node.label,
-              message: `Workflow execution resumed from node "${node.label || node.type}"`,
+              nodeId: freshNode.id,
+              nodeName: freshNode.label,
+              message: `Workflow execution resumed from node "${freshNode.label || freshNode.type}"`,
             });
             await safeSaveExecution();
 
             emitLiveUpdate("resumed", {
-              nodeId: node.id,
+              nodeId: freshNode.id,
               nodeIndex,
               execution: execution.toObject(),
             });
           }
 
-          if (workflowFailed) {
-            // Mark remaining nodes as skipped
+          if (workflowHalted) {
             execution.nodes[nodeIndex].status = "skipped";
-            execution.logs.push({
-              timestamp: new Date(),
-              level: "warn",
-              nodeId: node.id,
-              nodeName: node.label,
-              message: `Node "${node.label || node.type}" skipped due to upstream failure`,
-            });
+            skippedCount++;
+            execution.skippedNodes = skippedCount;
             continue;
           }
 
           const nodeStartTime = Date.now();
+          const completeInstruction = extractCompleteNodeInstruction(freshNode);
           execution.nodes[nodeIndex].status = "running";
           execution.nodes[nodeIndex].startedAt = new Date(nodeStartTime);
+          execution.nodes[nodeIndex].originalInstruction = completeInstruction;
 
           execution.logs.push({
             timestamp: new Date(),
             level: "info",
-            nodeId: node.id,
-            nodeName: node.label || node.type,
-            message: `Node ${i + 1}/${orderedNodes.length} "${node.label || node.type}" started execution`,
+            nodeId: freshNode.id,
+            nodeName: freshNode.label || freshNode.type,
+            message: `Node ${i + 1}/${orderedNodes.length} "${freshNode.label || freshNode.type}" started execution`,
           });
 
           await safeSaveExecution();
           emitLiveUpdate("node_started", {
-            nodeId: node.id,
+            nodeId: freshNode.id,
             nodeIndex,
             node: execution.nodes[nodeIndex].toObject(),
           });
@@ -866,302 +967,332 @@ export class WorkflowExecutionEngine {
               if (prog.state === "verifying") {
                 execution.nodes[nodeIndex].status = "verifying";
                 execution.markModified("nodes");
-                await safeSaveExecution().catch((e) => {
-                  console.warn(`[WorkflowEngine handleProgress safeSave warn]: ${e.message}`);
-                });
+                await safeSaveExecution().catch(() => {});
                 emitLiveUpdate("node_verifying", {
-                  nodeId: node.id,
+                  nodeId: freshNode.id,
                   nodeIndex,
                   node: execution.nodes[nodeIndex].toObject(),
                 });
               }
             };
 
-            switch (node.type) {
-              case "trigger": {
-                const instructionText = (
-                  (node.text && node.text.trim()) ||
-                  (node.config?.message && node.config.message.trim()) ||
-                  (node.config?.task && node.config.task.trim()) ||
-                  (node.config?.instruction && node.config.instruction.trim()) ||
-                  (node.data?.instruction && node.data.instruction.trim()) ||
-                  (node.data?.text && node.data.text.trim()) ||
-                  (node.label && node.label.trim()) ||
-                  ""
-                );
-                const isCustomInstruction =
-                  instructionText &&
-                  instructionText.toLowerCase() !== "start workflow" &&
-                  instructionText.toLowerCase() !== "trigger node" &&
-                  instructionText.toLowerCase() !== "trigger" &&
-                  instructionText.toLowerCase() !== "start";
+            const nodeSharedContext = buildUpstreamContextForNode(freshNode);
 
-                if (isCustomInstruction) {
+            switch (freshNode.type) {
+              case "trigger": {
+                const isBoilerplateTrigger =
+                  !completeInstruction ||
+                  ["start workflow", "trigger node", "trigger", "start", "schedule trigger", "manual trigger"].includes(
+                    completeInstruction.toLowerCase()
+                  );
+
+                if (!isBoilerplateTrigger) {
                   resolvedInput = {
-                    task: instructionText,
-                    config: node.config || {},
-                    triggerMode: node.config?.triggerMode || triggerType,
-                    inputContext: previousNodeOutput,
+                    task: completeInstruction,
+                    config: freshNode.config || {},
+                    triggerMode: freshNode.config?.triggerMode || triggerType,
+                    upstreamNodesCount: nodeSharedContext.previousNodeResults.length,
                   };
 
-                  const aiResult = await WorkflowExecutionEngine.executeWithAiAgent({
-                    instruction: instructionText,
-                    node,
+                  resolvedOutput = await WorkflowExecutionEngine.executeWithAiAgent({
+                    instruction: completeInstruction,
+                    node: freshNode,
                     previousNodeOutput,
+                    sharedWorkflowContext: nodeSharedContext,
+                    workflowId: String(automation._id),
                     userId,
                     executionId,
                     onProgress: handleProgress,
                   });
-
-                  resolvedOutput = aiResult;
                 } else {
-                  await new Promise((r) => setTimeout(r, 1200));
                   resolvedInput = {
-                    triggerMode: node.config?.triggerMode || triggerType,
-                    configuredSchedule: node.config?.schedule || "Automated Schedule",
+                    triggerMode: freshNode.config?.triggerMode || triggerType,
+                    configuredSchedule: freshNode.config?.schedule || "Automated Schedule",
                     timestamp: new Date().toISOString(),
                   };
                   resolvedOutput = {
-                    status: "success",
-                    triggeredAt: new Date().toISOString(),
-                    triggerMode: node.config?.triggerMode || triggerType,
-                    message: `Trigger activated via ${triggerType}`,
+                    status: "completed",
+                    result: `Trigger activated via ${triggerType}`,
+                    executionSummary: {
+                      understoodObjective: `Trigger workflow execution (${triggerType})`,
+                      executionPlan: ["Activate workflow trigger and advance to first connected task node."],
+                      integrationsInvolved: ["Workflow Scheduler"],
+                    },
+                    toolCalls: [],
+                    dataProcessing: {
+                      dataFetched: "None",
+                      fieldMappings: [],
+                      recordsProcessed: 0,
+                      recordsInserted: 0,
+                      recordsUpdated: 0,
+                    },
+                    output: {
+                      status: "success",
+                      triggeredAt: new Date().toISOString(),
+                      triggerMode: freshNode.config?.triggerMode || triggerType,
+                      message: `Trigger activated via ${triggerType}`,
+                    },
+                    validation: { verified: true, verificationStatus: "VERIFIED", reason: "Trigger activated." },
                   };
                 }
                 break;
               }
 
               case "date": {
-                // Medium speed pacing for date verification & sync
-                await new Promise((r) => setTimeout(r, 1400));
                 resolvedInput = {
-                  dateMode: node.config?.dateMode || "specific",
-                  specificDate: node.config?.specificDate || null,
-                  recurringPattern: node.config?.recurringPattern || "every_day",
-                  timezone: node.config?.timezone || "Asia/Kolkata",
+                  dateMode: freshNode.config?.dateType || freshNode.config?.dateMode || "specific",
+                  specificDate: freshNode.config?.specificDate || null,
+                  recurringPattern: freshNode.config?.recurrencePattern || freshNode.config?.recurringPattern || "every_day",
+                  timezone: freshNode.config?.timezone || effectiveTimezone,
                 };
                 resolvedOutput = {
-                  status: "success",
-                  dateValidated: true,
-                  timezone: node.config?.timezone || "Asia/Kolkata",
-                  pattern: node.config?.recurringPattern || "every_day",
+                  status: "completed",
+                  result: `Date configuration validated (${resolvedInput.timezone})`,
+                  output: {
+                    status: "success",
+                    dateValidated: true,
+                    timezone: resolvedInput.timezone,
+                    pattern: resolvedInput.recurringPattern,
+                  },
+                  validation: { verified: true, verificationStatus: "VERIFIED" },
                 };
                 break;
               }
 
               case "time": {
-                // Medium speed pacing for time window check
-                await new Promise((r) => setTimeout(r, 1400));
                 resolvedInput = {
-                  time: node.config?.time || "09:00",
-                  ampm: node.config?.ampm || "AM",
-                  timezone: node.config?.timezone || "Asia/Kolkata",
-                  recurrence: node.config?.recurrence || "daily",
+                  time: freshNode.config?.time || "00:00",
+                  ampm: freshNode.config?.ampm || "AM",
+                  timezone: freshNode.config?.timezone || effectiveTimezone,
+                  recurrence: freshNode.config?.recurrence || "daily",
                 };
                 resolvedOutput = {
-                  status: "success",
-                  timeWindowActive: true,
-                  formattedTime: `${node.config?.time || "09:00"} ${node.config?.ampm || "AM"}`,
-                  timezone: node.config?.timezone || "Asia/Kolkata",
+                  status: "completed",
+                  result: `Schedule time validated (${resolvedInput.time} ${resolvedInput.timezone})`,
+                  output: {
+                    status: "success",
+                    timeWindowActive: true,
+                    formattedTime: `${resolvedInput.time} ${resolvedInput.ampm || ""}`.trim(),
+                    timezone: resolvedInput.timezone,
+                  },
+                  validation: { verified: true, verificationStatus: "VERIFIED" },
                 };
                 break;
               }
 
               case "action": {
-                await new Promise((r) => setTimeout(r, 1000));
-                const actionType = node.config?.actionType || "send_notification";
-                const instructionText = (
-                  (node.text && node.text.trim()) ||
-                  (node.config?.message && node.config.message.trim()) ||
-                  (node.config?.task && node.config.task.trim()) ||
-                  (node.config?.instruction && node.config.instruction.trim()) ||
-                  ""
-                );
-
+                const actionType = freshNode.config?.actionType || "send_notification";
                 const isAiTask =
                   actionType === "ai_agent_task" ||
-                  (instructionText &&
-                   !["scheduled automation triggered", "action node", "action"].includes(instructionText.toLowerCase()));
+                  actionType === "generate_report" ||
+                  actionType === "sync_meta_ads_to_sheet" ||
+                  (completeInstruction &&
+                    !["scheduled automation triggered", "action node", "action"].includes(
+                      completeInstruction.toLowerCase()
+                    ));
 
                 if (isAiTask) {
                   resolvedInput = {
                     actionType,
-                    task: instructionText || "Execute AI Agent Task",
-                    config: node.config || {},
-                    inputContext: previousNodeOutput,
+                    task: completeInstruction,
+                    config: freshNode.config || {},
+                    upstreamNodesCount: nodeSharedContext.previousNodeResults.length,
                   };
 
-                  const aiResult = await WorkflowExecutionEngine.executeWithAiAgent({
-                    instruction: instructionText || "Execute AI Agent Task",
-                    node,
+                  resolvedOutput = await WorkflowExecutionEngine.executeWithAiAgent({
+                    instruction: completeInstruction,
+                    node: freshNode,
                     previousNodeOutput,
+                    sharedWorkflowContext: nodeSharedContext,
+                    workflowId: String(automation._id),
                     userId,
                     executionId,
                     onProgress: handleProgress,
                   });
-
-                  resolvedOutput = aiResult;
                 } else {
                   resolvedInput = {
                     actionType,
-                    message: instructionText || "Scheduled Automation Triggered",
-                    priority: node.config?.priority || "Medium",
-                    inputFromPreviousNode: previousNodeOutput,
+                    message: completeInstruction || "Scheduled Automation Triggered",
+                    priority: freshNode.config?.priority || "Medium",
                   };
 
-                  const actionResult = await ActionExecutor.execute(node, userId, triggerType);
+                  const actionResult = await ActionExecutor.execute(freshNode, userId, triggerType);
                   if (actionResult.status === "failed") {
                     throw new Error(actionResult.error || "Action execution failed");
                   }
-                  resolvedOutput = actionResult.result || { message: actionResult.message };
+                  resolvedOutput = {
+                    status: "completed",
+                    result: actionResult.message || JSON.stringify(actionResult.result),
+                    output: actionResult.result || { message: actionResult.message },
+                    validation: { verified: true, verificationStatus: "VERIFIED" },
+                  };
                 }
                 break;
               }
 
               case "generic":
               default: {
-                const instructionText = (
-                  (node.text && node.text.trim()) ||
-                  (node.config?.message && node.config.message.trim()) ||
-                  (node.config?.task && node.config.task.trim()) ||
-                  (node.config?.instruction && node.config.instruction.trim()) ||
-                  (node.data?.instruction && node.data.instruction.trim()) ||
-                  (node.data?.text && node.data.text.trim()) ||
-                  (node.label && node.label.trim()) ||
-                  "Custom Task Step"
-                );
-                const instructionLower = instructionText.toLowerCase();
-
-                // Determine context from predecessors in workflow graph
-                const incomingEdges = (workflow.edges || []).filter(
-                  (e) => (e.target === node.id || e.source === node.id)
-                );
-
-                const directParentOutputs = [];
-                for (const edge of incomingEdges) {
-                  const otherId = edge.target === node.id ? edge.source : edge.target;
-                  if (completedNodeOutputs.has(otherId)) {
-                    directParentOutputs.push(completedNodeOutputs.get(otherId));
-                  }
-                }
-
-                let effectiveInputContext = null;
-                const needsMultipleContexts =
-                  instructionLower.includes("previous nodes") ||
-                  instructionLower.includes("combine") ||
-                  instructionLower.includes("both") ||
-                  directParentOutputs.length > 1;
-
-                const extractTextOutput = (data) => {
-                  if (!data) return "";
-                  if (typeof data === "string") return data;
-                  if (typeof data.result === "string") return data.result;
-                  if (typeof data.content === "string") return data.content;
-                  if (typeof data.output?.result === "string") return data.output.result;
-                  if (typeof data.output?.content === "string") return data.output.content;
-                  try {
-                    return JSON.stringify(data, null, 2);
-                  } catch (_) {
-                    return String(data);
-                  }
-                };
-
-                if (needsMultipleContexts && completedNodeOutputs.size > 1) {
-                  const parts = [];
-                  let pIdx = 1;
-                  for (const [cId, cData] of completedNodeOutputs.entries()) {
-                    const cResult = extractTextOutput(cData.output);
-                    parts.push(`[Context from Step #${pIdx} (${cData.name})]:\n${cResult}`);
-                    pIdx++;
-                  }
-                  effectiveInputContext = parts.join("\n\n---\n\n");
-                } else if (directParentOutputs.length > 0) {
-                  if (directParentOutputs.length === 1) {
-                    const single = directParentOutputs[0];
-                    effectiveInputContext = extractTextOutput(single.output);
-                  } else {
-                    effectiveInputContext = directParentOutputs
-                      .map((p, idx) => `[Context from Step #${idx + 1} (${p.name})]:\n${extractTextOutput(p.output)}`)
-                      .join("\n\n---\n\n");
-                  }
-                } else {
-                  effectiveInputContext = extractTextOutput(previousNodeOutput);
+                if (!completeInstruction) {
+                  throw new Error(`Custom Task node "${freshNode.label || freshNode.id}" has no saved instruction.`);
                 }
 
                 resolvedInput = {
-                  task: instructionText,
-                  config: node.config || {},
-                  inputContext: effectiveInputContext,
+                  task: completeInstruction,
+                  config: freshNode.config || {},
+                  upstreamNodesCount: nodeSharedContext.previousNodeResults.length,
+                  upstreamNodeIds: nodeSharedContext.previousNodeResults.map((p) => p.nodeId),
                 };
 
-                // Execute with actual AI Agent passing context from previous nodes
-                const aiResult = await WorkflowExecutionEngine.executeWithAiAgent({
-                  instruction: instructionText,
-                  node,
-                  previousNodeOutput: effectiveInputContext,
+                resolvedOutput = await WorkflowExecutionEngine.executeWithAiAgent({
+                  instruction: completeInstruction,
+                  node: freshNode,
+                  previousNodeOutput,
+                  sharedWorkflowContext: nodeSharedContext,
+                  workflowId: String(automation._id),
                   userId,
                   executionId,
                   onProgress: handleProgress,
                 });
-
-                resolvedOutput = aiResult;
                 break;
               }
             }
 
             const nodeDuration = Date.now() - nodeStartTime;
+            const isWaitingForInput =
+              resolvedOutput?.status === "waiting_for_input" ||
+              resolvedOutput?.agentStatus === "WAITING_FOR_INPUT";
+
+            if (isWaitingForInput) {
+              execution.nodes[nodeIndex].status = "waiting_for_input";
+              execution.nodes[nodeIndex].completedAt = new Date();
+              execution.nodes[nodeIndex].durationMs = nodeDuration;
+              execution.nodes[nodeIndex].input = sanitizePayload(resolvedInput);
+              execution.nodes[nodeIndex].executionSummary = sanitizePayload(resolvedOutput?.executionSummary || null);
+              execution.nodes[nodeIndex].dataProcessing = sanitizePayload(resolvedOutput?.dataProcessing || null);
+              execution.nodes[nodeIndex].output = sanitizePayload({
+                status: "waiting_for_input",
+                clarificationQuestion: resolvedOutput?.response || resolvedOutput?.result,
+                response: resolvedOutput?.response || resolvedOutput?.result,
+              });
+              execution.nodes[nodeIndex].toolsCalled = sanitizePayload(resolvedOutput?.toolCalls || []);
+              execution.nodes[nodeIndex].validation = sanitizePayload(resolvedOutput?.validation || null);
+              execution.markModified("nodes");
+
+              waitingForInputCount++;
+              workflowHalted = true;
+              execution.errorSummary = resolvedOutput?.response || "Waiting for required user input.";
+
+              execution.logs.push({
+                timestamp: new Date(),
+                level: "warn",
+                nodeId: freshNode.id,
+                nodeName: freshNode.label || freshNode.type,
+                message: `Node "${freshNode.label || freshNode.type}" requires user input: ${resolvedOutput?.response}`,
+              });
+
+              // Mark remaining downstream nodes as skipped
+              for (let j = i + 1; j < orderedNodes.length; j++) {
+                const remNode = orderedNodes[j];
+                const remIdx = execution.nodes.findIndex((n) => n.nodeId === remNode.id);
+                if (remIdx !== -1 && execution.nodes[remIdx].status === "pending") {
+                  execution.nodes[remIdx].status = "skipped";
+                  skippedCount++;
+                  execution.skippedNodes = skippedCount;
+                  emitLiveUpdate("node_skipped", {
+                    nodeId: remNode.id,
+                    nodeIndex: remIdx,
+                    node: execution.nodes[remIdx].toObject(),
+                    reason: "Upstream node is waiting for user input.",
+                  });
+                }
+              }
+
+              await safeSaveExecution();
+              emitLiveUpdate("node_waiting_for_input", {
+                nodeId: freshNode.id,
+                nodeIndex,
+                node: execution.nodes[nodeIndex].toObject(),
+              });
+              break;
+            }
+
+            // Node completed and passed verification -> save complete structured result & advance
+            const cleanTextOutput =
+              typeof resolvedOutput === "string"
+                ? resolvedOutput
+                : resolvedOutput?.response ||
+                  resolvedOutput?.result ||
+                  resolvedOutput?.content ||
+                  JSON.stringify(resolvedOutput?.output || resolvedOutput);
+
             execution.nodes[nodeIndex].status = "completed";
             execution.nodes[nodeIndex].completedAt = new Date();
             execution.nodes[nodeIndex].durationMs = nodeDuration;
             execution.nodes[nodeIndex].input = sanitizePayload(resolvedInput);
-            execution.nodes[nodeIndex].output = sanitizePayload(resolvedOutput?.output || resolvedOutput);
+            execution.nodes[nodeIndex].executionSummary = sanitizePayload(resolvedOutput?.executionSummary || null);
+            execution.nodes[nodeIndex].dataProcessing = sanitizePayload(resolvedOutput?.dataProcessing || null);
+            execution.nodes[nodeIndex].structuredData = sanitizePayload(resolvedOutput?.structuredData || null);
+            execution.nodes[nodeIndex].output = sanitizePayload({
+              status: "completed",
+              response: cleanTextOutput,
+              result: cleanTextOutput,
+              executionSummary: resolvedOutput?.executionSummary || null,
+              dataProcessing: resolvedOutput?.dataProcessing || null,
+              validation: resolvedOutput?.validation || null,
+              ...(typeof resolvedOutput?.output === "object" ? resolvedOutput.output : {}),
+            });
             execution.nodes[nodeIndex].toolsCalled = sanitizePayload(resolvedOutput?.toolCalls || []);
             execution.nodes[nodeIndex].validation = sanitizePayload(resolvedOutput?.validation || null);
             execution.markModified("nodes");
 
-            const cleanTextOutput =
-              typeof resolvedOutput === "string"
-                ? resolvedOutput
-                : resolvedOutput?.result || resolvedOutput?.content || JSON.stringify(resolvedOutput);
-
-            // If the node was a trigger without custom instructions, don't pass its boilerplate to subsequent nodes
             const isPlainTrigger =
-              node.type === "trigger" &&
-              (!node.text || ["start workflow", "trigger node", "trigger", "start"].includes(node.text.trim().toLowerCase()));
+              freshNode.type === "trigger" &&
+              (!completeInstruction ||
+                ["start workflow", "trigger node", "trigger", "start", "schedule trigger", "manual trigger"].includes(
+                  completeInstruction.toLowerCase()
+                ));
 
-            if (isPlainTrigger) {
-              previousNodeOutput = null;
-            } else {
+            if (!isPlainTrigger) {
               previousNodeOutput = cleanTextOutput;
+              const sharedNodeEntry = {
+                nodeId: freshNode.id,
+                nodeLabel: freshNode.label || freshNode.type,
+                status: "completed",
+                originalInstruction: completeInstruction,
+                outputText: cleanTextOutput,
+                structuredData: resolvedOutput?.structuredData || {},
+                executionSummary: resolvedOutput?.executionSummary || null,
+                dataProcessing: resolvedOutput?.dataProcessing || null,
+              };
+              completedNodeOutputs.set(freshNode.id, sharedNodeEntry);
+              sharedContext.nodeResults[freshNode.id] = {
+                status: "SUCCESS",
+                output: cleanTextOutput,
+                structuredData: sanitizePayload(resolvedOutput?.structuredData || {}),
+              };
+              execution.sharedContext = sanitizePayload(sharedContext);
+              execution.markModified("sharedContext");
             }
 
-            completedNodeOutputs.set(node.id, {
-              id: node.id,
-              name: node.label || node.text?.slice(0, 35) || node.type,
-              output: resolvedOutput?.output || resolvedOutput,
-            });
             successfulCount++;
             execution.successfulNodes = preludeNodeExecutions.length + successfulCount;
 
             execution.logs.push({
               timestamp: new Date(),
               level: "success",
-              nodeId: node.id,
-              nodeName: node.label || node.type,
-              message: `Node "${node.label || node.type}" verified and completed successfully in ${(
+              nodeId: freshNode.id,
+              nodeName: freshNode.label || freshNode.type,
+              message: `Node "${freshNode.label || freshNode.type}" verified and completed in ${(
                 nodeDuration / 1000
-              ).toFixed(2)}s`,
+              ).toFixed(2)}s (${(resolvedOutput?.toolCalls || []).length} tool call(s))`,
             });
 
             await safeSaveExecution();
             emitLiveUpdate("node_completed", {
-              nodeId: node.id,
+              nodeId: freshNode.id,
               nodeIndex,
               node: execution.nodes[nodeIndex].toObject(),
             });
-
-            // Ensure the completed node's full response is rendered and settled before advancing to the next node
-            await new Promise((r) => setTimeout(r, 1200));
           } catch (nodeErr) {
             const nodeDuration = Date.now() - nodeStartTime;
             execution.nodes[nodeIndex].status = "failed";
@@ -1177,42 +1308,45 @@ export class WorkflowExecutionEngine {
 
             failedCount++;
             execution.failedNodes = failedCount;
-            workflowFailed = true;
+            workflowHalted = true;
 
             execution.logs.push({
               timestamp: new Date(),
               level: "error",
-              nodeId: node.id,
-              nodeName: node.label || node.type,
-              message: `Node "${node.label || node.type}" failed: ${nodeErr.message}`,
+              nodeId: freshNode.id,
+              nodeName: freshNode.label || freshNode.type,
+              message: `Node "${freshNode.label || freshNode.type}" failed: ${nodeErr.message}`,
             });
 
             await safeSaveExecution();
             emitLiveUpdate("node_failed", {
-              nodeId: node.id,
+              nodeId: freshNode.id,
               nodeIndex,
               node: execution.nodes[nodeIndex].toObject(),
               error: nodeErr.message,
             });
 
-            // Strict execution gate: Immediately block all remaining connected nodes
+            // Strict sequential failure gate: mark all downstream dependent nodes as SKIPPED ("skipped")
+            // while preserving all completed upstream node results.
             for (let j = i + 1; j < orderedNodes.length; j++) {
               const remNode = orderedNodes[j];
               const remIdx = execution.nodes.findIndex((n) => n.nodeId === remNode.id);
               if (remIdx !== -1 && execution.nodes[remIdx].status === "pending") {
-                execution.nodes[remIdx].status = "blocked";
+                execution.nodes[remIdx].status = "skipped";
                 execution.nodes[remIdx].error = {
-                  message: `Execution blocked: Preceding node "${node.label || node.type}" failed validation (${nodeErr.message}).`,
-                  code: "ERR_UPSTREAM_BLOCKED",
+                  message: `Skipped because upstream node "${freshNode.label || freshNode.type}" failed: ${nodeErr.message}`,
+                  code: "ERR_UPSTREAM_FAILED",
                 };
+                skippedCount++;
+                execution.skippedNodes = skippedCount;
                 execution.logs.push({
                   timestamp: new Date(),
                   level: "warn",
                   nodeId: remNode.id,
                   nodeName: remNode.label || remNode.type,
-                  message: `Node "${remNode.label || remNode.type}" blocked due to upstream failure.`,
+                  message: `Node "${remNode.label || remNode.type}" marked SKIPPED due to upstream failure.`,
                 });
-                emitLiveUpdate("node_blocked", {
+                emitLiveUpdate("node_skipped", {
                   nodeId: remNode.id,
                   nodeIndex: remIdx,
                   node: execution.nodes[remIdx].toObject(),
@@ -1220,15 +1354,8 @@ export class WorkflowExecutionEngine {
                 });
               }
             }
-
-            // Halting remaining steps: A subsequent node must never proceed if current node failed to complete
-            execution.logs.push({
-              timestamp: new Date(),
-              level: "warn",
-              nodeId: node.id,
-              nodeName: node.label || node.type,
-              message: `Halting remaining workflow steps because node "${node.label || node.type}" failed.`,
-            });
+            execution.markModified("nodes");
+            await safeSaveExecution();
             break;
           }
         }
@@ -1240,19 +1367,18 @@ export class WorkflowExecutionEngine {
 
         if (control.isCancelled) {
           execution.status = "cancelled";
+        } else if (waitingForInputCount > 0) {
+          execution.status = "waiting_for_input";
         } else if (failedCount === 0) {
           execution.status = "completed";
-        } else if (successfulCount > 0 && failedCount > 0) {
-          execution.status = "partially_failed";
-          execution.errorSummary = `${failedCount} node(s) failed during execution.`;
         } else {
           execution.status = "failed";
-          execution.errorSummary = `${failedCount} node(s) failed during execution.`;
+          execution.errorSummary = execution.errorSummary || `${failedCount} node(s) failed; ${skippedCount} downstream node(s) skipped.`;
         }
 
         execution.logs.push({
           timestamp: new Date(),
-          level: execution.status === "completed" ? "success" : "error",
+          level: execution.status === "completed" ? "success" : execution.status === "waiting_for_input" ? "warn" : "error",
           nodeId: null,
           nodeName: null,
           message: `Workflow execution finished with status: ${execution.status} in ${(

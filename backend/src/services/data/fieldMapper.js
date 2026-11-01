@@ -45,6 +45,7 @@ export function cleanPageId(val) {
 
 export class FieldMapper {
   static ALIASES = {
+    creativeType: ["creative_type", "creativetype", "media_type", "mediatype", "creative_format", "creativeformat", "format", "ad_format", "adformat", "type"],
     campaignName: ["campaign_name", "campaignname", "camp_name", "campname", "campaign_title", "camptitle", "campaign_label", "campaign", "camp"],
     adSetName: ["adset_name", "adset", "ad_set", "ad_set_name", "adsetname", "adgroup", "ad_group"],
     adName: ["ad_name", "adname", "ad_title", "ad_label", "creative_name", "creativename", "nomenclature", "nomen"],

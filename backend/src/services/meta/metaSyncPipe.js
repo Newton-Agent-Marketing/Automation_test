@@ -37,25 +37,30 @@ export class MetaSyncPipeline {
         }
       }
 
-      for (const camp of campaigns) {
-        await MetaCampaign.findOneAndUpdate(
-          { campaignId: camp.id },
-          {
-            userId: account.userId,
-            accountId: account.accountId,
-            campaignId: camp.id,
-            name: camp.name,
-            status: camp.status,
-            effectiveStatus: camp.effective_status || camp.status,
-            objective: camp.objective,
-            dailyBudget: camp.daily_budget ? Number(camp.daily_budget) / 100 : 0,
-            lifetimeBudget: camp.lifetime_budget ? Number(camp.lifetime_budget) / 100 : 0,
-            startTime: camp.start_time ? new Date(camp.start_time) : null,
-            stopTime: camp.stop_time ? new Date(camp.stop_time) : null,
-            lastSyncedAt: new Date(),
+      if (campaigns.length > 0) {
+        const campOps = campaigns.map((camp) => ({
+          updateOne: {
+            filter: { campaignId: camp.id },
+            update: {
+              $set: {
+                userId: account.userId,
+                accountId: account.accountId,
+                campaignId: camp.id,
+                name: camp.name,
+                status: camp.status,
+                effectiveStatus: camp.effective_status || camp.status,
+                objective: camp.objective,
+                dailyBudget: camp.daily_budget ? Number(camp.daily_budget) / 100 : 0,
+                lifetimeBudget: camp.lifetime_budget ? Number(camp.lifetime_budget) / 100 : 0,
+                startTime: camp.start_time ? new Date(camp.start_time) : null,
+                stopTime: camp.stop_time ? new Date(camp.stop_time) : null,
+                lastSyncedAt: new Date(),
+              },
+            },
+            upsert: true,
           },
-          { upsert: true, returnDocument: "after" }
-        );
+        }));
+        await MetaCampaign.bulkWrite(campOps, { ordered: false });
       }
 
       // 3. Meta API se Daily Insights fetch karo & DB mein save karo

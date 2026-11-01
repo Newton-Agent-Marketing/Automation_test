@@ -3140,19 +3140,24 @@ export class MetaApiService {
         const chunkBuffer = Buffer.alloc(chunkSize);
         await fileHandle.read(chunkBuffer, 0, chunkSize, startOffset);
 
-        const formData = new FormData();
-        formData.append("upload_phase", "transfer");
-        formData.append("upload_session_id", sessionId);
-        formData.append("start_offset", String(startOffset));
-        formData.append("video_file_chunk", new File([chunkBuffer], path.basename(filePath), { type: "video/mp4" }));
-        formData.append("access_token", accessToken);
+        const FormDataPkg = (await import("form-data")).default;
+        const form = new FormDataPkg();
+        form.append("upload_phase", "transfer");
+        form.append("upload_session_id", sessionId);
+        form.append("start_offset", String(startOffset));
+        form.append("video_file_chunk", chunkBuffer, {
+          filename: path.basename(filePath),
+          contentType: "video/mp4",
+        });
+        form.append("access_token", accessToken);
 
         let transferRes;
         let attempts = 0;
         while (attempts < 3) {
           try {
             attempts++;
-            transferRes = await axios.post(url, formData, {
+            transferRes = await axios.post(url, form, {
+              headers: form.getHeaders(),
               maxContentLength: Infinity,
               maxBodyLength: Infinity,
               timeout: 300000,
@@ -3307,8 +3312,39 @@ export class MetaApiService {
     }
 
     if (filePath && fs.existsSync(filePath)) {
-      const chunkRes = await this.uploadVideoChunked(cleanId, accessToken, filePath, { title: cleanTitle, description: cleanDesc });
-      const vidId = chunkRes?.id || chunkRes?.video_id;
+      const stats = await fs.promises.stat(filePath);
+      const fileSize = stats.size;
+      let uploadResult = null;
+
+      // 1. Direct Multipart Stream Upload (< 100MB) for ultra-fast single-request execution (2-5 seconds)
+      if (fileSize < 100 * 1024 * 1024) {
+        try {
+          const FormDataPkg = (await import("form-data")).default;
+          const form = new FormDataPkg();
+          form.append("source", fs.createReadStream(filePath));
+          form.append("title", cleanTitle);
+          if (cleanDesc) form.append("description", cleanDesc);
+          form.append("access_token", accessToken);
+
+          const response = await axios.post(url, form, {
+            headers: form.getHeaders(),
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+            timeout: 180000,
+          });
+          uploadResult = response.data;
+          console.log(`🎬 [Meta Direct Video Upload Success]: Uploaded ${path.basename(filePath)} (${(fileSize / (1024 * 1024)).toFixed(1)} MB) -> Video ID ${uploadResult?.id || uploadResult?.video_id}`);
+        } catch (directUpErr) {
+          console.warn("[Meta Direct Video Upload Warning] Direct POST failed, falling back to chunked upload:", directUpErr.response?.data?.error?.message || directUpErr.message);
+        }
+      }
+
+      // 2. Fallback to chunked upload if file > 100MB or if direct POST failed
+      if (!uploadResult?.id && !uploadResult?.video_id) {
+        uploadResult = await this.uploadVideoChunked(cleanId, accessToken, filePath, { title: cleanTitle, description: cleanDesc });
+      }
+
+      const vidId = uploadResult?.id || uploadResult?.video_id;
       if (vidId) {
         this.videoUploadCache.set(cacheKey, { id: vidId, video_id: vidId });
         const finalRow = sourceRow !== null ? sourceRow : rowNo;
@@ -3325,42 +3361,53 @@ export class MetaApiService {
             adName: cleanTitle,
             sourceUrl: fileUrl || filePath || "",
             localFilePath: filePath || "",
-            metaResponse: chunkRes,
+            metaResponse: uploadResult,
             status: "READY",
           });
         } catch (_) {}
       }
-      return chunkRes;
+      return uploadResult;
     }
 
     throw new Error("filePath or fileUrl is required to upload a video to Meta Ads");
   }
 
   // Helper: Poll Meta Graph API until uploaded video is processed and ready
-  static async waitForVideoReady(videoId, accessToken, maxWaitSeconds = 15) {
-    if (!videoId || !accessToken) return true;
+  static async waitForVideoReady(videoId, accessToken, maxWaitSeconds = 25) {
+    if (!videoId || !accessToken) return { ready: true, picture: null, thumbnailUri: null };
     const startTime = Date.now();
-    const pollIntervalMs = 600;
+    const pollIntervalMs = 800;
+    let lastResult = { ready: false, picture: null, thumbnailUri: null };
 
     while ((Date.now() - startTime) < maxWaitSeconds * 1000) {
       try {
         const res = await axios.get(`${META_GRAPH_URL}/${videoId}`, {
           params: {
-            fields: "status",
+            fields: "status,picture,thumbnails",
             access_token: accessToken,
           },
-          timeout: 5000,
+          timeout: 6000,
         });
 
         const status = res.data?.status;
         const videoStatus = (status?.video_status || status || "").toString().toLowerCase();
+        const preferredThumb = res.data?.thumbnails?.data?.find((t) => t.is_preferred)?.uri;
+        const thumbUri = preferredThumb || res.data?.thumbnails?.data?.[0]?.uri || res.data?.picture || null;
+        const pic = res.data?.picture || null;
 
-        if (videoStatus === "ready" || videoStatus === "ready_to_use" || videoStatus === "published") {
-          return true;
+        lastResult = {
+          ready: videoStatus === "ready" || videoStatus === "ready_to_use" || videoStatus === "published",
+          picture: pic,
+          thumbnailUri: thumbUri,
+          videoStatus,
+        };
+
+        if (lastResult.ready) {
+          return lastResult;
         }
         if (videoStatus === "error") {
           console.warn(`[Meta Video Status] Video ${videoId} processing error on Meta:`, status?.errors);
-          return false;
+          return lastResult;
         }
       } catch (err) {
         // Transient check error
@@ -3368,7 +3415,7 @@ export class MetaApiService {
 
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
     }
-    return true;
+    return lastResult;
   }
 
   // Helper: Upload Ad Image to Meta Ad Account (/act_<id>/adimages) -> returns { hash, url }
@@ -3625,8 +3672,13 @@ export class MetaApiService {
     }
 
     // Wait for Meta video transcoding to reach 'ready' status to avoid transient HTTP 500 errors
+    let waitResult = null;
     if (accessToken && !accessToken.startsWith("EAAB_simulated")) {
-      await this.waitForVideoReady(effectiveVideoId, accessToken, 30);
+      waitResult = await this.waitForVideoReady(effectiveVideoId, accessToken, 25);
+      if (waitResult?.thumbnailUri || waitResult?.picture) {
+        effectiveImageUrl = waitResult.thumbnailUri || waitResult.picture;
+        console.log(`🎬 [Meta Video Creative]: Auto-resolved native video thumbnail from waitForVideoReady for video ${effectiveVideoId}: ${effectiveImageUrl}`);
+      }
     }
 
     const storeLinkCandidate = objectStoreUrl || object_store_url;
@@ -3732,6 +3784,20 @@ export class MetaApiService {
             console.warn("[Meta Video Creative] Uploading thumbnail to Meta /adimages warning:", imgUpErr.message);
           }
         }
+      }
+    }
+
+    // Guard: Ensure video creative always contains image_hash or image_url to satisfy Meta API requirements
+    if (!effectiveImageHash && !effectiveImageUrl && accessToken && !accessToken.startsWith("EAAB_simulated")) {
+      try {
+        const fallbackPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+        const imgUploadRes = await this.uploadAdImage(cleanId, accessToken, { imageBuffer: fallbackPng, adName: "video_poster" });
+        if (imgUploadRes?.hash) {
+          effectiveImageHash = imgUploadRes.hash;
+          console.log(`🎬 [Meta Video Creative]: Generated fallback image hash ${effectiveImageHash} for video ${effectiveVideoId}.`);
+        }
+      } catch (fbErr) {
+        console.warn("[Meta Video Creative] Fallback image hash notice:", fbErr.message);
       }
     }
 

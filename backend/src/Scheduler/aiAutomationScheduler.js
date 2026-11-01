@@ -1,325 +1,165 @@
+// backend/src/Scheduler/aiAutomationScheduler.js
 import cron from "node-cron";
 import AiAutomation from "../models/aiAutomationModel.js";
-import WorkflowExecutionEngine from "../services/automation/workflowExecutionEngine.js";
+import AutomationExecution from "../models/automationExecutionModel.js";
+import WorkflowExecutionEngine, { getAllWorkflowSubgraphs } from "../services/automation/workflowExecutionEngine.js";
 import { getIo } from "../socket/index.js";
 
+/**
+ * AI Automation Background Scheduler
+ *
+ * Supports:
+ * - Daily 12:00 AM (00:00) and arbitrary HH:MM schedules in configured workflow timezone (e.g., Asia/Kolkata)
+ * - Specific-date, daily, weekly, and monthly recurrences
+ * - Strict respect for pause/disable state (`isActive === true`)
+ * - Deterministic duplicate prevention per scheduled occurrence (`scheduledOccurrenceKey`)
+ * - Safe missed-occurrence recovery across server restarts (within recovery window)
+ */
 export class AiAutomationScheduler {
   static cronTask = null;
+  static isChecking = false;
+  static inFlightOccurrenceKeys = new Set();
 
   /**
-   * Start the recurring background automation checker.
-   * Runs every minute: "* * * * *"
+   * Parse time configuration into 24-hour { hour, minute } supporting:
+   * - "00:00" (24h midnight)
+   * - "12:00 AM" / { time: "12:00", ampm: "AM" } -> { hour: 0, minute: 0 }
+   * - "12:00 PM" / { time: "12:00", ampm: "PM" } -> { hour: 12, minute: 0 }
    */
-  static startScheduler() {
-    console.log("[Scheduler] ⏰ AI Automation Scheduler initialized (every 1 minute)...");
+  static parseTargetTime(timeConfig = {}) {
+    const rawTime = String(timeConfig?.time ?? "").trim();
+    if (!rawTime) return null;
 
-    this.cronTask = cron.schedule("* * * * *", async () => {
-      try {
-        await this.checkAndRunActiveAutomations();
-      } catch (err) {
-        console.error("[AiAutomationScheduler Cron Error]:", err);
-      }
-    });
-  }
-
-  /**
-   * Check and execute due automations across all active users.
-   * Partitions canvas into independent workflows and evaluates each workflow's Date & Time nodes.
-   */
-  static async checkAndRunActiveAutomations() {
-    // Check all automations that have Date & Time nodes configured or are active
-    const automations = await AiAutomation.find({
-      $or: [
-        { isActive: true },
-        { "nodes.type": "date" },
-        { "nodes.type": "time" },
-      ],
-    });
-
-    if (!automations || automations.length === 0) return;
-
-    const now = new Date();
-    const fiftyFiveSecAgo = new Date(now.getTime() - 55000);
-
-    for (const automation of automations) {
-      try {
-        const nodes = automation.nodes || [];
-        const edges = automation.edges || [];
-
-        // Partition into distinct workflow subgraphs on this canvas
-        const workflows = WorkflowExecutionEngine.getAllWorkflowSubgraphs(nodes, edges);
-
-        for (const sub of workflows) {
-          const dateNode = sub.nodes.find((n) => n.type === "date");
-          const timeNode = sub.nodes.find((n) => n.type === "time");
-
-          // Both Date and Time nodes are required for a scheduled workflow
-          if (!dateNode || !timeNode) continue;
-
-          // Resolve Timezone (Default to Asia/Kolkata if not set)
-          const timezone =
-            timeNode.config?.timezone || dateNode.config?.timezone || "Asia/Kolkata";
-
-          // Resolve current local date and time in the configured timezone
-          const localParts = this.getLocalDateParts(now, timezone);
-          if (!localParts) continue;
-
-          // Check if Time matches
-          const isTimeMatch = this.checkTimeMatch(timeNode.config, localParts);
-          if (!isTimeMatch) continue;
-
-          // Check if Date matches
-          const isDateMatch = this.checkDateMatch(dateNode.config, localParts);
-          if (!isDateMatch) continue;
-
-          const actionNode = sub.nodes.find((n) => n.type === "action");
-          const targetStartNodeId = actionNode?.id || sub.rootNode?.id || dateNode.id;
-
-          // Idempotency: Prevent running this exact workflow more than once in the same minute
-          const recentRun = await AutomationExecution.findOne({
-            userId: automation.userId,
-            automationId: automation._id,
-            rootNodeId: sub.rootNode?.id || targetStartNodeId,
-            startedAt: { $gte: fiftyFiveSecAgo },
-          });
-
-          if (recentRun) {
-            continue;
-          }
-
-          console.log(
-            `[AiAutomationScheduler] ⏰ Scheduled Date & Time arrived for workflow "${sub.workflowName}" in automation "${automation.name}" (User: ${automation.userId}). Automatically running workflow...`
-          );
-
-          const io = getIo();
-          if (io) {
-            io.to(`user:${automation.userId.toString()}`).emit("automation:scheduled_start", {
-              automationId: automation._id,
-              automationName: sub.workflowName || automation.name,
-              workflowName: sub.workflowName,
-              rootNodeId: sub.rootNode?.id || targetStartNodeId,
-              startNodeId: targetStartNodeId,
-              timestamp: now,
-            });
-          }
-
-          // Execute full workflow using WorkflowExecutionEngine
-          const { executionId, completionPromise } =
-            await WorkflowExecutionEngine.run({
-              userId: automation.userId,
-              automationId: automation._id,
-              triggerType: "schedule",
-              startNodeId: targetStartNodeId,
-            });
-
-          // Wait for execution to finish
-          if (completionPromise) {
-            await completionPromise;
-          }
-
-          // Emit real-time notification to the user socket room
-          if (io) {
-            io.to(`user:${automation.userId.toString()}`).emit("automation:scheduled_run", {
-              automationId: automation._id,
-              executionId,
-              automationName: sub.workflowName || automation.name,
-              workflowName: sub.workflowName,
-              rootNodeId: sub.rootNode?.id || targetStartNodeId,
-              startNodeId: targetStartNodeId,
-              timestamp: now,
-            });
-          }
-
-          // Update last run time and mark active
-          automation.lastRunAt = now;
-          automation.isActive = true;
-          await automation.save();
-        }
-      } catch (nodeErr) {
-        console.error(
-          `[AiAutomationScheduler] Error processing automation ${automation._id}:`,
-          nodeErr
-        );
-      }
-    }
-  }
-
-  /**
-   * Helper to format Date parts in a specific timezone with zero-padding
-   */
-  static getLocalDateParts(date, timeZone) {
-    try {
-      const formatter = new Intl.DateTimeFormat("en-US", {
-        timeZone: timeZone || "Asia/Kolkata",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false,
-      });
-
-      const parts = formatter.formatToParts(date);
-      const map = {};
-      for (const p of parts) {
-        map[p.type] = p.value;
-      }
-
-      let hour = parseInt(map.hour, 10);
-      if (hour === 24) hour = 0;
-
-      const month = String(map.month).padStart(2, "0");
-      const day = String(map.day).padStart(2, "0");
-      const year = String(map.year);
-
-      return {
-        year: parseInt(year, 10),
-        month: parseInt(month, 10),
-        day: parseInt(day, 10),
-        hour,
-        minute: parseInt(map.minute, 10),
-        dateStr: `${year}-${month}-${day}`,
-        dayOfWeek: date.toLocaleDateString("en-US", { timeZone: timeZone || "Asia/Kolkata", weekday: "long" }),
-      };
-    } catch (e) {
-      console.error("[AiAutomationScheduler getLocalDateParts Error]:", e);
-      return null;
-    }
-  }
-
-  /**
-   * Check if current hour and minute match configured Time node
-   */
-  static checkTimeMatch(timeConfig = {}, localParts) {
-    if (!timeConfig) return false;
-    const rawTime = String(timeConfig.time || "").trim();
-    if (!rawTime) return false;
-
-    let ampm = timeConfig.ampm || null;
+    let ampm = timeConfig?.ampm ? String(timeConfig.ampm).trim().toUpperCase() : null;
     let cleanTime = rawTime;
-
-    if (/pm/i.test(cleanTime)) {
+    if (/pm$/i.test(cleanTime)) {
       ampm = "PM";
-      cleanTime = cleanTime.replace(/pm/i, "").trim();
-    } else if (/am/i.test(cleanTime)) {
+      cleanTime = cleanTime.replace(/pm$/i, "").trim();
+    } else if (/am$/i.test(cleanTime)) {
       ampm = "AM";
-      cleanTime = cleanTime.replace(/am/i, "").trim();
+      cleanTime = cleanTime.replace(/am$/i, "").trim();
     }
 
     const parts = cleanTime.split(":");
-    let targetHour = parseInt(parts[0], 10);
-    let targetMin = parseInt(parts[1], 10);
+    if (parts.length < 2) return null;
+    let hour = parseInt(parts[0], 10);
+    const minute = parseInt(parts[1], 10);
+    if (Number.isNaN(hour) || Number.isNaN(minute) || minute < 0 || minute > 59) return null;
 
-    if (isNaN(targetHour) || isNaN(targetMin)) return false;
+    // Note: If rawTime is already "00:00" or >12 (24h format), preserve 24h semantics accurately
+    if (hour === 0 && ampm === "AM") {
+      hour = 0;
+    } else if (hour > 12) {
+      // Explicit 24-hour string (e.g., "15:30") ignores stale ampm field
+    } else if (ampm === "PM" && hour < 12) {
+      hour += 12;
+    } else if (ampm === "AM" && hour === 12) {
+      hour = 0;
+    }
 
-    // Convert 12-hour AM/PM to 24-hour if explicit
-    if (ampm === "PM" && targetHour < 12) targetHour += 12;
-    if (ampm === "AM" && targetHour === 12) targetHour = 0;
-
-    return localParts.hour === targetHour && localParts.minute === targetMin;
+    if (hour < 0 || hour > 23) return null;
+    return {
+      hour,
+      minute,
+      padded: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
+    };
   }
 
   /**
-   * Check if current date matches configured Date node
+   * Format a Date object into calendar + clock components in the workflow's timezone.
    */
-  static checkDateMatch(dateConfig = {}, localParts) {
-    if (!dateConfig) return true;
-    const mode = dateConfig.dateType || dateConfig.dateMode || "specific";
-
-    if (mode === "specific") {
-      let targetDate = (dateConfig.specificDate || "").trim();
-      if (!targetDate) return true; // Default match if not restricted
-
-      const dateParts = targetDate.split("-");
-      if (dateParts.length === 3) {
-        targetDate = `${dateParts[0]}-${String(dateParts[1]).padStart(2, "0")}-${String(dateParts[2]).padStart(2, "0")}`;
-      }
-
-      return localParts.dateStr === targetDate;
+  static getLocalTimeParts(dateObj = new Date(), timezone = "Asia/Kolkata") {
+    let tz = timezone || "Asia/Kolkata";
+    try {
+      Intl.DateTimeFormat("en-US", { timeZone: tz });
+    } catch (_) {
+      tz = "Asia/Kolkata";
     }
 
-    if (mode === "recurring") {
-      const pattern =
-        dateConfig.recurrencePattern ||
-        dateConfig.recurringPattern ||
-        "every_day";
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      weekday: "long",
+      hourCycle: "h23",
+    });
 
-      // Check date range boundary if provided
-      if (dateConfig.startDate && localParts.dateStr < dateConfig.startDate) {
-        return false;
-      }
-      if (dateConfig.endDate && localParts.dateStr > dateConfig.endDate) {
-        return false;
-      }
+    const parts = formatter.formatToParts(dateObj);
+    const map = {};
+    for (const part of parts) {
+      map[part.type] = part.value;
+    }
 
-      if (pattern === "once") {
-        let targetDate = (dateConfig.specificDate || "").trim();
-        if (!targetDate) return true;
-        const dateParts = targetDate.split("-");
-        if (dateParts.length === 3) {
-          targetDate = `${dateParts[0]}-${String(dateParts[1]).padStart(2, "0")}-${String(dateParts[2]).padStart(2, "0")}`;
+    let hourNum = parseInt(map.hour, 10);
+    if (hourNum === 24) hourNum = 0;
+
+    return {
+      timezone: tz,
+      year: parseInt(map.year, 10),
+      month: parseInt(map.month, 10),
+      day: parseInt(map.day, 10),
+      dateStr: `${map.year}-${map.month}-${map.day}`,
+      hour: hourNum,
+      minute: parseInt(map.minute, 10),
+      weekday: (map.weekday || "").toLowerCase(),
+    };
+  }
+
+  /**
+   * Check whether the workflow's Date/Time recurrence matches a given local date.
+   */
+  static doesDateMatchSchedule({ dateNode, timeNode, localParts }) {
+    const timeRecurrence = String(timeNode?.config?.recurrence || "daily").toLowerCase();
+
+    if (!dateNode?.config) {
+      if (timeRecurrence === "weekdays") {
+        return !["saturday", "sunday"].includes(localParts.weekday);
+      }
+      return true;
+    }
+
+    const dateMode = dateNode.config.dateType || dateNode.config.dateMode || "recurring";
+    const recurringPattern =
+      dateNode.config.recurrencePattern || dateNode.config.recurringPattern || "every_day";
+
+    // If user configured a specific one-off date AND time node is "once", enforce exact date match.
+    // If timeNode recurrence is "daily", run daily starting on or after specificDate (if set).
+    if (dateMode === "specific") {
+      const rawTarget = String(dateNode.config.specificDate || "").trim();
+      if (rawTarget) {
+        const dParts = rawTarget.split("-");
+        if (dParts.length === 3) {
+          const normalizedTarget = `${dParts[0]}-${String(dParts[1]).padStart(2, "0")}-${String(
+            dParts[2]
+          ).padStart(2, "0")}`;
+          if (timeRecurrence === "daily") {
+            return localParts.dateStr >= normalizedTarget;
+          }
+          return localParts.dateStr === normalizedTarget;
         }
-        return localParts.dateStr === targetDate;
       }
+      return true;
+    }
 
-      if (pattern === "every_day" || pattern === "daily") {
+    if (dateMode === "recurring") {
+      if (recurringPattern === "every_day") {
         return true;
       }
-
-      if (pattern === "every_week") {
-        if (!localParts.dayOfWeek) return false;
-        const currentDay = localParts.dayOfWeek.toLowerCase();
-
-        if (
-          Array.isArray(dateConfig.selectedDaysOfWeek) &&
-          dateConfig.selectedDaysOfWeek.length > 0
-        ) {
-          return dateConfig.selectedDaysOfWeek.some(
-            (d) =>
-              currentDay === d.toLowerCase() ||
-              currentDay.startsWith(d.slice(0, 3).toLowerCase())
-          );
+      if (recurringPattern === "every_week") {
+        const days = Array.isArray(dateNode.config.selectedDaysOfWeek)
+          ? dateNode.config.selectedDaysOfWeek
+          : [dateNode.config.selectedDayOfWeek || "Monday"];
+        return days.some((d) => d && String(d).toLowerCase() === localParts.weekday);
+      }
+      if (recurringPattern === "every_month") {
+        const targetDay = parseInt(dateNode.config.dayOfMonth, 10);
+        if (!Number.isNaN(targetDay)) {
+          return localParts.day === targetDay;
         }
-
-        const targetDay = (dateConfig.selectedDayOfWeek || "Monday").toLowerCase();
-        return (
-          currentDay === targetDay ||
-          currentDay.startsWith(targetDay.slice(0, 3))
-        );
-      }
-
-      if (pattern === "every_month") {
-        const targetDay = Number(dateConfig.dayOfMonth) || 1;
-        if (localParts.day !== targetDay) {
-          return false;
-        }
-
-        if (
-          Array.isArray(dateConfig.selectedMonths) &&
-          dateConfig.selectedMonths.length > 0 &&
-          dateConfig.selectedMonths.length < 12
-        ) {
-          return dateConfig.selectedMonths.includes(localParts.month);
-        }
-
-        return true;
-      }
-
-      if (pattern === "regular_interval" || pattern === "every_n_days") {
-        return true;
-      }
-
-      if (pattern === "days_of_month") {
-        const days = Array.isArray(dateConfig.daysOfMonth)
-          ? dateConfig.daysOfMonth
-          : [1];
-        return days.includes(localParts.day);
-      }
-
-      if (pattern === "last_day_of_month") {
-        const nextDay = new Date(localParts.year, localParts.month, 0);
-        const lastDayNumber = nextDay.getDate();
-        return localParts.day === lastDayNumber;
       }
     }
 
@@ -327,15 +167,268 @@ export class AiAutomationScheduler {
   }
 
   /**
-   * Calculate next run timestamp for display
+   * Compute the next scheduled execution Date for UI display & persistence.
    */
-  static calculateNextRun(dateConfig, timeConfig, timezone, fromDate = new Date()) {
-    try {
-      const next = new Date(fromDate.getTime() + 24 * 60 * 60 * 1000);
-      return next;
-    } catch {
-      return null;
+  static calculateNextRun(nodes = [], referenceDate = new Date()) {
+    const timeNode = (nodes || []).find((n) => n.type === "time" && n.config?.time);
+    const triggerNode = (nodes || []).find((n) => n.type === "trigger" && n.config?.scheduleTime);
+    const effectiveTimeConfig = timeNode?.config || (triggerNode?.config?.scheduleTime ? { time: triggerNode.config.scheduleTime, timezone: triggerNode.config.timezone } : null);
+    if (!effectiveTimeConfig) return null;
+
+    const target = this.parseTargetTime(effectiveTimeConfig);
+    if (!target) return null;
+
+    const dateNode = (nodes || []).find((n) => n.type === "date") || null;
+    const timezone =
+      effectiveTimeConfig.timezone || dateNode?.config?.timezone || "Asia/Kolkata";
+
+    // Scan minute-by-minute / hour-by-hour up to 35 days ahead to find exact next matching instant in timezone
+    const baseMs = Math.ceil(referenceDate.getTime() / 60000) * 60000;
+    for (let dayOffset = 0; dayOffset <= 35; dayOffset++) {
+      // Sample midday of candidate offset day to obtain local Y-M-D, then locate exact target hour:minute
+      const probe = new Date(baseMs + dayOffset * 86400000);
+      const probeParts = this.getLocalTimeParts(probe, timezone);
+      const deltaMinutes =
+        (target.hour - probeParts.hour) * 60 + (target.minute - probeParts.minute);
+      const candidate = new Date(probe.getTime() + deltaMinutes * 60000);
+      candidate.setUTCSeconds(0, 0);
+
+      if (candidate.getTime() <= referenceDate.getTime()) continue;
+
+      const candidateParts = this.getLocalTimeParts(candidate, timezone);
+      if (
+        candidateParts.hour === target.hour &&
+        candidateParts.minute === target.minute &&
+        this.doesDateMatchSchedule({ dateNode, timeNode, localParts: candidateParts })
+      ) {
+        return candidate;
+      }
     }
+
+    return null;
+  }
+
+  /**
+   * Start background minute-level cron scheduler + startup missed-occurrence recovery.
+   */
+  static start() {
+    if (this.cronTask) return;
+
+    console.log("⏰ [AiAutomationScheduler] Initialized background cron watcher (* * * * *).");
+
+    this.cronTask = cron.schedule("* * * * *", async () => {
+      await this.checkAndRunDueAutomations(new Date(), { allowStartupCatchUp: false });
+    });
+
+    // Startup check (handles server restart around 12:00 AM safely without duplicating runs)
+    setTimeout(() => {
+      this.checkAndRunDueAutomations(new Date(), { allowStartupCatchUp: true }).catch((err) => {
+        console.warn("[AiAutomationScheduler Startup Check Warning]:", err.message);
+      });
+    }, 3000);
+  }
+
+  static stop() {
+    if (this.cronTask) {
+      this.cronTask.stop();
+      this.cronTask = null;
+    }
+  }
+
+  /**
+   * Inspect all active scheduled automations and execute any workflow due at `referenceDate`.
+   * Returns a summary array of triggered / skipped runs for observability & testing.
+   */
+  static async checkAndRunDueAutomations(
+    referenceDate = new Date(),
+    { allowStartupCatchUp = false, catchUpWindowMinutes = 60 } = {}
+  ) {
+    if (this.isChecking) return [];
+    this.isChecking = true;
+    const triggeredRuns = [];
+
+    try {
+      // Strictly respect pause/disable: ONLY inspect automations where isActive === true
+      const activeAutomations = await AiAutomation.find({
+        isActive: true,
+        "nodes.0": { $exists: true },
+      });
+
+      for (const automation of activeAutomations) {
+        try {
+          const nodes = automation.nodes || [];
+          const edges = automation.edges || [];
+          if (!nodes.length) continue;
+
+          const subgraphs = getAllWorkflowSubgraphs(nodes, edges);
+
+          for (const sub of subgraphs) {
+            const dateNode = sub.nodes.find((n) => n.type === "date") || null;
+            const timeNode = sub.nodes.find((n) => n.type === "time") || null;
+            const triggerNode = sub.nodes.find((n) => n.type === "trigger") || null;
+
+            const timeConfig =
+              timeNode?.config?.time
+                ? timeNode.config
+                : triggerNode?.config?.scheduleTime
+                ? {
+                    time: triggerNode.config.scheduleTime,
+                    ampm: triggerNode.config.ampm,
+                    timezone: triggerNode.config.timezone,
+                    recurrence: triggerNode.config.recurrence || "daily",
+                  }
+                : null;
+
+            if (!timeConfig) continue;
+
+            // Ensure there is at least one executable task node in this subgraph
+            const hasExecutableTask = sub.nodes.some(
+              (n) =>
+                n.type === "generic" ||
+                n.type === "action" ||
+                (n.type === "trigger" &&
+                  n.text &&
+                  !["start workflow", "trigger node", "trigger", "start"].includes(
+                    n.text.trim().toLowerCase()
+                  ))
+            );
+            if (!hasExecutableTask) continue;
+
+            const targetTime = this.parseTargetTime(timeConfig);
+            if (!targetTime) continue;
+
+            const timezone =
+              timeConfig.timezone || dateNode?.config?.timezone || "Asia/Kolkata";
+            const localParts = this.getLocalTimeParts(referenceDate, timezone);
+
+            if (!this.doesDateMatchSchedule({ dateNode, timeNode, localParts })) {
+              continue;
+            }
+
+            const nowMinutesOfDay = localParts.hour * 60 + localParts.minute;
+            const targetMinutesOfDay = targetTime.hour * 60 + targetTime.minute;
+            const exactMinuteMatch = nowMinutesOfDay === targetMinutesOfDay;
+
+            let missedCatchUpMatch = false;
+            if (
+              !exactMinuteMatch &&
+              allowStartupCatchUp &&
+              nowMinutesOfDay > targetMinutesOfDay &&
+              nowMinutesOfDay - targetMinutesOfDay <= catchUpWindowMinutes
+            ) {
+              // Recover missed scheduled run if server was restarting at target time,
+              // provided the automation existed before today's scheduled minute.
+              const scheduledApproxMs =
+                referenceDate.getTime() - (nowMinutesOfDay - targetMinutesOfDay) * 60000;
+              const createdMs = automation.createdAt ? new Date(automation.createdAt).getTime() : 0;
+              if (createdMs <= scheduledApproxMs + 60000) {
+                missedCatchUpMatch = true;
+              }
+            }
+
+            if (!exactMinuteMatch && !missedCatchUpMatch) {
+              continue;
+            }
+
+            const rootId =
+              sub.rootTaskNode?.id ||
+              sub.rootNode?.id ||
+              sub.actionNode?.id ||
+              sub.nodes[0]?.id ||
+              "root";
+            const startId =
+              sub.actionNode?.id ||
+              sub.directTaskNode?.id ||
+              sub.rootTaskNode?.id ||
+              sub.rootNode?.id ||
+              sub.nodes[0]?.id;
+
+            const occurrenceKey = `sched:${automation._id}:${rootId}:${localParts.dateStr}:${targetTime.padded}`;
+
+            if (this.inFlightOccurrenceKeys.has(occurrenceKey)) {
+              continue;
+            }
+
+            // Persistent duplicate prevention check in MongoDB
+            const existingOccurrence = await AutomationExecution.findOne({
+              automationId: automation._id,
+              scheduledOccurrenceKey: occurrenceKey,
+            })
+              .select("executionId status")
+              .lean();
+
+            if (existingOccurrence) {
+              continue;
+            }
+
+            this.inFlightOccurrenceKeys.add(occurrenceKey);
+
+            try {
+              const workflowNodeIds = sub.nodes.map((n) => n.id);
+              console.log(
+                `🚀 [AiAutomationScheduler] Triggering scheduled workflow "${
+                  sub.workflowName || automation.name
+                }" [Occurrence: ${occurrenceKey}, Timezone: ${timezone}]`
+              );
+
+              const runRes = await WorkflowExecutionEngine.run({
+                automationId: automation._id,
+                userId: automation.userId,
+                triggerType: "schedule",
+                startNodeId: startId,
+                workflowNodeIds,
+                scheduledOccurrenceKey: occurrenceKey,
+                scheduledDate: localParts.dateStr,
+                timezone,
+              });
+
+              const nextRunAt = this.calculateNextRun(nodes, referenceDate);
+              await AiAutomation.updateOne(
+                { _id: automation._id },
+                { $set: { nextRunAt, lastScheduledOccurrenceKey: occurrenceKey } }
+              ).catch(() => {});
+
+              try {
+                const io = getIo();
+                if (io && automation.userId) {
+                  const eventPayload = {
+                    executionId: runRes.executionId,
+                    automationId: automation._id,
+                    workflowName: sub.workflowName || automation.name,
+                    scheduledTime: targetTime.padded,
+                    scheduledDate: localParts.dateStr,
+                    timezone,
+                    startNodeId: startId,
+                  };
+                  io.to(`user:${automation.userId.toString()}`).emit("automation:scheduled_start", eventPayload);
+                  io.to(`user:${automation.userId.toString()}`).emit("automation:scheduled_run", eventPayload);
+                }
+              } catch (_) {}
+
+              triggeredRuns.push({
+                automationId: String(automation._id),
+                executionId: runRes.executionId,
+                scheduledOccurrenceKey: occurrenceKey,
+                scheduledDate: localParts.dateStr,
+                scheduledTime: targetTime.padded,
+                timezone,
+                completionPromise: runRes.completionPromise,
+              });
+            } finally {
+              this.inFlightOccurrenceKeys.delete(occurrenceKey);
+            }
+          }
+        } catch (autoErr) {
+          console.error(`[AiAutomationScheduler Error for ${automation._id}]:`, autoErr.message);
+        }
+      }
+    } catch (err) {
+      console.error("[AiAutomationScheduler Global Check Error]:", err.message);
+    } finally {
+      this.isChecking = false;
+    }
+
+    return triggeredRuns;
   }
 }
 

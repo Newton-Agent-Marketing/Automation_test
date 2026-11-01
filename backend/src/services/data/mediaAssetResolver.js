@@ -71,13 +71,35 @@ export class MediaAssetResolver {
    * Search all potential creative asset columns in a row and extract all Google Drive URLs.
    * Priority: Row-specific Smart Chips first, direct video/media columns second, generic folders last.
    */
-  static extractRowDriveUrls(rowValues = {}) {
+  static extractRowDriveUrls(rowValues = {}, preferredType = null) {
     const keys = Object.keys(rowValues || {});
-    const priorityTiers = [
-      ["creative_smart_chips", "creative_smart_chip", "smart_chips", "smart_chip", "creativesmartchips"],
-      ["video_url", "video_file", "video", "image_url", "creative_url", "media_url", "media", "creative"],
-      ["google_drive_link", "drive_url", "drive_link", "drive", "asset"]
-    ];
+    
+    // Auto-detect if row prefers video
+    let isVideoPreference = preferredType === "video" || preferredType === "VIDEO";
+    if (!isVideoPreference) {
+      const typeVal = String(
+        rowValues.creative_type ||
+        rowValues.creativeType ||
+        rowValues["Creative Type"] ||
+        rowValues["Media Type"] ||
+        rowValues["Creative Format"] ||
+        rowValues.format ||
+        ""
+      ).toLowerCase();
+      if (typeVal.includes("vid")) {
+        isVideoPreference = true;
+      }
+    }
+
+    const videoSpecificKeys = ["video_link", "videolink", "video_url", "videourl", "video_file", "videofile", "google_drive_video_url", "video"];
+    const smartChipKeys = ["creative_smart_chips", "creative_smart_chip", "smart_chips", "smart_chip", "creativesmartchips", "creativesmartchip"];
+    const genericMediaKeys = ["creative_url", "creativeurl", "media_url", "mediaurl", "creative", "media", "asset"];
+    const driveKeys = ["google_drive_link", "drive_url", "driveurl", "drive_link", "drivelink", "drive"];
+    const imageSpecificKeys = ["image_url", "imageurl", "image_link", "imagelink", "image_file", "imagefile", "image", "banner"];
+
+    const priorityTiers = isVideoPreference
+      ? [videoSpecificKeys, smartChipKeys, genericMediaKeys, driveKeys, imageSpecificKeys]
+      : [smartChipKeys, imageSpecificKeys, genericMediaKeys, driveKeys, videoSpecificKeys];
 
     const extractedUrls = [];
     const seen = new Set();
@@ -103,6 +125,11 @@ export class MediaAssetResolver {
 
     // Direct file URLs (/file/d/ or standalone file IDs) take strict priority over folder URLs (/folders/)
     extractedUrls.sort((a, b) => {
+      const aIsVidExt = /\.(mp4|mov|avi|webm|m4v)($|\?)/i.test(a);
+      const bIsVidExt = /\.(mp4|mov|avi|webm|m4v)($|\?)/i.test(b);
+      if (aIsVidExt && !bIsVidExt) return -1;
+      if (!aIsVidExt && bIsVidExt) return 1;
+
       const aIsFolder = a.includes("/folders/");
       const bIsFolder = b.includes("/folders/");
       if (!aIsFolder && bIsFolder) return -1;

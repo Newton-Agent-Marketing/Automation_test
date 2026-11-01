@@ -474,11 +474,14 @@ export const ExecutionResultsPanel = ({
           nodes.map((n, idx) => {
             const isExpanded = expandedNodes[n.nodeId];
             const nodeInstruction =
+              n.originalInstruction ||
               n.input?.task ||
               (typeof n.input === "string" ? n.input : n.nodeName) ||
               "Workflow step instruction";
-            const nodeOutput = n.output?.result || n.output?.message || n.output;
+            const nodeOutput = n.output?.response || n.output?.result || n.output?.message || n.output;
             const nodeError = n.error?.message || (typeof n.error === "string" ? n.error : null);
+            const execSummary = n.executionSummary || n.output?.executionSummary || null;
+            const dataProc = n.dataProcessing || n.output?.dataProcessing || null;
 
             return (
               <div
@@ -622,10 +625,10 @@ export const ExecutionResultsPanel = ({
                       {n.durationMs > 0 && <span>Duration: {(n.durationMs / 1000).toFixed(2)}s</span>}
                     </div>
 
-                    {/* Instruction Box */}
+                    {/* 1. Node Instruction */}
                     <div style={{ marginBottom: 10 }}>
                       <div style={{ fontSize: "11px", fontWeight: 600, color: "#64748B", marginBottom: 3 }}>
-                        Instruction / Task
+                        1. Node Instruction
                       </div>
                       <div
                         style={{
@@ -645,11 +648,115 @@ export const ExecutionResultsPanel = ({
                       </div>
                     </div>
 
-                    {/* Output Box */}
+                    {/* 2. AI Agent Execution Summary */}
+                    {execSummary && (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: "11px", fontWeight: 600, color: "#6D28D9", marginBottom: 3 }}>
+                          2. AI Agent Execution Summary
+                        </div>
+                        <div
+                          style={{
+                            padding: "8px 10px",
+                            backgroundColor: "#FAF5FF",
+                            borderRadius: 6,
+                            border: "1px solid #E9D5FF",
+                            fontSize: "11.5px",
+                            color: "#1E293B",
+                            lineHeight: 1.45,
+                          }}
+                        >
+                          {Array.isArray(execSummary.integrationsInvolved) && execSummary.integrationsInvolved.length > 0 && (
+                            <div style={{ marginBottom: 4 }}>
+                              <strong>Integrations:</strong> {execSummary.integrationsInvolved.join(", ")}
+                            </div>
+                          )}
+                          {Array.isArray(execSummary.executionPlan) && execSummary.executionPlan.length > 0 && (
+                            <ol style={{ margin: "0 0 0 16px", padding: 0 }}>
+                              {execSummary.executionPlan.map((step, sIdx) => (
+                                <li key={sIdx}>{step}</li>
+                              ))}
+                            </ol>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 3. Tool Calls Captured */}
+                    {((Array.isArray(n.toolsCalled) && n.toolsCalled.length > 0) || (Array.isArray(n.output?.toolCalls) && n.output.toolCalls.length > 0)) && (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: "11px", fontWeight: 600, color: "#0081FB", marginBottom: 4 }}>
+                          3. Tool Calls ({((n.toolsCalled || n.output?.toolCalls) || []).length})
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          {((n.toolsCalled || n.output?.toolCalls) || []).map((tc, tcIdx) => (
+                            <div
+                              key={tcIdx}
+                              style={{
+                                padding: "6px 8px",
+                                backgroundColor: "#EFF6FF",
+                                borderRadius: 4,
+                                border: "1px solid #BFDBFE",
+                                fontSize: "11px",
+                                color: "#1E3A8A",
+                              }}
+                            >
+                              <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 600 }}>
+                                <span>{tc.toolName || tc.name || tc.action || "Tool"}</span>
+                                <span style={{ fontSize: "10px", color: tc.status === "error" || tc.status === "FAILED" ? "#DC2626" : "#059669" }}>
+                                  {String(tc.status || "SUCCESS").toUpperCase()}
+                                </span>
+                              </div>
+                              {tc.responseSummary && (
+                                <div style={{ marginTop: 2, fontSize: "10.5px", color: "#334155" }}>
+                                  {tc.responseSummary}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 4. Data Processing */}
+                    {dataProc && (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: "11px", fontWeight: 600, color: "#0F766E", marginBottom: 3 }}>
+                          4. Data Processing
+                        </div>
+                        <div
+                          style={{
+                            padding: "6px 8px",
+                            backgroundColor: "#F0FDFA",
+                            borderRadius: 6,
+                            border: "1px solid #99F6E4",
+                            fontSize: "11px",
+                            color: "#134E4A",
+                            lineHeight: 1.45,
+                          }}
+                        >
+                          <div>
+                            <strong>Fetched:</strong> {dataProc.dataFetched || "None"} • <strong>Processed:</strong> {dataProc.recordsProcessed ?? 0} • <strong>Inserted:</strong> {dataProc.recordsInserted ?? 0}
+                          </div>
+                          {dataProc.reportingDate && (
+                            <div><strong>Reporting Date:</strong> {dataProc.reportingDate}</div>
+                          )}
+                          {Array.isArray(dataProc.fieldMappings) && dataProc.fieldMappings.length > 0 && (
+                            <div>
+                              <strong>Mapped Columns:</strong> {dataProc.fieldMappings.length}
+                              {Array.isArray(dataProc.unmappedFields) && dataProc.unmappedFields.length > 0
+                                ? ` (${dataProc.unmappedFields.length} custom unmapped)`
+                                : ""}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 5. Final Output */}
                     {nodeOutput && (
                       <div style={{ marginBottom: 10 }}>
                         <div style={{ fontSize: "11px", fontWeight: 600, color: "#059669", marginBottom: 3 }}>
-                          AI Agent Output / Result
+                          5. Final Output
                         </div>
                         <div
                           style={{
@@ -669,39 +776,7 @@ export const ExecutionResultsPanel = ({
                         >
                           {typeof nodeOutput === "string"
                             ? nodeOutput
-                            : nodeOutput?.result || nodeOutput?.message || nodeOutput?.content || JSON.stringify(nodeOutput, null, 2)}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Tool Calls Captured */}
-                    {((Array.isArray(n.toolsCalled) && n.toolsCalled.length > 0) || (Array.isArray(n.output?.toolCalls) && n.output.toolCalls.length > 0)) && (
-                      <div style={{ marginBottom: 10 }}>
-                        <div style={{ fontSize: "11px", fontWeight: 600, color: "#0081FB", marginBottom: 4 }}>
-                          Tool Calls Executed ({((n.toolsCalled || n.output?.toolCalls) || []).length})
-                        </div>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                          {((n.toolsCalled || n.output?.toolCalls) || []).map((tc, tcIdx) => (
-                            <div
-                              key={tcIdx}
-                              style={{
-                                padding: "4px 8px",
-                                backgroundColor: "#EFF6FF",
-                                borderRadius: 4,
-                                border: "1px solid #BFDBFE",
-                                fontSize: "11px",
-                                color: "#1D4ED8",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "space-between",
-                              }}
-                            >
-                              <span>{tc.toolName || tc.name || tc.action || "Tool"}</span>
-                              <span style={{ fontSize: "10px", color: tc.status === "FAILED" ? "#DC2626" : "#059669" }}>
-                                {tc.status || "SUCCESS"}
-                              </span>
-                            </div>
-                          ))}
+                            : nodeOutput?.response || nodeOutput?.result || nodeOutput?.message || nodeOutput?.content || JSON.stringify(nodeOutput, null, 2)}
                         </div>
                       </div>
                     )}
@@ -710,7 +785,7 @@ export const ExecutionResultsPanel = ({
                     {n.validation && (
                       <div style={{ marginBottom: 10 }}>
                         <div style={{ fontSize: "11px", fontWeight: 600, color: n.validation.verified ? "#059669" : "#DC2626", marginBottom: 3 }}>
-                          Data Validation: {n.validation.verified ? "Verified" : "Failed"}
+                          Verification: {n.validation.verificationStatus || (n.validation.verified ? "VERIFIED" : "UNVERIFIED")}
                         </div>
                         <div
                           style={{
@@ -723,6 +798,27 @@ export const ExecutionResultsPanel = ({
                           }}
                         >
                           {n.validation.reason}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Skipped Reason */}
+                    {n.status === "skipped" && nodeError && (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: "11px", fontWeight: 600, color: "#64748B", marginBottom: 3 }}>
+                          Skipped Reason
+                        </div>
+                        <div
+                          style={{
+                            padding: "6px 8px",
+                            backgroundColor: "#F8FAFC",
+                            borderRadius: 6,
+                            border: "1px solid #CBD5E1",
+                            color: "#475569",
+                            fontSize: "11px",
+                          }}
+                        >
+                          {nodeError}
                         </div>
                       </div>
                     )}

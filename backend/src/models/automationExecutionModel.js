@@ -26,6 +26,10 @@ const nodeExecutionSchema = new Schema(
     startedAt: { type: Date, default: null },
     completedAt: { type: Date, default: null },
     durationMs: { type: Number, default: 0 },
+    originalInstruction: { type: String, default: "" },
+    executionSummary: { type: Schema.Types.Mixed, default: null },
+    dataProcessing: { type: Schema.Types.Mixed, default: null },
+    structuredData: { type: Schema.Types.Mixed, default: null },
     input: { type: Schema.Types.Mixed, default: null },
     output: { type: Schema.Types.Mixed, default: null },
     toolsCalled: { type: [Schema.Types.Mixed], default: [] },
@@ -90,6 +94,19 @@ const automationExecutionSchema = new Schema(
       enum: ["manual", "schedule"],
       default: "manual",
     },
+    scheduledOccurrenceKey: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    scheduledDate: {
+      type: String,
+      default: null,
+    },
+    sharedContext: {
+      type: Schema.Types.Mixed,
+      default: {},
+    },
     status: {
       type: String,
       enum: [
@@ -127,6 +144,10 @@ const automationExecutionSchema = new Schema(
       default: 0,
     },
     failedNodes: {
+      type: Number,
+      default: 0,
+    },
+    skippedNodes: {
       type: Number,
       default: 0,
     },

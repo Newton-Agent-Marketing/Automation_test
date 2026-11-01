@@ -77,30 +77,38 @@ export class ActionExecutor {
           break;
         }
 
-        case "ai_agent_task": {
-          result = {
-            action: "ai_agent_task",
-            taskInstruction: message,
-            status: "Task registered for Newton AI Autonomous Execution",
-            assignedModel: "Claude 3.7 Sonnet / Claude Agent SDK",
-            queuedAt: new Date().toISOString(),
-          };
-          break;
-        }
-
+        case "ai_agent_task":
         case "generate_report": {
-          const [metaAccounts, googleAccounts] = await Promise.all([
-            MetaAccount.find({ userId, isActive: true }).select("accountName currency syncStatus").lean(),
-            GoogleAccount.find({ userId, isActive: true }).select("accountName currency syncStatus").lean(),
-          ]);
-
+          const AiAgentOrchestrator = (await import("../agent/aiAgentOrchestrator.js")).default;
+          const effectiveInstruction = String(
+            message ||
+              config.aiPrompt ||
+              config.taskDescription ||
+              node.taskDescription ||
+              node.label ||
+              ""
+          ).trim();
+          if (!effectiveInstruction) {
+            throw new Error("Action node has no task instruction configured.");
+          }
+          const agentRes = await AiAgentOrchestrator.executeNodeTask({
+            userId,
+            instruction: effectiveInstruction,
+            node,
+            workflowId: context?.workflowId || context?.automationId || null,
+            executionId: context?.executionId || null,
+            sharedWorkflowContext: context?.sharedContext || {},
+          });
           result = {
-            action: "generate_report",
-            title: `Performance Report: ${message}`,
-            connectedMetaAccounts: metaAccounts.length,
-            connectedGoogleAccounts: googleAccounts.length,
-            generatedAt: new Date().toISOString(),
-            summary: `Automated summary compiled for ${userName}. All active data channels verified.`,
+            action: actionType,
+            taskInstruction: effectiveInstruction,
+            status: agentRes.status === "WAITING_FOR_INPUT" ? "waiting_for_input" : "completed",
+            summary: agentRes.response,
+            toolCalls: agentRes.toolCalls,
+            executionSummary: agentRes.executionSummary,
+            dataProcessing: agentRes.dataProcessing,
+            structuredData: agentRes.structuredData,
+            executedAt: new Date().toISOString(),
           };
           break;
         }

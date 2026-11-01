@@ -8,6 +8,7 @@ import { AgentStreamHandler } from "./agentStream.js";
 import CampaignPreparationService from "../campaignPreparation/campaignPreparationService.js";
 import SheetInspectorService from "./sheetInspectorService.js";
 import ConversationMemoryService from "./conversationMemoryService.js";
+import NodeTaskAgentService from "./nodeTaskAgentService.js";
 
 const ANTHROPIC_MODEL_CANDIDATES = [
   process.env.CLAUDE_AGENT_MODEL || "claude-sonnet-4-5",
@@ -1728,84 +1729,99 @@ STRICT RULES:
 
   /**
    * 8. AI AUTOMATION WORKFLOW NODE EXECUTION ENTRYPOINT
-   * Preserves contract with workflowExecutionEngine.js
+   * Executes a node's complete original instruction sequentially with dynamic tool discovery,
+   * upstream structured data consumption, semantic sheet mapping, and strict completion verification.
    */
   static async executeNodeTask({
     instruction,
     node,
     previousNodeOutput = null,
+    sharedWorkflowContext = {},
+    workflowId = null,
     userId,
     executionId,
     onProgress = null,
   }) {
-    const context = await this.retrieveContext({
+    if (typeof onProgress === "function") {
+      await Promise.resolve(
+        onProgress({
+          state: "running",
+          message: `Executing node "${node?.label || node?.type || "Custom Task"}"...`,
+        })
+      ).catch(() => {});
+    }
+
+    const effectiveSharedContext = { ...(sharedWorkflowContext || {}) };
+    if (
+      previousNodeOutput &&
+      (!Array.isArray(effectiveSharedContext.previousNodeResults) ||
+        effectiveSharedContext.previousNodeResults.length === 0)
+    ) {
+      effectiveSharedContext.previousNodeResults = [
+        typeof previousNodeOutput === "object" && previousNodeOutput !== null
+          ? {
+              nodeId: previousNodeOutput.nodeId || "previous_node",
+              nodeLabel: previousNodeOutput.nodeLabel || "Previous Node",
+              status: "completed",
+              outputText:
+                previousNodeOutput.outputText ||
+                previousNodeOutput.response ||
+                previousNodeOutput.result ||
+                (typeof previousNodeOutput === "string" ? previousNodeOutput : JSON.stringify(previousNodeOutput)),
+              structuredData: previousNodeOutput.structuredData || previousNodeOutput,
+            }
+          : {
+              nodeId: "previous_node",
+              nodeLabel: "Previous Node",
+              status: "completed",
+              outputText: String(previousNodeOutput),
+              structuredData: {},
+            },
+      ];
+    }
+
+    const outcome = await NodeTaskAgentService.executeNodeTask({
       userId,
-      accountId: node?.data?.adAccountId || node?.adAccountId,
-      metaAccountId: node?.data?.adAccountId || node?.adAccountId,
-      userMessage: instruction,
-    });
-    context.isAutomation = true;
-
-    const intentObj = this.classifyIntent(instruction, context);
-
-    if (typeof onProgress === "function") {
-      await Promise.resolve(
-        onProgress({ state: "running", message: `Executing node task "${node?.label || node?.type || "step"}"...` })
-      ).catch(() => {});
-    }
-
-    const executedTools = await this.executeTools({
-      intentObj,
       instruction,
-      context,
-      previousNodeOutput,
-      onStatus: (st) => {
-        if (typeof onProgress === "function") {
-          Promise.resolve(
-            onProgress({ state: "running", toolName: st.toolName, message: st.status })
-          ).catch(() => {});
-        }
-      },
+      node,
+      workflowId,
+      executionId,
+      sharedWorkflowContext: effectiveSharedContext,
     });
 
     if (typeof onProgress === "function") {
       await Promise.resolve(
-        onProgress({ state: "verifying", message: "Checking tool execution results..." })
+        onProgress({
+          state: outcome.status === "WAITING_FOR_INPUT" ? "waiting_for_input" : "completed",
+          message:
+            outcome.status === "WAITING_FOR_INPUT"
+              ? outcome.response
+              : `Completed with ${outcome.toolCalls?.length || 0} verified tool call(s).`,
+        })
       ).catch(() => {});
-    }
-
-    const validation = this.verifyTaskCompletion({
-      intentObj,
-      instruction,
-      executedTools,
-      previousNodeOutput,
-    });
-
-    const finalMarkdown = await this.synthesizeResponse({
-      intentObj,
-      instruction,
-      context,
-      executedTools,
-      validation,
-      previousNodeOutput,
-    });
-
-    if (!validation.verified && !validation.partial) {
-      const err = new Error(validation.reason);
-      err.validation = validation;
-      err.toolCalls = executedTools;
-      err.output = validation.outputData;
-      err.finalMarkdown = finalMarkdown;
-      throw err;
     }
 
     return {
-      status: validation.partial ? "partial" : "completed",
-      result: finalMarkdown,
-      content: finalMarkdown,
-      toolCalls: executedTools,
-      output: validation.outputData || { status: "success" },
-      validation,
+      status: outcome.status === "WAITING_FOR_INPUT" ? "waiting_for_input" : "completed",
+      agentStatus: outcome.status,
+      originalInstruction: outcome.originalInstruction,
+      response: outcome.response,
+      result: outcome.response,
+      content: outcome.response,
+      executionSummary: outcome.executionSummary,
+      toolCalls: outcome.toolCalls,
+      dataProcessing: outcome.dataProcessing,
+      structuredData: outcome.structuredData,
+      output: {
+        status: outcome.status === "WAITING_FOR_INPUT" ? "waiting_for_input" : "completed",
+        response: outcome.response,
+        executionSummary: outcome.executionSummary,
+        dataProcessing: outcome.dataProcessing,
+        structuredData: outcome.structuredData,
+        validation: outcome.validation,
+      },
+      validation: outcome.validation,
+      durationMs: outcome.durationMs,
     };
   }
 }

@@ -920,12 +920,13 @@ class SheetsService {
     }
 
     const auth = await googleOAuth.getAuthenticatedClient();
+    const safeSheetTitle = sheetTitle ? String(sheetTitle).replace(/'/g, "''") : null;
     const payload = {
       valueInputOption: "USER_ENTERED",
       data: data.map((item) => {
         let effectiveRange = item.range;
-        if (sheetTitle && !effectiveRange.includes("!")) {
-          effectiveRange = `'${sheetTitle}'!${effectiveRange}`;
+        if (safeSheetTitle && !effectiveRange.includes("!")) {
+          effectiveRange = `'${safeSheetTitle}'!${effectiveRange}`;
         }
         return {
           range: effectiveRange,
@@ -967,34 +968,58 @@ class SheetsService {
 
   /**
    * Append data rows to the bottom of a specific worksheet tab using Google Sheets API v4
+   * and verify the written rows via read-back when updatedRange is returned.
    */
-  async appendRowsToWorksheet({ spreadsheetIdOrUrl, sheetTitle = "Sheet1", values = [] }) {
+  async appendRowsToWorksheet({ spreadsheetIdOrUrl, sheetTitle = "Sheet1", values = [], verifyWrite = true }) {
     const spreadsheetId = this.extractSpreadsheetId(spreadsheetIdOrUrl);
     if (!spreadsheetId) throw new Error("No valid Google Sheet ID or URL provided.");
     if (!Array.isArray(values) || values.length === 0) {
-      return { success: true, updatedRows: 0, updatedCells: 0 };
+      return { success: true, updatedRows: 0, updatedCells: 0, verified: true, verifiedRowsCount: 0 };
     }
 
     const auth = await googleOAuth.getAuthenticatedClient();
-    const safeTitle = (sheetTitle || "Sheet1").replace(/'/g, "\\'");
-    const appendRange = `'${safeTitle}'!A1:append`;
-    const endpoint = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(appendRange)}?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+    const safeTitle = String(sheetTitle || "Sheet1").replace(/'/g, "''");
+    const targetRangeA1 = `'${safeTitle}'!A1`;
+    const endpoint = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+      targetRangeA1
+    )}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
 
     const payload = {
-      range: `'${safeTitle}'!A1:append`,
       majorDimension: "ROWS",
       values,
     };
 
     const res = await auth.axiosInstance.post(endpoint, payload);
+    const updatedRange = res.data?.updates?.updatedRange || null;
+    const updatedRows = res.data?.updates?.updatedRows ?? values.length;
+    const updatedCells = res.data?.updates?.updatedCells ?? 0;
+
+    let verified = Boolean(res.status >= 200 && res.status < 300 && updatedRows > 0);
+    let verifiedValues = null;
+
+    if (verifyWrite && updatedRange) {
+      try {
+        const readBack = await this.batchGetValues({
+          spreadsheetIdOrUrl: spreadsheetId,
+          ranges: [updatedRange],
+        });
+        verifiedValues = readBack?.[0]?.values || [];
+        verified = verifiedValues.length >= Math.min(values.length, updatedRows);
+      } catch (verifyErr) {
+        console.warn(`[SheetsService] appendRowsToWorksheet read-back warning: ${verifyErr.message}`);
+      }
+    }
 
     return {
       success: true,
       spreadsheetId,
       sheetTitle,
-      updatedRange: res.data?.updates?.updatedRange,
-      updatedRows: res.data?.updates?.updatedRows || values.length,
-      updatedCells: res.data?.updates?.updatedCells || 0,
+      updatedRange,
+      updatedRows,
+      updatedCells,
+      verified,
+      verifiedRowsCount: Array.isArray(verifiedValues) ? verifiedValues.length : updatedRows,
+      verifiedValues,
       raw: res.data,
     };
   }
@@ -1008,8 +1033,9 @@ class SheetsService {
 
     try {
       const auth = await googleOAuth.getAuthenticatedClient();
-      const safeTitle = (sheetTitle || "Sheet1").replace(/'/g, "\\'");
-      const endpoint = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/'${encodeURIComponent(safeTitle)}'!1:5`;
+      const safeTitle = String(sheetTitle || "Sheet1").replace(/'/g, "''");
+      const rangeA1 = `'${safeTitle}'!1:5`;
+      const endpoint = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(rangeA1)}`;
       const res = await auth.axiosInstance.get(endpoint);
       const rows = res.data?.values || [];
       if (rows.length > 0 && rows[0] && rows[0].length > 0) {

@@ -1286,11 +1286,14 @@ export class ChannelController {
         const cleanMetaId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
         const isMeta = await MetaAccount.findOne({ userId, accountId: cleanMetaId, isActive: true });
         if (isMeta) {
-          const result = await MetaSyncPipeline.syncAccount(cleanMetaId);
+          const syncPromise = MetaSyncPipeline.syncAccount(cleanMetaId);
+          const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 8000));
+          const raced = await Promise.race([syncPromise, timeoutPromise]);
           return res.status(200).json({
             success: true,
-            message: `Sync completed successfully for Meta account ${cleanMetaId}`,
-            data: result,
+            message: raced !== "TIMEOUT" ? `Sync completed successfully for Meta account ${cleanMetaId}` : `Sync in progress for Meta account ${cleanMetaId}`,
+            status: raced !== "TIMEOUT" ? "SYNCED" : "SYNCING",
+            data: raced !== "TIMEOUT" ? raced : { status: "SYNCING" },
           });
         }
 
@@ -1329,19 +1332,27 @@ export class ChannelController {
       // Default: Sync Meta accounts
       const metaAccs = await MetaAccount.find({ userId, isActive: true });
       if (metaAccs && metaAccs.length > 0) {
-        const results = [];
-        for (const metaAcc of metaAccs) {
-          try {
-            const resObj = await MetaSyncPipeline.syncAccount(metaAcc.accountId);
-            results.push({ accountId: metaAcc.accountId, ...resObj });
-          } catch (err) {
-            results.push({ accountId: metaAcc.accountId, error: err.message });
+        const runBackgroundSync = async () => {
+          for (const metaAcc of metaAccs) {
+            try {
+              await MetaSyncPipeline.syncAccount(metaAcc.accountId);
+            } catch (err) {
+              console.warn(`[Background Meta Sync Error for ${metaAcc.accountId}]:`, err.message);
+            }
           }
-        }
+        };
+
+        const syncPromise = runBackgroundSync();
+        const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 8000));
+        const raced = await Promise.race([syncPromise.then(() => "COMPLETED"), timeoutPromise]);
+
         return res.status(200).json({
           success: true,
-          message: `Sync completed for ${metaAccs.length} Meta account(s)`,
-          data: results,
+          message: raced === "COMPLETED"
+            ? `Sync completed for ${metaAccs.length} Meta account(s)`
+            : `Sync initiated in background for ${metaAccs.length} Meta account(s)`,
+          status: raced === "COMPLETED" ? "SYNCED" : "SYNCING",
+          count: metaAccs.length,
         });
       }
 

@@ -950,6 +950,7 @@ export const TriggerNodeConfigModal = ({
                 </div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                   {[
+                    { label: "12:00 AM", val: "00:00" },
                     { label: "09:00 AM", val: "09:00" },
                     { label: "12:00 PM", val: "12:00" },
                     { label: "03:00 PM", val: "15:00" },

@@ -20,13 +20,17 @@ export const formatNormalText = (data) => {
   }
 
   if (typeof data === "object") {
-    // 1. If it's a standard AI agent / executor output object: { status, result, ... }
+    // 1. If it's a standard AI agent / executor output object: { status, response, result, ... }
+    if (data.response && typeof data.response === "string") {
+      return data.response.trim();
+    }
+
+    if (data.clarificationQuestion && typeof data.clarificationQuestion === "string") {
+      return data.clarificationQuestion.trim();
+    }
+
     if (data.result && typeof data.result === "string") {
-      let output = data.result.trim();
-      if (Array.isArray(data.toolCalls) && data.toolCalls.length > 0) {
-        output += `\n\n[Tools Executed: ${data.toolCalls.length}]`;
-      }
-      return output;
+      return data.result.trim();
     }
 
     if (data.message && typeof data.message === "string" && !data.task) {
