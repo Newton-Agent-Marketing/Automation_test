@@ -9,10 +9,12 @@ import {
   fetchHistory,
   finishStream,
   renameConversationThunk,
+  resetStreamText,
   setActiveConversation,
   setChatError,
   setSocketConnected,
   setToolStatus,
+  startExecution,
   updateJobProgress,
   setPreparationData,
 } from "../chat.slice";
@@ -71,15 +73,20 @@ export const useChat = () => {
     };
   });
 
+  const lastSentRef = useRef({ text: "", ts: 0 });
+
   const handleEvent = (event) => {
-    console.log("[AI Agent Chat Hook] Received Event:", event);
-    if (event.type === "text_delta") dispatch(appendStreamText(event.content || ""));
+    if (event.type === "execution_start") dispatch(startExecution(event.executionId));
+    if (event.type === "stream_reset") dispatch(resetStreamText(event.executionId));
+    if (event.type === "text_delta") {
+      dispatch(appendStreamText({ content: event.content || "", executionId: event.executionId || null }));
+    }
     if (event.type === "tool_status") dispatch(setToolStatus(event.status || event.toolName));
     if (event.type === "progress_update") dispatch(updateJobProgress(event));
     if (event.type === "preparation_update") dispatch(setPreparationData(event.session));
     if (event.type === "error") dispatch(setChatError(event.message));
     if (event.type === "done") {
-      dispatch(finishStream());
+      dispatch(finishStream(event.executionId || null));
       dispatch(fetchConversations());
       const convId = activeConvIdRef.current || chat.activeId;
       if (convId) {
@@ -89,12 +96,24 @@ export const useChat = () => {
   };
 
   const sendMessage = async (userMessage, options = {}) => {
+    const trimmed = String(userMessage || "").trim();
+    if (!trimmed) return;
+
+    // Guard against unintended rapid double-click (<400ms) while streaming
+    const now = Date.now();
+    if (chat.streaming && lastSentRef.current.text === trimmed && now - lastSentRef.current.ts < 800) {
+      return;
+    }
+    lastSentRef.current = { text: trimmed, ts: now };
+
     const conversationId = chat.activeId || crypto.randomUUID();
+    const executionId = `exec_${now}_${Math.random().toString(36).slice(2, 8)}`;
     activeConvIdRef.current = conversationId;
     if (!chat.activeId) dispatch(setActiveConversation(conversationId));
     dispatch(
       addLocalUserMessage({
-        _id: `user-${Date.now()}`,
+        _id: `user-${now}`,
+        executionId,
         role: "user",
         content: userMessage,
         conversationId,
@@ -104,6 +123,7 @@ export const useChat = () => {
     const payload = {
       conversationId,
       userMessage,
+      executionId,
       accountId,
       metaAccountId,
       googleAccountId,
@@ -113,7 +133,6 @@ export const useChat = () => {
       ...(options?.rowRange ? { rowRange: options.rowRange } : {}),
       ...(options?.rangeSelector ? { rangeSelector: options.rangeSelector } : {}),
     };
-    console.log("[AI Agent Chat Hook] Sending Chat Payload:", payload);
 
     try {
       sendChatOverSocket(payload);
@@ -123,8 +142,8 @@ export const useChat = () => {
         await chatApi.stream({ ...payload, onEvent: handleEvent });
       } catch (err) {
         console.error("[AI Agent Chat Hook] Error sending chat message:", err);
-        handleEvent({ type: "error", message: err.message || "Failed to send message" });
-        handleEvent({ type: "done" });
+        handleEvent({ type: "error", message: err.message || "Failed to send message", executionId });
+        handleEvent({ type: "done", executionId });
       }
     }
   };

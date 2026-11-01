@@ -141,19 +141,61 @@ export class MetaMcpClient {
     } else if (accountId) {
       const cleanId = String(accountId).trim();
       const numOnly = cleanId.replace(/^act_/, "");
+      const canonicalActId = `act_${numOnly}`;
+      if (!/^\d{4,25}$/.test(numOnly)) {
+        throw new Error(
+          `Invalid Meta Ad Account ID "${accountId}". Expected format like "act_1416124059911929" or numeric account ID.`
+        );
+      }
       if (mongoose?.connection?.readyState === 1) {
         account = await MetaAccount.findOne({
-          $or: [{ accountId: cleanId }, { accountId: numOnly }, { accountId: `act_${numOnly}` }],
+          $or: [{ accountId: cleanId }, { accountId: numOnly }, { accountId: canonicalActId }],
           ...userCondition,
         });
       }
+      // If not directly stored as its own MetaAccount doc, check if the user's connected Meta OAuth token has live Graph API permission for this account
+      if (!account && validUserId && mongoose?.connection?.readyState === 1) {
+        const userPrimaryAcc = await MetaAccount.findOne({
+          userId: validUserId,
+          accessToken: { $exists: true, $ne: "" },
+        }).sort({ isActive: -1, updatedAt: -1 });
+        if (userPrimaryAcc?.accessToken) {
+          try {
+            const checkRes = await axios.get(`${META_GRAPH_URL}/${canonicalActId}`, {
+              params: {
+                access_token: userPrimaryAcc.accessToken,
+                fields: "id,account_id,name,currency,account_status",
+              },
+              timeout: 10000,
+            });
+            if (checkRes.data?.id) {
+              account = {
+                _id: userPrimaryAcc._id,
+                accountId: canonicalActId,
+                accountName: checkRes.data.name || canonicalActId,
+                currency: checkRes.data.currency || userPrimaryAcc.currency || "INR",
+                accessToken: userPrimaryAcc.accessToken,
+                userId: validUserId,
+              };
+            }
+          } catch (permErr) {
+            const metaErr = permErr.response?.data?.error;
+            const detail = metaErr?.message
+              ? `(#${metaErr.code || "API"}) ${metaErr.message}`
+              : permErr.message;
+            throw new Error(
+              `Meta Ad Account "${canonicalActId}" is unavailable or missing permissions for your connected Meta user: ${detail}`
+            );
+          }
+        }
+      }
       if (!account) {
         throw new Error(
-          `Ad Account "${accountId}" was not found or is inaccessible for this user. Fallback to other accounts is strictly prohibited.`
+          `Ad Account "${canonicalActId}" was not found in your connected Meta Ads accounts or you do not have permission to access it. Fallback to other accounts is strictly prohibited.`
         );
       }
     } else if (userId) {
-      // Strict Account Lock: Resolve selected Meta account from AI Context Channel Node
+      // Resolve selected Meta account from AI Context Channel Node or active connected MetaAccount
       const AiContext = (await import("../../models/aiContextModel.js")).default;
       const aiContextDoc = (validUserId && mongoose?.connection?.readyState === 1)
         ? await AiContext.findOne({ userId: validUserId }).lean().catch(() => null)
@@ -180,9 +222,22 @@ export class MetaMcpClient {
             `Selected Meta Ad Account "${contextAccId}" from AI Context Channel Node was not found or is disconnected for this user. Fallback to other accounts is strictly prohibited.`
           );
         }
+      } else if (mongoose?.connection?.readyState === 1 && validUserId) {
+        const activeMetaAccounts = await MetaAccount.find({
+          userId: validUserId,
+          isActive: true,
+          accessToken: { $exists: true, $ne: "" },
+        }).lean();
+        if (activeMetaAccounts.length === 1) {
+          account = activeMetaAccounts[0];
+        } else {
+          throw new Error(
+            "No Meta Ads account is selected in AI Context and no explicit account ID was specified in your message. Please specify the target account ID (e.g. act_...) or select one in AI Context → Channel Node."
+          );
+        }
       } else {
         throw new Error(
-          "No Meta Ads account is selected in the AI Context Channel Node. Please select a Meta Ads account in AI Context → Channel Node. Fallback to default or unselected accounts is strictly prohibited."
+          "No Meta Ads account is selected in the AI Context Channel Node. Please select a Meta Ads account in AI Context → Channel Node."
         );
       }
     }
@@ -193,7 +248,9 @@ export class MetaMcpClient {
       );
     }
 
-    const effectiveAccountId = account.accountId;
+    const effectiveAccountId = String(account.accountId).startsWith("act_")
+      ? String(account.accountId)
+      : `act_${account.accountId}`;
     const effectiveToken = account.accessToken;
     const effectiveUserId = account.userId || userId;
 
@@ -207,12 +264,15 @@ export class MetaMcpClient {
         try {
           const insights = await MetaApiService.getInsights(effectiveAccountId, effectiveToken, {
             datePreset: "today",
+            timeIncrement: null,
           });
           return {
             status: "LIVE_DATA_FROM_META",
             date: new Date().toISOString().split("T")[0],
+            datePreset: "today",
             accountId: effectiveAccountId,
             accountName: account.accountName,
+            currency: account.currency || "INR",
             insights,
           };
         } catch (err) {
@@ -228,59 +288,187 @@ export class MetaMcpClient {
 
       case "get_live_campaign_insights": {
         try {
-          const { datePreset, timeRange, timeIncrement } = args;
+          const {
+            datePreset,
+            timeRange,
+            timeIncrement,
+            level = "campaign",
+            campaignIds = null,
+          } = args;
+          const resolvedPreset = timeRange ? undefined : (datePreset || "maximum");
+
+          // Propagate real Meta API errors directly — never swallow with .catch(() => [])
           const [campaigns, insights] = await Promise.all([
-            MetaApiService.getCampaigns(effectiveAccountId, effectiveToken).catch(() => []),
+            MetaApiService.getCampaigns(effectiveAccountId, effectiveToken),
             MetaApiService.getInsights(effectiveAccountId, effectiveToken, {
-              datePreset: datePreset || (timeRange ? undefined : "last_7d"),
+              datePreset: resolvedPreset,
               timeRange,
               timeIncrement: timeIncrement ?? null,
-            }).catch(() => []),
+              level,
+            }),
           ]);
 
           const statusMap = new Map();
+          const campaignMetaMap = new Map();
           (campaigns || []).forEach((c) => {
-            statusMap.set(c.id, c.status || c.effective_status || "ACTIVE");
+            statusMap.set(c.id, c.status || c.effective_status || "UNKNOWN");
+            campaignMetaMap.set(c.id, {
+              id: c.id,
+              name: c.name,
+              status: c.status || c.effective_status || "UNKNOWN",
+              effectiveStatus: c.effective_status || c.status || "UNKNOWN",
+              objective: c.objective || null,
+            });
           });
 
-          const mappedInsights = (insights || []).map((row) => {
-            const purchasesAction =
-              (row.actions || []).find((a) =>
-                ["purchase", "omni_purchase", "lead", "offsite_conversion.fb_pixel_purchase"].includes(a.action_type)
-              ) || (row.actions || [])[0];
-            const conversions = purchasesAction ? Number(purchasesAction.value || 0) : 0;
+          const filterSet = Array.isArray(campaignIds) && campaignIds.length > 0
+            ? new Set(campaignIds.map((id) => String(id).trim()))
+            : null;
 
-            const valueAction =
-              (row.action_values || []).find((a) =>
+          const mappedInsights = (insights || [])
+            .filter((row) => !filterSet || filterSet.has(String(row.campaign_id)))
+            .map((row) => {
+              const purchasesAction =
+                (row.actions || []).find((a) =>
+                  ["purchase", "omni_purchase", "lead", "offsite_conversion.fb_pixel_purchase", "mobile_app_install", "link_click"].includes(a.action_type)
+                ) || (row.actions || [])[0];
+              const resultActionType = purchasesAction?.action_type || null;
+              const conversions = purchasesAction ? Number(purchasesAction.value || 0) : 0;
+
+              const purchaseOnlyAction = (row.actions || []).find((a) =>
                 ["purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase"].includes(a.action_type)
-              ) || (row.action_values || [])[0];
-            const conversionValue = valueAction ? Number(valueAction.value || 0) : 0;
+              );
+              const purchases = purchaseOnlyAction ? Number(purchaseOnlyAction.value || 0) : 0;
 
-            const spend = Number(row.spend || 0);
-            const impressions = Number(row.impressions || 0);
-            const clicks = Number(row.clicks || 0);
+              const valueAction =
+                (row.action_values || []).find((a) =>
+                  ["purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase"].includes(a.action_type)
+                ) || (row.action_values || [])[0];
+              const conversionValue = valueAction ? Number(valueAction.value || 0) : 0;
 
+              const spend = Number(row.spend || 0);
+              const impressions = Number(row.impressions || 0);
+              const clicks = Number(row.clicks || 0);
+              const reach = Number(row.reach || 0);
+              const ctr = impressions > 0 ? Number(((clicks / impressions) * 100).toFixed(2)) : Number(row.ctr || 0);
+              const cpc = clicks > 0 ? Number((spend / clicks).toFixed(2)) : (row.cpc ? Number(Number(row.cpc).toFixed(2)) : null);
+              const cpm = impressions > 0 ? Number(((spend / impressions) * 1000).toFixed(2)) : (row.cpm ? Number(Number(row.cpm).toFixed(2)) : null);
+              const cpa = conversions > 0 ? Number((spend / conversions).toFixed(2)) : null;
+              const cpr = cpa;
+              const roasFromApi = Array.isArray(row.purchase_roas) && row.purchase_roas[0]?.value
+                ? Number(Number(row.purchase_roas[0].value).toFixed(2))
+                : null;
+              const roas = spend > 0 && conversionValue > 0
+                ? Number((conversionValue / spend).toFixed(2))
+                : roasFromApi;
+
+              return {
+                campaignId: row.campaign_id,
+                campaignName: row.campaign_name,
+                ...(row.adset_id ? { adSetId: row.adset_id, adSetName: row.adset_name } : {}),
+                ...(row.ad_id ? { adId: row.ad_id, adName: row.ad_name } : {}),
+                status: statusMap.get(row.campaign_id) || "UNKNOWN",
+                objective: row.objective || campaignMetaMap.get(row.campaign_id)?.objective || null,
+                spend,
+                impressions,
+                clicks,
+                reach,
+                ctr,
+                cpc,
+                cpm,
+                conversions,
+                purchases,
+                resultActionType,
+                cpa,
+                cpr,
+                conversionValue,
+                roas,
+                currency: row.account_currency || account.currency || "INR",
+                dateStart: row.date_start,
+                dateStop: row.date_stop,
+              };
+            });
+
+          // Build per-campaign spend Rollup across all campaigns in the account (or filtered campaignIds)
+          const spendByCampId = new Map();
+          for (const item of mappedInsights) {
+            const prev = spendByCampId.get(item.campaignId) || {
+              campaignId: item.campaignId,
+              campaignName: item.campaignName,
+              status: item.status,
+              spend: 0,
+              impressions: 0,
+              clicks: 0,
+              conversions: 0,
+              purchases: 0,
+              conversionValue: 0,
+              currency: item.currency,
+              dateStart: item.dateStart,
+              dateStop: item.dateStop,
+            };
+            prev.spend = Number((prev.spend + item.spend).toFixed(2));
+            prev.impressions += item.impressions;
+            prev.clicks += item.clicks;
+            prev.conversions += item.conversions;
+            prev.purchases += item.purchases;
+            prev.conversionValue = Number((prev.conversionValue + item.conversionValue).toFixed(2));
+            spendByCampId.set(item.campaignId, prev);
+          }
+
+          const targetCampaigns = (campaigns || []).filter((c) => !filterSet || filterSet.has(String(c.id)));
+          const allCampaignsPerformance = targetCampaigns.map((c) => {
+            const agg = spendByCampId.get(c.id);
+            if (!agg) {
+              return {
+                campaignId: c.id,
+                campaignName: c.name,
+                status: c.status || c.effective_status || "UNKNOWN",
+                spend: 0,
+                impressions: 0,
+                clicks: 0,
+                ctr: 0,
+                cpc: null,
+                cpm: null,
+                conversions: 0,
+                cpa: null,
+                cpr: null,
+                conversionValue: 0,
+                roas: null,
+                currency: account.currency || "INR",
+              };
+            }
             return {
-              campaignId: row.campaign_id,
-              campaignName: row.campaign_name,
-              status: statusMap.get(row.campaign_id) || "ACTIVE",
-              spend,
-              impressions,
-              clicks,
-              conversions,
-              conversionValue,
-              currency: row.account_currency || account.currency || "INR",
-              dateStart: row.date_start,
-              dateStop: row.date_stop,
+              ...agg,
+              ctr: agg.impressions > 0 ? Number(((agg.clicks / agg.impressions) * 100).toFixed(2)) : 0,
+              cpc: agg.clicks > 0 ? Number((agg.spend / agg.clicks).toFixed(2)) : null,
+              cpm: agg.impressions > 0 ? Number(((agg.spend / agg.impressions) * 1000).toFixed(2)) : null,
+              cpa: agg.conversions > 0 ? Number((agg.spend / agg.conversions).toFixed(2)) : null,
+              cpr: agg.conversions > 0 ? Number((agg.spend / agg.conversions).toFixed(2)) : null,
+              roas: agg.spend > 0 && agg.conversionValue > 0 ? Number((agg.conversionValue / agg.spend).toFixed(2)) : null,
             };
           });
+
+          const totalAccountSpend = Number(
+            mappedInsights.reduce((sum, r) => sum + Number(r.spend || 0), 0).toFixed(2)
+          );
 
           return {
             status: "LIVE_DATA_FROM_META",
             accountId: effectiveAccountId,
             accountName: account.accountName,
             currency: account.currency || "INR",
+            datePreset: resolvedPreset || "custom",
+            timeRange: timeRange || null,
+            level,
+            totalAccountSpend,
+            totalInsightsRows: mappedInsights.length,
+            totalCampaignsInAccount: (campaigns || []).length,
             insights: mappedInsights,
+            allCampaignsPerformance,
+            pagination: {
+              campaignsPagination: campaigns?._pagination || { totalFetched: (campaigns || []).length, hasMore: false },
+              insightsPagination: insights?._pagination || { totalFetched: mappedInsights.length, hasMore: false },
+            },
           };
         } catch (err) {
           if (MetaApiService.isTokenRevokedOrExpired(err)) {
@@ -296,6 +484,11 @@ export class MetaMcpClient {
       case "get_live_campaigns_status": {
         try {
           const campaigns = await MetaApiService.getCampaigns(effectiveAccountId, effectiveToken);
+          const pagination = campaigns?._pagination || {
+            totalFetched: (campaigns || []).length,
+            pagesFetched: 1,
+            hasMore: false,
+          };
 
           let totalAdsInAccount = 0;
           const mappedCampaigns = (campaigns || []).map((c) => {
@@ -311,14 +504,17 @@ export class MetaMcpClient {
               status: c.status,
               effectiveStatus: c.effective_status,
               dailyBudget: c.daily_budget ? Number(c.daily_budget) / 100 : 0,
+              lifetimeBudget: c.lifetime_budget ? Number(c.lifetime_budget) / 100 : 0,
               objective: c.objective,
+              startTime: c.start_time || null,
+              stopTime: c.stop_time || null,
               totalAds: rawAds.length,
               ads: rawAds.map((a) => ({ id: a.id, name: a.name, status: a.status || a.effective_status || "ACTIVE" })),
             };
           });
 
           // Fallback: If campaigns did not contain nested ads, query account ads safely
-          if (totalAdsInAccount === 0 && mappedCampaigns.length > 0) {
+          if (totalAdsInAccount === 0 && mappedCampaigns.length > 0 && args.includeAds !== false) {
             try {
               const allAds = await MetaApiService.getAccountAds(effectiveAccountId, effectiveToken);
               if (allAds && allAds.length > 0) {
@@ -347,7 +543,15 @@ export class MetaMcpClient {
             status: "LIVE_DATA_FROM_META",
             accountId: effectiveAccountId,
             accountName: account.accountName,
+            currency: account.currency || "INR",
+            totalCampaigns: mappedCampaigns.length,
             totalAdsInAccount,
+            pagination: {
+              totalFetched: pagination.totalFetched,
+              pagesFetched: pagination.pagesFetched,
+              hasMore: Boolean(pagination.hasMore),
+              complete: !pagination.hasMore,
+            },
             campaigns: mappedCampaigns,
           };
         } catch (err) {
@@ -357,21 +561,143 @@ export class MetaMcpClient {
               "Meta authorization has expired or been revoked. Please reconnect your Meta Ads account in Channels."
             );
           }
-          // Fallback to locally saved campaigns if remote API isn't responding
-          const localCampaigns = await MetaCampaign.find({ accountId: effectiveAccountId });
+          throw err;
+        }
+      }
+
+      case "get_live_adsets": {
+        try {
+          const adSets = await MetaApiService.getAdSets(effectiveAccountId, effectiveToken, {
+            campaignId: args.campaignId || null,
+            limit: args.limit || 200,
+          });
           return {
-            status: "LOCAL_DATABASE_FALLBACK",
+            status: "LIVE_DATA_FROM_META",
             accountId: effectiveAccountId,
             accountName: account.accountName,
-            campaigns: localCampaigns.map((c) => ({
-              id: c.campaignId,
-              name: c.name,
-              status: c.status,
-              effectiveStatus: c.effectiveStatus || c.status,
-              dailyBudget: c.dailyBudget,
-              objective: c.objective,
+            currency: account.currency || "INR",
+            totalAdSets: adSets.length,
+            pagination: adSets._pagination || { totalFetched: adSets.length, hasMore: false },
+            adSets: adSets.map((as) => ({
+              id: as.id,
+              name: as.name,
+              status: as.status,
+              effectiveStatus: as.effective_status,
+              campaignId: as.campaign_id,
+              dailyBudget: as.daily_budget ? Number(as.daily_budget) / 100 : 0,
+              lifetimeBudget: as.lifetime_budget ? Number(as.lifetime_budget) / 100 : 0,
+              optimizationGoal: as.optimization_goal,
+              billingEvent: as.billing_event,
+              bidStrategy: as.bid_strategy || null,
             })),
           };
+        } catch (err) {
+          if (MetaApiService.isTokenRevokedOrExpired(err)) {
+            await MetaAccount.updateOne({ _id: account._id }, { $set: { isActive: false } });
+            throw new Error("Meta authorization has expired or been revoked. Please reconnect your Meta Ads account in Channels.");
+          }
+          throw err;
+        }
+      }
+
+      case "get_live_ad_creatives": {
+        try {
+          const { campaignId = null, adSetId = null, includeInsights = true, datePreset = "maximum", timeRange = null, limit = 100 } = args;
+          const [adsList, adInsights] = await Promise.all([
+            MetaApiService.getAdCreatives(effectiveAccountId, effectiveToken, { campaignId, adSetId, limit }),
+            includeInsights
+              ? MetaApiService.getInsights(effectiveAccountId, effectiveToken, {
+                  level: "ad",
+                  datePreset: timeRange ? undefined : datePreset,
+                  timeRange,
+                  timeIncrement: null,
+                }).catch(() => [])
+              : Promise.resolve([]),
+          ]);
+
+          const insightByAdId = new Map();
+          (adInsights || []).forEach((row) => {
+            if (!row.ad_id) return;
+            const spend = Number(row.spend || 0);
+            const impressions = Number(row.impressions || 0);
+            const clicks = Number(row.clicks || 0);
+            const act = (row.actions || []).find((a) =>
+              ["purchase", "omni_purchase", "lead", "offsite_conversion.fb_pixel_purchase"].includes(a.action_type)
+            ) || (row.actions || [])[0];
+            const conversions = act ? Number(act.value || 0) : 0;
+            const valAct = (row.action_values || []).find((a) =>
+              ["purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase"].includes(a.action_type)
+            ) || (row.action_values || [])[0];
+            const conversionValue = valAct ? Number(valAct.value || 0) : 0;
+            insightByAdId.set(String(row.ad_id), {
+              spend,
+              impressions,
+              clicks,
+              ctr: impressions > 0 ? Number(((clicks / impressions) * 100).toFixed(2)) : 0,
+              cpc: clicks > 0 ? Number((spend / clicks).toFixed(2)) : null,
+              cpm: impressions > 0 ? Number(((spend / impressions) * 1000).toFixed(2)) : null,
+              conversions,
+              cpa: conversions > 0 ? Number((spend / conversions).toFixed(2)) : null,
+              conversionValue,
+              roas: spend > 0 && conversionValue > 0 ? Number((conversionValue / spend).toFixed(2)) : null,
+            });
+          });
+
+          const creatives = (adsList || []).map((ad) => {
+            const cr = ad.creative || {};
+            const spec = cr.object_story_spec || {};
+            const linkData = spec.link_data || {};
+            const videoData = spec.video_data || {};
+            const headline = cr.title || linkData.name || videoData.title || null;
+            const primaryText = cr.body || linkData.message || videoData.message || null;
+            const callToAction =
+              cr.call_to_action_type ||
+              linkData.call_to_action?.type ||
+              videoData.call_to_action?.type ||
+              null;
+            const destinationUrl =
+              linkData.link ||
+              videoData.call_to_action?.value?.link ||
+              null;
+            const videoId = cr.video_id || videoData.video_id || null;
+            const mediaType = videoId ? "VIDEO" : (cr.image_url || linkData.image_hash ? "IMAGE" : "CREATIVE");
+            const perf = insightByAdId.get(String(ad.id)) || null;
+
+            return {
+              adId: ad.id,
+              adName: ad.name,
+              status: ad.status || ad.effective_status,
+              effectiveStatus: ad.effective_status,
+              campaignId: ad.campaign_id,
+              adSetId: ad.adset_id,
+              creativeId: cr.id || null,
+              creativeName: cr.name || null,
+              mediaType,
+              videoId,
+              imageUrl: cr.image_url || cr.thumbnail_url || null,
+              headline,
+              primaryText,
+              callToAction,
+              destinationUrl,
+              performance: perf,
+            };
+          });
+
+          return {
+            status: "LIVE_DATA_FROM_META",
+            accountId: effectiveAccountId,
+            accountName: account.accountName,
+            currency: account.currency || "INR",
+            totalCreatives: creatives.length,
+            pagination: adsList._pagination || { totalFetched: creatives.length, hasMore: false },
+            creatives,
+          };
+        } catch (err) {
+          if (MetaApiService.isTokenRevokedOrExpired(err)) {
+            await MetaAccount.updateOne({ _id: account._id }, { $set: { isActive: false } });
+            throw new Error("Meta authorization has expired or been revoked. Please reconnect your Meta Ads account in Channels.");
+          }
+          throw err;
         }
       }
 

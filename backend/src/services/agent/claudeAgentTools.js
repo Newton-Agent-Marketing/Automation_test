@@ -26,22 +26,30 @@ const toToolError = (error) => ({
   isError: true,
 });
 
-export const validateSessionMetaAccountLock = (lockedAccountId, requestedAccountId) => {
+export const validateSessionMetaAccountLock = (
+  lockedAccountId,
+  requestedAccountId,
+  { allowExplicitOverride = false } = {}
+) => {
   const clean = (id) => String(id || "").replace(/^act_/, "").trim();
   const lockedClean = clean(lockedAccountId);
   const toolClean = clean(requestedAccountId);
 
+  if (allowExplicitOverride && toolClean) {
+    return toolClean;
+  }
+
   if (lockedClean && toolClean && lockedClean !== toolClean) {
     throw new Error(
-      `Account ID mismatch: Tool requested Meta account "act_${toolClean}", but the session is strictly locked to Meta account "act_${lockedClean}" selected in AI Context. Cross-account operations are strictly prohibited.`
+      `Account ID mismatch: Tool requested Meta account "act_${toolClean}", but the session is strictly locked to Meta account "act_${lockedClean}" selected in AI Context. Cross-account write operations are strictly prohibited.`
     );
   }
   return lockedClean || toolClean || null;
 };
 
 export const createAdsMcpServer = ({ userId, accountId }) => {
-  const resolveTargetMetaAccountId = (toolProvidedAccountId) =>
-    validateSessionMetaAccountLock(accountId, toolProvidedAccountId);
+  const resolveTargetMetaAccountId = (toolProvidedAccountId, opts = {}) =>
+    validateSessionMetaAccountLock(accountId, toolProvidedAccountId, opts);
 
   const getAccountContext = tool(
     "get_account_context",
@@ -133,19 +141,28 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
 
   const fetchLiveMetaAds = tool(
     "fetch_live_meta_ads_mcp",
-    "Fetch CURRENT, LIVE, REAL-TIME Meta Ads data: campaign performance insights (spend, impressions, clicks, conversions, conversion value, ROAS) across date ranges, live campaigns & ads status, or today's spend directly from Meta Ads.",
+    "Fetch CURRENT, LIVE, REAL-TIME Meta Ads data: campaign performance insights (spend, impressions, clicks, CTR, CPC, CPM, conversions, CPA, CPR, ROAS), live campaigns list & status, ad sets, ad creatives, or today's spend directly from Meta Graph API.",
     {
       accountId: z
         .string()
         .optional()
-        .describe("Meta ad account ID e.g. 'act_517557233790148'. Defaults to active account."),
+        .describe("Meta ad account ID e.g. 'act_1416124059911929'. Always pass the exact account ID specified by the user if given."),
       toolType: z
-        .enum(["get_live_campaign_insights", "get_live_campaigns_status", "get_live_today_insights"])
-        .describe("Which live Meta tool to call: 'get_live_campaign_insights' for performance/spend/clicks/conversions/ROAS across date ranges; 'get_live_campaigns_status' for campaigns and ads hierarchy; 'get_live_today_insights' for today's spend."),
+        .enum([
+          "get_live_campaign_insights",
+          "get_live_campaigns_status",
+          "get_live_today_insights",
+          "get_live_adsets",
+          "get_live_ad_creatives",
+        ])
+        .describe("Which live Meta tool to call: 'get_live_campaigns_status' for campaign names/IDs/status; 'get_live_campaign_insights' for spend/CTR/CPC/CPM/CPA/CPR/ROAS; 'get_live_today_insights' for today's spend; 'get_live_adsets' for ad sets; 'get_live_ad_creatives' for ad creatives & creative performance."),
       datePreset: z
         .string()
         .optional()
-        .describe("Optional preset: 'last_7d', 'last_14d', 'last_30d', 'today'"),
+        .describe("Optional preset: 'last_7d', 'last_14d', 'last_30d', 'today', 'yesterday', 'maximum'"),
+      campaignId: z.string().optional().describe("Optional campaign ID filter for ad sets or ad creatives"),
+      adSetId: z.string().optional().describe("Optional ad set ID filter for ad creatives"),
+      includeInsights: z.boolean().optional().describe("When toolType='get_live_ad_creatives', set true to include ad-level creative performance metrics"),
       timeRange: z
         .object({
           since: z.string().describe("Start date YYYY-MM-DD"),
@@ -158,7 +175,9 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
     },
     async (args) => {
       try {
-        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId, {
+          allowExplicitOverride: true,
+        });
         const resolvedTimeRange =
           args.timeRange ||
           (args.startDate && args.endDate ? { since: args.startDate, until: args.endDate } : undefined);
@@ -1116,6 +1135,91 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
     }
   );
 
+  const listConnectedSheets = tool(
+    "list_connected_sheets",
+    "List all connected Google Spreadsheets / Data Warehouse sheets for the user with exact sheetIndex (#1, #2, etc.), spreadsheetId, sheetName, sheetUrl, available worksheet tabs, and selected tabs.",
+    {},
+    async () => {
+      try {
+        const result = await executeAgentTool("list_connected_sheets", { userId });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const inspectSheetSchema = tool(
+    "inspect_sheet_schema",
+    "Dynamically inspect a connected Google Spreadsheet's actual worksheet tabs, header columns, semantic field mappings, and row data. Supports Sheet #1, Sheet #2, etc. and specific worksheet tabs.",
+    {
+      sheetIndex: z.number().optional().describe("1-based connected spreadsheet index (e.g. 1 for Sheet #1, 2 for Sheet #2)"),
+      sheetUrl: z.string().optional().describe("Optional explicit Google Sheet URL or spreadsheetId"),
+      tabName: z.string().optional().describe("Optional specific worksheet tab name to read"),
+      requestedFields: z.array(z.string()).optional().describe("Optional list of column/field names requested by the user"),
+      userMessage: z.string().optional().describe("Optional user instruction for context"),
+    },
+    async (args) => {
+      try {
+        const result = await executeAgentTool("inspect_sheet_schema", {
+          ...args,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const extractSheetVideoLinks = tool(
+    "extract_sheet_video_links",
+    "Read a connected Google Spreadsheet (e.g. Sheet #2), dynamically identify video-related columns (Creative Smart Chips, Video Link, Creative Code, Media Type, etc.), extract complete untruncated Google Drive / video URLs (including multiple URLs per cell), and validate format & accessibility.",
+    {
+      sheetIndex: z.number().optional().describe("1-based connected spreadsheet index (e.g. 2 for Sheet #2)"),
+      sheetUrl: z.string().optional().describe("Optional explicit Google Sheet URL or spreadsheetId"),
+      tabName: z.string().optional().describe("Optional specific worksheet tab name"),
+      validateUrls: z.boolean().optional().default(true).describe("Whether to validate URL format and accessibility"),
+      userMessage: z.string().optional().describe("Optional user instruction"),
+    },
+    async (args) => {
+      try {
+        const result = await executeAgentTool("extract_sheet_video_links", {
+          ...args,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const updateConnectedSheetCells = tool(
+    "update_connected_sheet_cells",
+    "Update specific cell(s) or row+column values in a connected Google Spreadsheet and verify the written values via Google Sheets API.",
+    {
+      sheetIndex: z.number().optional().describe("1-based connected spreadsheet index"),
+      sheetUrl: z.string().optional().describe("Optional explicit Google Sheet URL"),
+      tabName: z.string().optional().describe("Optional worksheet tab name"),
+      rowNumber: z.number().optional().describe("1-based spreadsheet row number (row 1 is header, data starts at row 2)"),
+      columnName: z.string().optional().describe("Exact column header name to update"),
+      cellRange: z.string().optional().describe("Optional A1 cell range (e.g. C2)"),
+      newValue: z.string().optional().describe("New value to write"),
+    },
+    async (args) => {
+      try {
+        const result = await executeAgentTool("update_connected_sheet_cells", {
+          ...args,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
   return createSdkMcpServer({
     name: "ads",
     version: "1.0.0",
@@ -1151,6 +1255,10 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
       listGoogleAds,
       getGoogleCampaignStructure,
       queryTokenUsageMetrics,
+      listConnectedSheets,
+      inspectSheetSchema,
+      extractSheetVideoLinks,
+      updateConnectedSheetCells,
       getConnectedSheetRows,
       routeCampaignSheet,
       validateGoogleDriveAsset,
@@ -1165,6 +1273,10 @@ export const ADS_ALLOWED_TOOLS = [
   "mcp__ads__get_account_context",
   "mcp__ads__get_user_connected_accounts",
   "mcp__ads__get_user_ai_context",
+  "mcp__ads__list_connected_sheets",
+  "mcp__ads__inspect_sheet_schema",
+  "mcp__ads__extract_sheet_video_links",
+  "mcp__ads__update_connected_sheet_cells",
   "mcp__ads__get_connected_sheet_rows",
   "mcp__ads__route_campaign_sheet",
   "mcp__ads__validate_google_drive_asset",

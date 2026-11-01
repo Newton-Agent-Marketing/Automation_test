@@ -1,4 +1,5 @@
 import axios from "axios";
+import XLSX from "xlsx";
 import googleOAuth from "../auth/googleOAuth.js";
 import { cleanPageId } from "../services/data/fieldMapper.js";
 
@@ -197,6 +198,7 @@ class SheetsService {
 
     let availableWorksheets = [];
     let spreadsheetName = `Google_Sheet_${spreadsheetId.slice(0, 8)}`;
+    let requestedTabNotFound = false;
     const warnings = [];
 
     // Method 1: Authenticated Google Sheets API v4
@@ -235,6 +237,7 @@ class SheetsService {
             if (matchedSheet) {
               targetSheetTitle = matchedSheet.properties.title;
             } else {
+              requestedTabNotFound = true;
               console.warn(`[SheetsService Notice] Requested worksheet tab "${sheetTitle}" not found in spreadsheet "${spreadsheetName}". Available worksheets: [${availableWorksheets.join(", ")}]. Defaulting to "${sheetsList[0].properties?.title}".`);
               warnings.push(`Worksheet "${sheetTitle}" not found. Defaulted to "${sheetsList[0].properties?.title}".`);
             }
@@ -291,6 +294,7 @@ class SheetsService {
 
       // Fetch cell hyperlinks (Smart Chips / embedded drive links) via spreadsheets.get gridData
       const gridHyperlinksMap = new Map();
+      const gridUrlArraysMap = new Map();
       const gridRawValuesMap = new Map();
       try {
         const gridRange = effectiveRange;
@@ -312,42 +316,63 @@ class SheetsService {
         sheetData.forEach((rowItem, rIdx) => {
           const cells = rowItem.values || [];
           cells.forEach((cellItem, cIdx) => {
-            let hLink = cellItem.hyperlink || null;
+            const collectedUrls = [];
+            const addUrl = (u) => {
+              if (!u || typeof u !== "string") return;
+              const trimmedUrl = u.trim();
+              if (trimmedUrl && !collectedUrls.includes(trimmedUrl)) {
+                collectedUrls.push(trimmedUrl);
+              }
+            };
 
-            // 1. Extract Smart Chip / rich-text links from textFormatRuns
-            if (!hLink && Array.isArray(cellItem.textFormatRuns)) {
+            if (cellItem.hyperlink) {
+              addUrl(cellItem.hyperlink);
+            }
+
+            // 1. Extract Google Sheets Smart Chips (chipRuns -> richLinkProperties.uri)
+            if (Array.isArray(cellItem.chipRuns)) {
+              for (const chipRun of cellItem.chipRuns) {
+                const chipUri =
+                  chipRun?.chip?.richLinkProperties?.uri ||
+                  chipRun?.richLinkProperties?.uri ||
+                  chipRun?.uri;
+                if (chipUri) addUrl(chipUri);
+              }
+            }
+
+            // 2. Extract Smart Chip / rich-text links from textFormatRuns (support multiple links per cell)
+            if (Array.isArray(cellItem.textFormatRuns)) {
               for (const run of cellItem.textFormatRuns) {
                 const runUri = run.format?.link?.uri || run.link?.uri;
-                if (runUri && (runUri.includes("drive.google.com") || runUri.includes("docs.google.com") || runUri.length >= 25)) {
-                  hLink = runUri;
-                  break;
+                if (runUri && (runUri.includes("drive.google.com") || runUri.includes("docs.google.com") || /^https?:\/\//i.test(runUri))) {
+                  addUrl(runUri);
                 }
               }
             }
 
-            // 2. Extract formula HYPERLINK
-            if (!hLink && cellItem.userEnteredValue?.formulaValue) {
+            // 3. Extract formula HYPERLINK(s)
+            if (cellItem.userEnteredValue?.formulaValue) {
               const formVal = String(cellItem.userEnteredValue.formulaValue);
-              const match = formVal.match(/HYPERLINK\(\s*["']([^"']+)["']/i);
-              if (match) hLink = match[1];
+              const formRegex = /HYPERLINK\(\s*["']([^"']+)["']/gi;
+              let fMatch;
+              while ((fMatch = formRegex.exec(formVal)) !== null) {
+                addUrl(fMatch[1]);
+              }
             }
 
-            // 3. Raw JSON pattern matching on cell object for Drive URL or folder ID
-            if (!hLink) {
-              try {
-                const jsonStr = JSON.stringify(cellItem);
-                const driveMatch = jsonStr.match(/https?:\/\/(?:drive|docs)\.google\.com\/[^\s"',;}\\]+/i);
-                if (driveMatch) {
-                  hLink = driveMatch[0];
-                }
-              } catch (e) {}
+            // 4. Raw JSON pattern matching on cell object for Drive URLs (extract all matches)
+            try {
+              const jsonStr = JSON.stringify(cellItem);
+              const driveMatches = jsonStr.match(/https?:\/\/(?:drive|docs)\.google\.com\/[^\s"',;}\\]+/gi) || [];
+              driveMatches.forEach((dm) => addUrl(dm));
+            } catch (e) {}
+
+            if (collectedUrls.length > 0) {
+              gridHyperlinksMap.set(`${rIdx}_${cIdx}`, collectedUrls.join("\n"));
+              gridUrlArraysMap.set(`${rIdx}_${cIdx}`, collectedUrls);
             }
 
-            if (hLink) {
-              gridHyperlinksMap.set(`${rIdx}_${cIdx}`, hLink);
-            }
-
-            // 4. Extract uncorrupted raw numeric / string IDs to prevent Google Sheets scientific notation truncation
+            // 5. Extract uncorrupted raw numeric / string IDs to prevent Google Sheets scientific notation truncation
             let rawCellVal = null;
             if (cellItem.effectiveValue) {
               if (typeof cellItem.effectiveValue.numberValue === "number" && Number.isInteger(cellItem.effectiveValue.numberValue)) {
@@ -403,12 +428,23 @@ class SheetsService {
         for (let r = headerRowIdx + 1; r < rawValues.length; r++) {
           const rowData = rawValues[r] || [];
           const rowNumber = r + 1;
-          const rowObj = { _originalRowNumber: rowNumber };
+          const rowObj = { _originalRowNumber: rowNumber, _cellLabels: {}, _cellUrls: {} };
           let hasData = false;
 
           headers.forEach((header, idx) => {
+            const displayVal = rowData[idx] !== undefined ? String(rowData[idx]).trim() : "";
             const hLink = gridHyperlinksMap.get(`${r}_${idx}`);
-            let val = hLink || (rowData[idx] !== undefined ? String(rowData[idx]).trim() : "");
+            const cellUrls = gridUrlArraysMap.get(`${r}_${idx}`) || [];
+            const isDisplayLinkCol = /^display\s*[_-]?\s*(link|url|domain)$/i.test(header.trim());
+
+            if (displayVal) {
+              rowObj._cellLabels[header] = displayVal;
+            }
+            if (cellUrls.length > 0) {
+              rowObj._cellUrls[header] = cellUrls;
+            }
+
+            let val = (!isDisplayLinkCol && hLink) ? hLink : (displayVal || hLink || "");
             const rawGridVal = gridRawValuesMap.get(`${r}_${idx}`);
             if (rawGridVal && (/^[+-]?\d+(?:\.\d+)?[eE][+-]?\d+$/i.test(val) || (val === "" && rawGridVal))) {
               val = rawGridVal;
@@ -445,6 +481,8 @@ class SheetsService {
           spreadsheetId,
           spreadsheetName,
           sheetTitle: targetSheetTitle || "Sheet1",
+          requestedSheetTitle: sheetTitle || null,
+          requestedTabNotFound,
           availableWorksheets: availableWorksheets.length > 0 ? availableWorksheets : [targetSheetTitle || "Sheet1"],
           availableTabs: discoveredTabs.length > 0 ? discoveredTabs : [{ sheetId: 0, title: targetSheetTitle || "Sheet1", index: 0, rowCount: totalPopulatedRows, columnCount: headers.length }],
           detectedHeaderRowIndex: headerRowIdx,
@@ -462,10 +500,221 @@ class SheetsService {
       }
     } catch (authErr) {
       const errDetails = authErr.response?.data?.error?.message || authErr.message;
-      console.warn(`[SheetsService] Google Sheets API v4 read notice (${errDetails}). Switching to Drive export handler...`);
+      console.warn(`[SheetsService] Google Sheets API v4 read notice (${errDetails}). Switching to XLSX/Drive export handler...`);
     }
 
-    // Method 2: Google Drive API v3 Authenticated CSV Export (with cache-busting timestamp)
+    // Method 2: XLSX Workbook Export (preserves multi-worksheet tabs + Smart Chip hyperlinks + exact values)
+    try {
+      const accessToken = await googleOAuth.getAccessToken().catch(() => null);
+      const xlsxUrl = accessToken
+        ? `https://www.googleapis.com/drive/v3/files/${spreadsheetId}/export?mimeType=${encodeURIComponent("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}&_t=${Date.now()}`
+        : `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=xlsx&_t=${Date.now()}`;
+
+      const xlsxHeaders = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Cache-Control": "no-cache, no-store, max-age=0",
+        Pragma: "no-cache",
+      };
+      if (accessToken) {
+        xlsxHeaders.Authorization = `Bearer ${accessToken}`;
+      }
+
+      const xlsxRes = await axios.get(xlsxUrl, {
+        responseType: "arraybuffer",
+        timeout: 20000,
+        headers: xlsxHeaders,
+      });
+
+      const buf = Buffer.from(xlsxRes.data);
+      // Verify it's a ZIP/XLSX binary (starts with PK\x03\x04) rather than an HTML login page
+      if (buf.length > 4 && buf[0] === 0x50 && buf[1] === 0x4b) {
+        const wb = XLSX.read(buf, { type: "buffer", cellFormula: true, cellHTML: true, cellText: true });
+        const wbTabs = wb.SheetNames || [];
+        if (wbTabs.length > 0) {
+          let chosenTab = wbTabs[0];
+          let xlsxTabNotFound = false;
+
+          if (sheetTitle) {
+            const cleanReq = String(sheetTitle).toLowerCase().trim();
+            const exact = wbTabs.find((t) => t.toLowerCase().trim() === cleanReq);
+            const partial = exact || wbTabs.find((t) => t.toLowerCase().includes(cleanReq));
+            if (partial) {
+              chosenTab = partial;
+            } else {
+              xlsxTabNotFound = true;
+              warnings.push(`Worksheet "${sheetTitle}" not found. Available worksheets: [${wbTabs.join(", ")}].`);
+            }
+          }
+
+          // Try fetching human-readable document title if still generic
+          if (spreadsheetName.startsWith("Google_Sheet_")) {
+            try {
+              const htmlRes = await axios.get(`https://docs.google.com/spreadsheets/d/${spreadsheetId}/htmlview`, {
+                timeout: 6000,
+                headers: { "User-Agent": "Mozilla/5.0" },
+              });
+              const titleMatch = String(htmlRes.data || "").match(/<title>([^<]+)<\/title>/i);
+              if (titleMatch?.[1]) {
+                spreadsheetName = titleMatch[1]
+                  .replace(/\s*-\s*Google\s*(Sheets|Drive)\s*$/i, "")
+                  .trim() || spreadsheetName;
+              }
+            } catch (_) {}
+          }
+
+          const ws = wb.Sheets[chosenTab];
+          const refRange = ws["!ref"] ? XLSX.utils.decode_range(ws["!ref"]) : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
+          const maxR = refRange.e.r;
+          const maxC = refRange.e.c;
+
+          const gridStrings = [];
+          const xlsxUrlsMap = new Map();
+          for (let r = 0; r <= maxR; r++) {
+            const rowArr = [];
+            for (let c = 0; c <= maxC; c++) {
+              const addr = XLSX.utils.encode_cell({ r, c });
+              const cell = ws[addr];
+              let cellStr = "";
+              if (cell) {
+                if (typeof cell.v === "number" && Number.isInteger(cell.v) && Math.abs(cell.v) >= 1e12) {
+                  cellStr = BigInt(Math.trunc(cell.v)).toString();
+                } else if (cell.w !== undefined && cell.w !== null && !/^[+-]?\d+(?:\.\d+)?[eE][+-]?\d+$/i.test(String(cell.w))) {
+                  cellStr = String(cell.w).trim();
+                } else if (cell.v !== undefined && cell.v !== null) {
+                  cellStr = String(cell.v).trim();
+                }
+
+                const urls = [];
+                const pushUrl = (u) => {
+                  if (!u || typeof u !== "string") return;
+                  let cleanU = u.trim();
+                  if (cleanU.includes("google.com/url?q=")) {
+                    const qm = cleanU.match(/[?&]q=([^&]+)/);
+                    if (qm) cleanU = decodeURIComponent(qm[1]);
+                  }
+                  if (cleanU && !urls.includes(cleanU)) urls.push(cleanU);
+                };
+
+                if (cell.l?.Target) pushUrl(cell.l.Target);
+                if (cell.f) {
+                  const fRegex = /HYPERLINK\(\s*["']([^"']+)["']/gi;
+                  let fm;
+                  while ((fm = fRegex.exec(String(cell.f))) !== null) pushUrl(fm[1]);
+                }
+                if (cellStr) {
+                  const inlineUrls = cellStr.match(/https?:\/\/[^\s"',;<>\\]+/gi) || [];
+                  inlineUrls.forEach((iu) => pushUrl(iu));
+                }
+                if (urls.length > 0) {
+                  xlsxUrlsMap.set(`${r}_${c}`, urls);
+                }
+              }
+              rowArr.push(cellStr);
+            }
+            gridStrings.push(rowArr);
+          }
+
+          const headerRowIdx = this.detectHeaderRowIndex(gridStrings);
+          const rawHeaders = gridStrings[headerRowIdx] || [];
+          const headers = [];
+          const headerCounts = {};
+          rawHeaders.forEach((h, idx) => {
+            let hStr = String(h || "").trim();
+            if (!hStr) hStr = `Column_${idx + 1}`;
+            if (headerCounts[hStr]) {
+              headerCounts[hStr] += 1;
+              headers.push(`${hStr}_${headerCounts[hStr]}`);
+            } else {
+              headerCounts[hStr] = 1;
+              headers.push(hStr);
+            }
+          });
+
+          const rows = [];
+          let maxPopulatedRowNumber = headerRowIdx + 1;
+          let totalPopulatedRows = headers.length > 0 ? 1 : 0;
+          let blankRowsCount = 0;
+
+          for (let r = headerRowIdx + 1; r < gridStrings.length; r++) {
+            const line = gridStrings[r] || [];
+            const rowNumber = r + 1;
+            const rowObj = { _originalRowNumber: rowNumber, _cellLabels: {}, _cellUrls: {} };
+            let hasData = false;
+
+            headers.forEach((header, idx) => {
+              const displayVal = line[idx] !== undefined ? String(line[idx]).trim() : "";
+              const cellUrls = xlsxUrlsMap.get(`${r}_${idx}`) || [];
+              const isDisplayLinkCol = /^display\s*[_-]?\s*(link|url|domain)$/i.test(header.trim());
+
+              if (displayVal) rowObj._cellLabels[header] = displayVal;
+              if (cellUrls.length > 0) rowObj._cellUrls[header] = cellUrls;
+
+              const joinedUrls = cellUrls.join("\n");
+              const val = (!isDisplayLinkCol && joinedUrls) ? joinedUrls : (displayVal || joinedUrls || "");
+              if (val !== "") hasData = true;
+
+              const cleanKey = header
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, "_")
+                .replace(/^_+|_+$/g, "");
+
+              rowObj[header] = val;
+              if (cleanKey && !rowObj[cleanKey]) rowObj[cleanKey] = val;
+              rowObj[`col_${idx}`] = val;
+            });
+
+            rowObj.isPopulated = hasData;
+            rowObj._isBlank = !hasData;
+            if (hasData) {
+              maxPopulatedRowNumber = Math.max(maxPopulatedRowNumber, rowNumber);
+              totalPopulatedRows++;
+            } else {
+              blankRowsCount++;
+            }
+            rows.push(rowObj);
+          }
+
+          const totalDataRows = rows.filter((r) => r.isPopulated).length;
+          const discoveredTabs = wbTabs.map((t, idx) => {
+            const tabWs = wb.Sheets[t];
+            const tabRef = tabWs?.["!ref"] ? XLSX.utils.decode_range(tabWs["!ref"]) : null;
+            return {
+              sheetId: idx,
+              title: t,
+              index: idx,
+              rowCount: tabRef ? tabRef.e.r + 1 : 0,
+              columnCount: tabRef ? tabRef.e.c + 1 : 0,
+            };
+          });
+
+          return {
+            source: "xlsx_export",
+            spreadsheetId,
+            spreadsheetName,
+            sheetTitle: chosenTab,
+            requestedSheetTitle: sheetTitle || null,
+            requestedTabNotFound: xlsxTabNotFound,
+            availableWorksheets: wbTabs,
+            availableTabs: discoveredTabs,
+            detectedHeaderRowIndex: headerRowIdx,
+            headerRowNumber: headerRowIdx + 1,
+            lastRowNumber: maxPopulatedRowNumber,
+            dataRowStart: headerRowIdx + 2,
+            totalSheetRows: totalPopulatedRows,
+            totalDataRows,
+            blankRowsCount,
+            headers,
+            rows,
+            totalRows: rows.length,
+            warnings,
+          };
+        }
+      }
+    } catch (xlsxErr) {
+      console.warn("[SheetsService] XLSX export fallback notice:", xlsxErr.message);
+    }
+
+    // Method 2b: Google Drive API v3 Authenticated CSV Export (with cache-busting timestamp)
     try {
       const accessToken = await googleOAuth.getAccessToken();
       if (accessToken) {
@@ -937,6 +1186,44 @@ class SheetsService {
       }
     } catch (htmlErr) {
       console.warn(`[SheetsService] discoverWorksheetTabs HTML view fallback notice: ${htmlErr.message}`);
+    }
+
+    // Attempt 3: XLSX workbook export tab discovery (discovers exact multi-tab titles reliably)
+    try {
+      const xlsxUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=xlsx&_t=${Date.now()}`;
+      const xlsxRes = await axios.get(xlsxUrl, {
+        responseType: "arraybuffer",
+        timeout: 15000,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+      });
+      const buf = Buffer.from(xlsxRes.data);
+      if (buf.length > 4 && buf[0] === 0x50 && buf[1] === 0x4b) {
+        const wb = XLSX.read(buf, { type: "buffer", bookSheets: false });
+        const wbTabs = wb.SheetNames || [];
+        if (wbTabs.length > 0) {
+          return {
+            success: true,
+            spreadsheetId,
+            spreadsheetName: spreadsheetName.replace(/\s*-\s*Google\s*(Sheets|Drive)\s*$/i, "").trim(),
+            tabs: wbTabs.map((t, idx) => {
+              const tabWs = wb.Sheets?.[t];
+              const tabRef = tabWs?.["!ref"] ? XLSX.utils.decode_range(tabWs["!ref"]) : null;
+              return {
+                sheetId: idx,
+                title: t,
+                index: idx,
+                rowCount: tabRef ? tabRef.e.r + 1 : 0,
+                columnCount: tabRef ? tabRef.e.c + 1 : 0,
+              };
+            }),
+            source: "xlsx_export",
+          };
+        }
+      }
+    } catch (xlsxTabErr) {
+      console.warn(`[SheetsService] discoverWorksheetTabs XLSX fallback notice: ${xlsxTabErr.message}`);
     }
 
     return {

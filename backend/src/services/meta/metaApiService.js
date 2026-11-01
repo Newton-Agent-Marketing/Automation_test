@@ -482,16 +482,140 @@ export class MetaApiService {
     console.log(`🔑 [Meta API Token Resolution]: Target Account=${accountId} | Token=[REDACTED]`);
 
     const cleanId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
-    const url = `${META_GRAPH_URL}/${cleanId}/campaigns`;
-    const response = await axios.get(url, {
-      params: {
-        access_token: accessToken,
-        fields:
-          "id,name,status,effective_status,objective,daily_budget,lifetime_budget,start_time,stop_time,ads{id,name,status,effective_status}",
-        limit: 100,
+    const maxCampaigns = (param1 && typeof param1 === "object" && param1.maxLimit) ? Number(param1.maxLimit) : 2500;
+    let currentUrl = `${META_GRAPH_URL}/${cleanId}/campaigns`;
+    let currentParams = {
+      access_token: accessToken,
+      fields:
+        "id,name,status,effective_status,objective,daily_budget,lifetime_budget,start_time,stop_time,ads{id,name,status,effective_status}",
+      limit: 100,
+    };
+
+    const allCampaigns = [];
+    let pagesFetched = 0;
+    let hasMore = false;
+
+    try {
+      while (currentUrl) {
+        const response = await axios.get(currentUrl, currentParams ? { params: currentParams, timeout: 15000 } : { timeout: 15000 });
+        const pageData = response.data?.data || [];
+        allCampaigns.push(...pageData);
+        pagesFetched += 1;
+
+        const nextUrl = response.data?.paging?.next || null;
+        if (nextUrl && allCampaigns.length < maxCampaigns) {
+          currentUrl = nextUrl;
+          currentParams = null;
+        } else {
+          hasMore = Boolean(nextUrl);
+          break;
+        }
+      }
+    } catch (err) {
+      const metaErr = err.response?.data?.error;
+      if (metaErr?.message) {
+        const codePart = metaErr.code ? `(#${metaErr.code}) ` : "";
+        const enriched = new Error(`Meta Graph API Error on ${cleanId}: ${codePart}${metaErr.message}`);
+        enriched.response = err.response;
+        enriched.metaError = metaErr;
+        throw enriched;
+      }
+      throw err;
+    }
+
+    Object.defineProperty(allCampaigns, "_pagination", {
+      value: {
+        totalFetched: allCampaigns.length,
+        pagesFetched,
+        hasMore,
       },
+      enumerable: false,
     });
-    return response.data.data || [];
+
+    return allCampaigns;
+  }
+
+  static async getAdSets(accountId, accessToken, { campaignId = null, limit = 200 } = {}) {
+    if (!accessToken || !accountId) return [];
+    const cleanId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
+    const targetNode = campaignId ? String(campaignId).trim() : cleanId;
+    let currentUrl = `${META_GRAPH_URL}/${targetNode}/adsets`;
+    let currentParams = {
+      access_token: accessToken,
+      fields: "id,name,status,effective_status,campaign_id,daily_budget,lifetime_budget,optimization_goal,billing_event,bid_strategy,start_time,end_time",
+      limit: Math.min(limit, 100),
+    };
+    const allAdSets = [];
+    let hasMore = false;
+    try {
+      while (currentUrl && allAdSets.length < limit) {
+        const response = await axios.get(currentUrl, currentParams ? { params: currentParams, timeout: 15000 } : { timeout: 15000 });
+        allAdSets.push(...(response.data?.data || []));
+        const nextUrl = response.data?.paging?.next || null;
+        if (nextUrl && allAdSets.length < limit) {
+          currentUrl = nextUrl;
+          currentParams = null;
+        } else {
+          hasMore = Boolean(nextUrl);
+          break;
+        }
+      }
+    } catch (err) {
+      const metaErr = err.response?.data?.error;
+      if (metaErr?.message) {
+        const enriched = new Error(`Meta Graph API AdSets Error: (#${metaErr.code || "API"}) ${metaErr.message}`);
+        enriched.response = err.response;
+        throw enriched;
+      }
+      throw err;
+    }
+    Object.defineProperty(allAdSets, "_pagination", {
+      value: { totalFetched: allAdSets.length, hasMore },
+      enumerable: false,
+    });
+    return allAdSets;
+  }
+
+  static async getAdCreatives(accountId, accessToken, { campaignId = null, adSetId = null, limit = 100 } = {}) {
+    if (!accessToken || !accountId) return [];
+    const cleanId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
+    const targetNode = adSetId ? String(adSetId).trim() : campaignId ? String(campaignId).trim() : cleanId;
+    let currentUrl = `${META_GRAPH_URL}/${targetNode}/ads`;
+    let currentParams = {
+      access_token: accessToken,
+      fields:
+        "id,name,status,effective_status,campaign_id,adset_id,creative{id,name,title,body,image_url,thumbnail_url,video_id,call_to_action_type,object_story_spec}",
+      limit: Math.min(limit, 100),
+    };
+    const allAds = [];
+    let hasMore = false;
+    try {
+      while (currentUrl && allAds.length < limit) {
+        const response = await axios.get(currentUrl, currentParams ? { params: currentParams, timeout: 15000 } : { timeout: 15000 });
+        allAds.push(...(response.data?.data || []));
+        const nextUrl = response.data?.paging?.next || null;
+        if (nextUrl && allAds.length < limit) {
+          currentUrl = nextUrl;
+          currentParams = null;
+        } else {
+          hasMore = Boolean(nextUrl);
+          break;
+        }
+      }
+    } catch (err) {
+      const metaErr = err.response?.data?.error;
+      if (metaErr?.message) {
+        const enriched = new Error(`Meta Graph API Creatives Error: (#${metaErr.code || "API"}) ${metaErr.message}`);
+        enriched.response = err.response;
+        throw enriched;
+      }
+      throw err;
+    }
+    Object.defineProperty(allAds, "_pagination", {
+      value: { totalFetched: allAds.length, hasMore },
+      enumerable: false,
+    });
+    return allAds;
   }
 
   static async getAccountAds(param1, param2) {
@@ -2893,6 +3017,8 @@ export class MetaApiService {
     const defaultFields =
       level === "ad"
         ? "campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,date_start,date_stop,spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,actions,action_values,objective,account_currency,purchase_roas"
+        : level === "adset"
+        ? "campaign_id,campaign_name,adset_id,adset_name,date_start,date_stop,spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,actions,action_values,objective,account_currency,purchase_roas"
         : "campaign_id,campaign_name,date_start,date_stop,spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,actions,action_values,objective,account_currency,purchase_roas";
 
     const params = {
@@ -2913,19 +3039,39 @@ export class MetaApiService {
     let allRecords = [];
     let currentUrl = url;
     let currentParams = params;
+    let hasMore = false;
 
-    while (currentUrl) {
-      const response = await axios.get(currentUrl, { params: currentParams });
-      const rows = response.data?.data || [];
-      allRecords.push(...rows);
+    try {
+      while (currentUrl) {
+        const response = await axios.get(currentUrl, currentParams ? { params: currentParams, timeout: 20000 } : { timeout: 20000 });
+        const rows = response.data?.data || [];
+        allRecords.push(...rows);
 
-      if (response.data?.paging?.next && allRecords.length < 2000) {
-        currentUrl = response.data.paging.next;
-        currentParams = null;
-      } else {
-        break;
+        const nextUrl = response.data?.paging?.next || null;
+        if (nextUrl && allRecords.length < 2000) {
+          currentUrl = nextUrl;
+          currentParams = null;
+        } else {
+          hasMore = Boolean(nextUrl);
+          break;
+        }
       }
+    } catch (err) {
+      const metaErr = err.response?.data?.error;
+      if (metaErr?.message) {
+        const codePart = metaErr.code ? `(#${metaErr.code}) ` : "";
+        const enriched = new Error(`Meta Graph API Insights Error on ${cleanId}: ${codePart}${metaErr.message}`);
+        enriched.response = err.response;
+        enriched.metaError = metaErr;
+        throw enriched;
+      }
+      throw err;
     }
+
+    Object.defineProperty(allRecords, "_pagination", {
+      value: { totalFetched: allRecords.length, hasMore },
+      enumerable: false,
+    });
 
     return allRecords;
   }

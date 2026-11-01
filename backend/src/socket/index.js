@@ -63,6 +63,7 @@ export const initSocket = (httpServer) => {
       const {
         conversationId,
         userMessage,
+        executionId,
         accountId,
         metaAccountId,
         googleAccountId,
@@ -82,11 +83,12 @@ export const initSocket = (httpServer) => {
       }
 
       try {
-        await runAgentChat({
+        const chatRes = await runAgentChat({
           userId: socket.user._id,
           userEmail: socket.user.email,
           conversationId,
           userMessage,
+          executionId,
           accountId,
           metaAccountId,
           googleAccountId,
@@ -97,14 +99,21 @@ export const initSocket = (httpServer) => {
           rangeSelector,
           onEvent: (event) => socket.emit("chat:event", event),
         });
-        socket.emit("chat:event", { type: "done" });
+        socket.emit("chat:event", {
+          type: "done",
+          executionId: chatRes?.executionId || executionId || null,
+        });
       } catch (error) {
         console.error("[Socket Chat Error]:", error);
         socket.emit("chat:event", {
           type: "error",
           message: error.message,
+          executionId: executionId || null,
         });
-        socket.emit("chat:event", { type: "done" });
+        socket.emit("chat:event", {
+          type: "done",
+          executionId: executionId || null,
+        });
       }
     });
   });

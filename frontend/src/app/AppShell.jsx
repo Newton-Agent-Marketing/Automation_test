@@ -23,9 +23,12 @@ import {
   appendStreamText,
   fetchConversations,
   finishStream,
+  resetStreamText,
   setChatError,
+  setPreparationData,
   setSocketConnected,
   setToolStatus,
+  startExecution,
   updateJobProgress,
 } from "../features/chat/chat.slice";
 import {
@@ -63,26 +66,40 @@ const AppShell = () => {
   }, [dispatch]);
 
   useEffect(() => {
-    if (!user) return undefined;
+    if (!user?._id) return undefined;
 
     connectChatSocket({
       onStatus: (connected) => dispatch(setSocketConnected(connected)),
       onEvent: (event) => {
-        if (event.type === "text_delta") dispatch(appendStreamText(event.content || ""));
+        if (event.type === "execution_start") {
+          dispatch(startExecution(event.executionId));
+        }
+        if (event.type === "stream_reset") {
+          dispatch(resetStreamText(event.executionId));
+        }
+        if (event.type === "text_delta") {
+          dispatch(
+            appendStreamText({
+              content: event.content || "",
+              executionId: event.executionId || null,
+            })
+          );
+        }
         if (event.type === "tool_status") {
           dispatch(setToolStatus(event.status || event.toolName));
         }
         if (event.type === "progress_update") dispatch(updateJobProgress(event));
+        if (event.type === "preparation_update") dispatch(setPreparationData(event.session));
         if (event.type === "error") dispatch(setChatError(event.message));
         if (event.type === "done") {
-          dispatch(finishStream());
+          dispatch(finishStream(event.executionId || null));
           dispatch(fetchConversations());
         }
       },
     });
 
     return () => disconnectChatSocket();
-  }, [dispatch, user]);
+  }, [dispatch, user?._id]);
 
   const userName = user?.name || "User";
   const userInitial = userName.charAt(0).toUpperCase() || "U";

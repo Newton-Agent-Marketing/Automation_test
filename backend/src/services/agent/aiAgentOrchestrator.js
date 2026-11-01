@@ -1,475 +1,633 @@
-// backend/src/services/agent/aiAgentOrchestrator.js
-import mongoose from "mongoose";
-import User from "../../models/authModel.js";
+import axios from "axios";
+import AiContext from "../../models/aiContextModel.js";
 import MetaAccount from "../../models/metaAccount.js";
 import GoogleAccount from "../../models/googleAccountModel.js";
 import ConnectedChannel from "../../models/connectedChannelModel.js";
-import AiContext from "../../models/aiContextModel.js";
-import MetaCampaign from "../../models/metaCampaign.js";
-import MetaInsight from "../../models/metaInsight.js";
-import GoogleCampaign from "../../models/googleCampaignModel.js";
-import GoogleInsight from "../../models/googleInsightModel.js";
-import { executeAgentTool, getUserAiContext } from "./queryDbMetrics.js";
-import { MetaMcpClient } from "../mcp/metaMcpClient.js";
-import { GoogleMcpClient } from "../mcp/googleMcpClient.js";
-import sheetsService from "../../google/sheetsService.js";
+import { executeAgentTool, getUserAiContext, AGENT_TOOLS_DEFINITIONS } from "./queryDbMetrics.js";
 import { AgentStreamHandler } from "./agentStream.js";
+import CampaignPreparationService from "../campaignPreparation/campaignPreparationService.js";
+import SheetInspectorService from "./sheetInspectorService.js";
+import ConversationMemoryService from "./conversationMemoryService.js";
+
+const ANTHROPIC_MODEL_CANDIDATES = [
+  process.env.CLAUDE_AGENT_MODEL || "claude-sonnet-4-5",
+  "claude-sonnet-4-20250514",
+  "claude-3-7-sonnet-latest",
+  "claude-3-5-haiku-latest",
+];
+
+function extractExplicitMetaAccountId(text = "") {
+  if (!text || typeof text !== "string") return null;
+  const actMatch = text.match(/\bact_(\d{5,25})\b/i);
+  if (actMatch) return `act_${actMatch[1]}`;
+  const contextualMatch = text.match(
+    /\b(?:meta\s+ad\s+account|ad\s+account|meta\s+account|account\s+id|in\s+account|from\s+account|for\s+account)\s*[:#-]?\s*(\d{8,25})\b/i
+  );
+  if (contextualMatch) return `act_${contextualMatch[1]}`;
+  return null;
+}
+
+function parseDateWindowFromText(text = "") {
+  const lower = String(text || "").toLowerCase();
+  const rangeMatch = text.match(/(\d{4}-\d{2}-\d{2})\s*(?:to|through|until|-|–)\s*(\d{4}-\d{2}-\d{2})/i);
+  if (rangeMatch) {
+    return { timeRange: { since: rangeMatch[1], until: rangeMatch[2] }, datePreset: undefined };
+  }
+  if (/\btoday\b|\baaj\b/i.test(lower)) return { datePreset: "today" };
+  if (/\byesterday\b|\bkal\b/i.test(lower)) return { datePreset: "yesterday" };
+  if (/\blast\s*7\s*d|\bpast\s*7\s*d|\b7\s*days|\bweekly\b/i.test(lower)) return { datePreset: "last_7d" };
+  if (/\blast\s*14\s*d|\bpast\s*14\s*d|\b14\s*days\b/i.test(lower)) return { datePreset: "last_14d" };
+  if (/\blast\s*30\s*d|\bpast\s*30\s*d|\b30\s*days|\bmonthly\b|\bthis\s*month\b/i.test(lower)) {
+    return { datePreset: "last_30d" };
+  }
+  if (/\blast\s*90\s*d|\b90\s*days\b/i.test(lower)) return { datePreset: "last_90d" };
+  return { datePreset: "maximum" };
+}
+
+function extractRequestedSheetFields(instruction = "", actualHeaders = []) {
+  const text = String(instruction || "").trim();
+  const candidates = [];
+
+  // 1. Check quoted field names: "TikTok Shop SKU", 'Creative Code'
+  const quotedMatches = [...text.matchAll(/["'`]([^"'`\n]{2,50})["'`]/g)];
+  for (const m of quotedMatches) {
+    const val = m[1].trim();
+    if (!/^act_\d+$/i.test(val) && !/sheet\s*#?\d+/i.test(val)) {
+      candidates.push(val);
+    }
+  }
+
+  // 2. Check explicit "<Field Name> column/field" patterns
+  const colBeforeMatches = [
+    ...text.matchAll(
+      /\b(?:fetch|get|show|read|extract|display|find|list|check|give\s+me)\s+(?:the\s+|all\s+|their\s+|these\s+)?([a-zA-Z0-9_ /&-]{2,45}?)\s+(?:columns?|fields?|values?)\b/gi
+    ),
+  ];
+  for (const m of colBeforeMatches) {
+    const raw = m[1]
+      .replace(/\b(from|in|of|on|for)\s+.*$/i, "")
+      .replace(/\b(the|all|actual|connected|second|first|third|2nd|1st|3rd|sheet|worksheet|tab)\b/gi, "")
+      .trim();
+    if (raw.length >= 2) {
+      raw
+        .split(/\s*(?:,|and|&)\s*/i)
+        .map((s) => s.trim())
+        .filter((s) => s.length >= 2)
+        .forEach((s) => candidates.push(s));
+    }
+  }
+
+  // 3. Check "column(s)/field(s) <Field Name>" patterns
+  const colAfterMatches = [
+    ...text.matchAll(/\b(?:columns?|fields?)\s+(?:named\s+|called\s+)?([a-zA-Z0-9_ ,/&'-]{2,60})/gi),
+  ];
+  for (const m of colAfterMatches) {
+    const raw = m[1]
+      .split(/\b(?:from|in|of|on|where|for|using)\b/i)[0]
+      .trim();
+    if (raw.length >= 2) {
+      raw
+        .split(/\s*(?:,|and|&)\s*/i)
+        .map((s) => s.replace(/^['"`]|['"`]$/g, "").trim())
+        .filter((s) => s.length >= 2)
+        .forEach((s) => candidates.push(s));
+    }
+  }
+
+  // 4. Match any actual header names mentioned directly in the prompt
+  const lowerText = text.toLowerCase();
+  for (const h of actualHeaders) {
+    const cleanH = String(h || "").trim();
+    if (cleanH.length < 3) continue;
+    if (lowerText.includes(cleanH.toLowerCase())) {
+      if (!candidates.some((c) => c.toLowerCase() === cleanH.toLowerCase())) {
+        candidates.push(cleanH);
+      }
+    }
+  }
+
+  // Deduplicate while preserving order
+  const unique = [];
+  for (const c of candidates) {
+    const cleaned = c.replace(/[?.!]+$/, "").trim();
+    if (
+      cleaned &&
+      !/^(data|rows?|records?|info|information|details|sheet|spreadsheet|worksheet|tab|tabs)$/i.test(cleaned) &&
+      !unique.some((u) => u.toLowerCase() === cleaned.toLowerCase())
+    ) {
+      unique.push(cleaned);
+    }
+  }
+  return unique;
+}
+
+function formatCurrency(num, currency = "INR") {
+  const n = Number(num || 0);
+  const sym = currency === "USD" ? "$" : currency === "EUR" ? "€" : currency === "GBP" ? "£" : "₹";
+  return `${sym}${n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
 
 /**
- * Shared AI Agent Orchestrator
- * Unifies Chat Controller and AI Automation Node Execution with:
- * 1. Deep Context Retrieval (User, Ad Accounts, AI Context Canvas, Google Sheets, History)
- * 2. Intent Understanding & Dynamic Tool Selection
- * 3. Multi-Step Real Tool Execution (Meta MCP, Google MCP, Sheets, DB)
- * 4. Strict Completion Verification & Result Validation
- * 5. Zero Hallucination Response Synthesis
+ * Dynamic AI Agent Orchestrator
+ * Executes real Google Sheets, Meta Ads MCP, Google Ads MCP, and Workspace tools
+ * with multi-step planning, conversation memory, and zero hardcoded responses.
  */
 export class AiAgentOrchestrator {
   /**
-   * Helper to resolve target sheet from multiple connected sheets based on user instruction
+   * 1. RETRIEVE WORKSPACE & CONVERSATION CONTEXT
    */
-  static resolveTargetSheet(allConnectedSheets = [], instruction = "") {
-    if (!allConnectedSheets || allConnectedSheets.length === 0) return null;
-    if (allConnectedSheets.length === 1) return allConnectedSheets[0];
+  static async retrieveContext({
+    userId,
+    accountId,
+    metaAccountId,
+    conversationId = null,
+    userMessage = "",
+    sessionMemory = null,
+  }) {
+    const [aiContext, metaAccounts, googleAccounts, connectedChannels, connectedSheets] = await Promise.all([
+      userId ? getUserAiContext({ userId }).catch(() => null) : null,
+      userId ? MetaAccount.find({ userId, isActive: true }).lean().catch(() => []) : [],
+      userId ? GoogleAccount.find({ userId, isActive: true }).lean().catch(() => []) : [],
+      userId ? ConnectedChannel.find({ userId, isConnected: true }).lean().catch(() => []) : [],
+      userId ? SheetInspectorService.listConnectedSpreadsheets(userId).catch(() => []) : [],
+    ]);
 
-    const text = String(instruction || "").toLowerCase();
+    const memory =
+      sessionMemory ||
+      (conversationId ? await ConversationMemoryService.loadSessionMemory(conversationId) : null);
 
-    // 1. Explicit ordinal or index references (second, 2nd, sheet 2, etc.)
-    const isSecondSheet =
-      /\b(second|2nd|sheet\s*#?\s*2|sheet2|two\s*sheet|2\s*sheet|dusra|dusri|doosra|doosri)\b/i.test(text) &&
-      !/\b(first|1st|sheet\s*#?\s*1|sheet1)\b/i.test(text);
+    // Priority order for Meta Ad Account resolution:
+    // 1. Explicit account ID mentioned in the current user message (e.g. act_1416124059911929)
+    // 2. Explicit accountId/metaAccountId passed by controller
+    // 3. Session memory from previous turn when user asks a follow-up ("their spend", "these campaigns", etc.)
+    // 4. AI Context connected Meta channel
+    // 5. Primary active Meta account
+    const explicitPromptAccountId = extractExplicitMetaAccountId(userMessage);
+    const aiContextMetaChannel = (aiContext?.adChannels || []).find((c) =>
+      ["meta", "metaads", "facebook", "fb", "meta ads"].includes(
+        String(c.channel || c.channelName || "").toLowerCase()
+      )
+    );
 
-    const isThirdSheet =
-      /\b(third|3rd|sheet\s*#?\s*3|sheet3|three\s*sheet|3\s*sheet|teesra|teesri)\b/i.test(text);
+    const isFollowUpMetaReference =
+      /\b(their|these|those|them|its|same\s+account|above\s+campaigns?|previous\s+campaigns?|now\s+fetch|now\s+get|now\s+compare|also\s+fetch)\b/i.test(
+        userMessage
+      );
 
-    const isFirstSheet =
-      /\b(first|1st|sheet\s*#?\s*1|sheet1|one\s*sheet|1\s*sheet|pehla|pehli)\b/i.test(text) &&
-      !isSecondSheet && !isThirdSheet;
+    let resolvedMetaAccountId =
+      explicitPromptAccountId ||
+      (isFollowUpMetaReference && memory?.lastMetaContext?.accountId ? memory.lastMetaContext.accountId : null) ||
+      metaAccountId ||
+      accountId ||
+      aiContextMetaChannel?.accountId ||
+      memory?.lastMetaContext?.accountId ||
+      metaAccounts[0]?.accountId ||
+      null;
 
-    if (isSecondSheet && allConnectedSheets.length >= 2) {
-      return allConnectedSheets[1]; // 2nd sheet
+    if (resolvedMetaAccountId && /^\d+$/.test(String(resolvedMetaAccountId).trim())) {
+      resolvedMetaAccountId = `act_${String(resolvedMetaAccountId).trim()}`;
     }
-    if (isThirdSheet && allConnectedSheets.length >= 3) {
-      return allConnectedSheets[2]; // 3rd sheet
-    }
-    if (isFirstSheet) {
-      return allConnectedSheets[0]; // 1st sheet
-    }
 
-    // 2. Numbered patterns like "sheet 2", "2nd sheet"
-    const sheetNumMatch = text.match(/\bsheet\s*#?\s*([0-9]+)\b/i) || text.match(/\b([0-9]+)(?:st|nd|rd|th)\s*sheet\b/i);
-    if (sheetNumMatch) {
-      const num = parseInt(sheetNumMatch[1], 10);
-      if (num >= 1 && num <= allConnectedSheets.length) {
-        return allConnectedSheets[num - 1];
-      }
-    }
+    const activeGoogleAccountId =
+      googleAccounts[0]?.selectedCustomerId || googleAccounts[0]?.accountId || null;
 
-    // 3. Match by Sheet Name / Workbook Name / Data Label
-    for (const s of allConnectedSheets) {
-      if (s.sheetName && s.sheetName.length > 3) {
-        const cleanName = s.sheetName.toLowerCase().replace(/[-_.]/g, " ");
-        if (text.includes(s.sheetName.toLowerCase()) || text.includes(cleanName)) {
-          return s;
-        }
-      }
-      if (s.dataLabel && s.dataLabel.length > 3) {
-        if (text.includes(s.dataLabel.toLowerCase())) {
-          return s;
-        }
-      }
-    }
-
-    return allConnectedSheets[0];
+    return {
+      userId,
+      conversationId,
+      aiContext,
+      metaAccounts,
+      googleAccounts,
+      connectedChannels,
+      connectedSheets,
+      explicitPromptAccountId,
+      activeMetaAccountId: resolvedMetaAccountId,
+      activeGoogleAccountId,
+      sessionMemory: memory,
+    };
   }
 
   /**
-   * 1. CONTEXT RETRIEVAL SERVICE
-   * Resolves authentic workspace context, connected accounts, AI Context hierarchy, and ad account bindings.
+   * 2. DYNAMIC MULTI-STEP INTENT & EXECUTION PLANNER
+   * Understands single-step & multi-step user objectives across Google Sheets, Meta Ads, Google Ads, and Workspace context.
    */
-  static async retrieveContext({ userId, accountId = null, metaAccountId = null, googleAccountId = null, userMessage = "" }) {
-    const validUserId = userId && mongoose.Types.ObjectId.isValid(userId) ? userId : null;
+  static classifyIntent(instruction = "", context = {}) {
+    const text = String(instruction || "").trim();
+    const lower = text.toLowerCase();
+    const memory = context.sessionMemory || {};
 
-    let user = null;
-    let metaAccounts = [];
-    let googleAccounts = [];
-    let connectedChannels = [];
-    let aiContextDoc = null;
+    // Check explicit ad creation / launch intent first (delegated to CampaignPreparationService in standard chat)
+    const isReadOrInspectOnly =
+      /\b(fetch|get|show|list|read|extract|inspect|find|compare|analyze|audit|check|verify|view|display|rank|evaluate|calculate|what|which|how\s+many|summarize)\b/i.test(
+        lower
+      ) && !/\b(create|launch|publish|deploy|build)\s+(?:a\s+|an\s+|new\s+)?(?:meta\s+|fb\s+|facebook\s+|video\s+)?(?:ad|ads|campaign|adset|ad\s+set)\b/i.test(lower);
 
-    try {
-      if (validUserId && mongoose.connection.readyState === 1) {
-        [user, metaAccounts, googleAccounts, connectedChannels, aiContextDoc] = await Promise.all([
-          User.findById(validUserId).select("name email").lean().catch(() => null),
-          MetaAccount.find({
-            userId: validUserId,
-            $or: [{ isConnected: true }, { isActive: true }, { accountStatus: 1 }, { accountId: { $exists: true } }],
-          }).lean().catch(() => []),
-          GoogleAccount.find({
-            userId: validUserId,
-            $or: [{ isActive: true }, { isConnected: true }],
-          }).lean().catch(() => []),
-          ConnectedChannel.find({ userId: validUserId, isConnected: true }).lean().catch(() => []),
-          AiContext.findOne({ userId: validUserId }).lean().catch(() => null),
-        ]);
+    const isCampaignCreation =
+      !isReadOrInspectOnly &&
+      /\b(create|launch|publish|deploy|set\s*up)\b.*\b(ad|ads|campaign|ad\s*set|adset)\b/i.test(lower) &&
+      !/\b(do\s+not|don't|never)\s+(?:create|edit|publish|launch)\b/i.test(lower);
+
+    if (isCampaignCreation && !context.isAutomation) {
+      return {
+        intent: "CAMPAIGN_CREATION_FLOW",
+        steps: [{ type: "CAMPAIGN_PREPARATION" }],
+        tools: ["campaign_preparation"],
+      };
+    }
+
+    // Check automated daily Meta -> Sheet reporting sync
+    if (
+      /\bsync\b.*\b(sheet|tab|bgmi|free\s*fire|gprc)\b/i.test(lower) ||
+      (/\byesterday\b/i.test(lower) && /\bappend\b.*\bsheet\b/i.test(lower))
+    ) {
+      return {
+        intent: "DAILY_META_TO_SHEET_SYNC",
+        steps: [
+          {
+            toolName: "sync_meta_ads_to_sheet",
+            args: {
+              instruction: text,
+              metaAccountId: context.activeMetaAccountId,
+            },
+          },
+        ],
+        tools: ["sync_meta_ads_to_sheet"],
+      };
+    }
+
+    const steps = [];
+
+    // --- DETECT GOOGLE SHEETS OBJECTIVES ---
+    const sheetOrdinal = SheetInspectorService.parseRequestedSheetOrdinal(text);
+    const tabOrdinal = SheetInspectorService.parseRequestedTabOrdinal(text);
+    const urlInTextMatch = text.match(/https:\/\/docs\.google\.com\/spreadsheets\/d\/[a-zA-Z0-9-_]+[^\s"']*/i);
+    const driveUrlInTextMatch = text.match(/https:\/\/drive\.google\.com\/[^\s"']+/i);
+
+    const mentionsFollowUpVideosOrSheet =
+      Boolean(memory.lastSheetContext) &&
+      (/\b(these\s+videos?|those\s+videos?|their\s+creative\s+codes?|creative\s+codes?\s+for\s+(?:these|those|them)|in\s+this\s+sheet|from\s+that\s+sheet|same\s+sheet|this\s+worksheet|that\s+tab|these\s+rows)\b/i.test(
+        lower
+      ) ||
+        (/\b(creative\s+codes?|video\s+urls?|video\s+links?|smart\s+chips?|media\s+type|creative\s+format|creative\s+status)\b/i.test(
+          lower
+        ) &&
+          !/\b(meta|facebook|act_\d+|campaign)\b/i.test(lower)));
+
+    const mentionsSheetExplicitly =
+      sheetOrdinal !== null ||
+      tabOrdinal !== null ||
+      Boolean(urlInTextMatch) ||
+      /\b(sheets?|spreadsheets?|worksheets?|tabs?|rows?|columns?|warehouse|smart\s*chips?|video\s*links?|video\s*urls?|drive\s*links?|drive\s*urls?|creative\s*codes?)\b/i.test(
+        lower
+      );
+
+    // Check if any connected sheet's tab name is explicitly mentioned
+    let matchedTabNameInPrompt = null;
+    for (const s of context.connectedSheets || []) {
+      for (const t of s.availableTabs || []) {
+        const title = t.title || t.name || "";
+        if (title && title.length >= 3 && lower.includes(title.toLowerCase())) {
+          matchedTabNameInPrompt = title;
+          break;
+        }
       }
-    } catch (err) {
-      console.warn("[AiAgentOrchestrator] Error loading DB context:", err.message);
+      if (matchedTabNameInPrompt) break;
     }
 
-    // Resolve Target Meta Ad Account
-    let targetMetaAccountId = metaAccountId || accountId || null;
-    if (targetMetaAccountId) {
-      targetMetaAccountId = String(targetMetaAccountId).replace(/^act_/, "").trim();
-    }
+    const involvesSheets =
+      mentionsSheetExplicitly || mentionsFollowUpVideosOrSheet || Boolean(matchedTabNameInPrompt);
 
-    // Try extracting from user message or node instruction
-    if (!targetMetaAccountId && userMessage) {
-      const actMatch = userMessage.match(/\b(?:act_)?(\d{10,22})\b/i);
-      if (actMatch) {
-        targetMetaAccountId = actMatch[1];
+    if (involvesSheets) {
+      const targetSheetIndex =
+        sheetOrdinal ||
+        (urlInTextMatch ? null : memory.lastSheetContext?.sheetIndex || null);
+      const targetSheetUrl =
+        urlInTextMatch?.[0] ||
+        (!sheetOrdinal && mentionsFollowUpVideosOrSheet ? memory.lastSheetContext?.sheetUrl : null);
+      const targetTabName =
+        matchedTabNameInPrompt ||
+        (!sheetOrdinal && mentionsFollowUpVideosOrSheet && !tabOrdinal
+          ? memory.lastSheetContext?.worksheetTab
+          : null);
+
+      const isListSheetsOnly =
+        sheetOrdinal === null &&
+        /\b(list|show|which|what)\b.*\b(connected\s+)?(spreadsheets?|sheets?)\b/i.test(lower) &&
+        !/\b(rows?|columns?|videos?|links?|urls?|codes?|read|extract|tabs?|worksheets?|fields?)\b/i.test(lower);
+
+      const isSheetUpdate =
+        /\b(update|set|change|write|modify|edit)\b/i.test(lower) &&
+        /\b(row|cell|column|field|status|sheet|tab)\b/i.test(lower) &&
+        !/\b(do\s+not|don't)\s+(?:update|edit|modify)\b/i.test(lower);
+
+      const isVideoExtraction =
+        /\b(video\s*links?|video\s*urls?|videos?|drive\s*links?|drive\s*urls?|smart\s*chips?)\b/i.test(lower) ||
+        (mentionsFollowUpVideosOrSheet &&
+          Array.isArray(memory.lastSheetContext?.videoEntries) &&
+          memory.lastSheetContext.videoEntries.length > 0 &&
+          /\b(creative\s*codes?|codes?|urls?|links?|names?|status|media\s*type|format)\b/i.test(lower));
+
+      if (isListSheetsOnly) {
+        steps.push({
+          toolName: "list_connected_sheets",
+          purpose: "LIST_CONNECTED_SHEETS",
+          args: {},
+        });
+      } else if (isSheetUpdate) {
+        // Parse row number, column name, cell range, and new value dynamically
+        const cellMatch = text.match(/\bcell\s+([A-Z]{1,3}\d{1,5})\b/i);
+        const rowMatch = text.match(/\brow\s*#?\s*(\d{1,5})\b/i);
+        const toValMatch = text.match(/\b(?:to|as|=)\s+["']?([^"'\n]+?)["']?$/i);
+        const colMatch = text.match(
+          /\b(?:set|update|change)\s+(?:row\s*#?\s*\d+\s+)?["']?([a-zA-Z0-9 _-]+?)["']?\s+(?:to|as|=)\b/i
+        );
+        steps.push({
+          toolName: "update_connected_sheet_cells",
+          purpose: "UPDATE_SHEET_CELLS",
+          args: {
+            sheetIndex: targetSheetIndex,
+            sheetUrl: targetSheetUrl,
+            tabName: targetTabName,
+            cellRange: cellMatch ? cellMatch[1].toUpperCase() : null,
+            rowNumber: rowMatch ? Number(rowMatch[1]) : null,
+            columnName: colMatch ? colMatch[1].trim() : null,
+            newValue: toValMatch ? toValMatch[1].trim() : undefined,
+            userMessage: text,
+            sessionSheetContext: memory.lastSheetContext || null,
+          },
+        });
+      } else if (isVideoExtraction) {
+        // Multi-step when multiple sheets exist or explicit ordinal used: verify connected sheets metadata + extract video links
+        if (sheetOrdinal !== null) {
+          steps.push({
+            toolName: "list_connected_sheets",
+            purpose: "VERIFY_CONNECTED_SHEET_METADATA",
+            args: {},
+          });
+        }
+        steps.push({
+          toolName: "extract_sheet_video_links",
+          purpose: mentionsFollowUpVideosOrSheet && /\bcreative\s*codes?\b/i.test(lower) && !/\bvideo\s*links?\b/i.test(lower)
+            ? "MAP_VIDEOS_TO_CREATIVE_CODES"
+            : "EXTRACT_SHEET_VIDEO_LINKS",
+          args: {
+            sheetIndex: targetSheetIndex,
+            sheetUrl: targetSheetUrl,
+            tabName: targetTabName,
+            validateUrls: true,
+            userMessage: text,
+            sessionSheetContext: memory.lastSheetContext || null,
+          },
+        });
+      } else {
+        // General dynamic worksheet / schema / column inspection
+        if (sheetOrdinal !== null) {
+          steps.push({
+            toolName: "list_connected_sheets",
+            purpose: "VERIFY_CONNECTED_SHEET_METADATA",
+            args: {},
+          });
+        }
+        steps.push({
+          toolName: "inspect_sheet_schema",
+          purpose: "INSPECT_SHEET_DATA",
+          args: {
+            sheetIndex: targetSheetIndex,
+            sheetUrl: targetSheetUrl,
+            tabName: targetTabName,
+            userMessage: text,
+            sessionSheetContext: memory.lastSheetContext || null,
+          },
+        });
       }
+    } else if (driveUrlInTextMatch) {
+      steps.push({
+        toolName: "validate_google_drive_asset",
+        purpose: "VALIDATE_DRIVE_ASSET",
+        args: {
+          driveUrl: driveUrlInTextMatch[0],
+        },
+      });
     }
 
-    // Try resolving from AI Context Canvas ad_channel node
-    if (!targetMetaAccountId && aiContextDoc?.nodes) {
-      const channelNodes = aiContextDoc.nodes.filter((n) => n.type === "ad_channel");
-      const metaChannel = channelNodes.find((n) => {
-        const cName = (n.data?.channelName || n.data?.channel || n.label || "").toLowerCase();
-        return cName.includes("meta") || cName.includes("facebook");
-      }) || (channelNodes.length === 1 ? channelNodes[0] : null);
+    // --- DETECT META ADS OBJECTIVES ---
+    const explicitAct = extractExplicitMetaAccountId(text);
+    const hasMetaFollowUp =
+      Boolean(memory.lastMetaContext?.accountId) &&
+      /\b(their|these|those|them|same\s+account|above\s+campaigns?|previous\s+campaigns?|now\s+fetch|now\s+get|now\s+compare)\b/i.test(
+        lower
+      ) &&
+      /\b(spend|spent|performance|metrics?|cpr|cpa|roas|ctr|cpm|cpc|clicks?|impressions?|conversions?|purchases?|status|ad\s*sets?|adsets?|creatives?|ads?|compare|best|top|winner)\b/i.test(
+        lower
+      );
 
-      if (metaChannel?.data?.adAccountId) {
-        targetMetaAccountId = String(metaChannel.data.adAccountId).replace(/^act_/, "").trim();
-      }
-    }
+    const mentionsMetaAds =
+      Boolean(explicitAct) ||
+      hasMetaFollowUp ||
+      /\b(meta\s*ads?|facebook\s*ads?|fb\s*ads?|ad\s*account)\b/i.test(lower) ||
+      (!involvesSheets &&
+        !/\bgoogle\s*ads\b/i.test(lower) &&
+        /\b(campaigns?|ad\s*sets?|adsets?|ad\s*creatives?|creatives?\s+performance|cpr|cpa|roas|ctr|cpm|cpc|spend|spent)\b/i.test(
+          lower
+        ));
 
-    // Try resolving from user's connected Meta accounts
-    if (!targetMetaAccountId && metaAccounts.length > 0) {
-      targetMetaAccountId = String(metaAccounts[0].accountId).replace(/^act_/, "").trim();
-    }
+    if (mentionsMetaAds) {
+      const targetAccountId =
+        explicitAct ||
+        (hasMetaFollowUp ? memory.lastMetaContext.accountId : null) ||
+        context.activeMetaAccountId ||
+        null;
+      const dateWindow = parseDateWindowFromText(text);
 
-    // Final fallback to user's known active account
-    if (!targetMetaAccountId) {
-      targetMetaAccountId = "1405197426806546";
-    }
+      const wantsCreatives =
+        /\b(ad\s*creatives?|meta\s*creatives?|ads?\s+copy|creative\s+performance)\b/i.test(lower) ||
+        (!involvesSheets && /\b(creatives?|headlines?)\b/i.test(lower));
+      const wantsAdSets = /\b(ad\s*sets?|adsets?)\b/i.test(lower);
+      const wantsComparison = /\b(compare|comparison|vs\.?|versus|difference\s+between)\b/i.test(lower);
+      const wantsBestCampaign =
+        /\b(best[- ]performing|top[- ]performing|best\s+campaign|top\s+campaign|highest\s+roas|lowest\s+cpa|lowest\s+cpr|winning\s+campaign|winner)\b/i.test(
+          lower
+        );
+      const wantsMetrics =
+        wantsComparison ||
+        wantsBestCampaign ||
+        /\b(spend|spent|performance|insights?|metrics?|cpr|cpa|roas|ctr|cpm|cpc|clicks?|impressions?|conversions?|purchases?|revenue|cost|results?)\b/i.test(
+          lower
+        );
+      const wantsCampaignList =
+        /\b(campaigns?|campaign\s+names?|all\s+campaigns?|list\s+campaigns?|active\s+campaigns?|paused\s+campaigns?)\b/i.test(
+          lower
+        );
+      const wantsPauseOrActivate =
+        /\b(pause|activate|enable|resume)\s+(?:the\s+)?campaign\b/i.test(lower) &&
+        !/\b(do\s+not|don't)\s+(?:edit|pause)\b/i.test(lower);
 
-    // Resolve Target Google Customer ID
-    let targetGoogleCustomerId = googleAccountId || null;
-    if (!targetGoogleCustomerId && googleAccounts.length > 0) {
-      const primaryGoogle = googleAccounts[0];
-      targetGoogleCustomerId = primaryGoogle.selectedCustomerId || primaryGoogle.accountId || null;
-    }
+      if (!targetAccountId) {
+        steps.push({
+          toolName: "_missing_meta_account",
+          purpose: "MISSING_META_ACCOUNT",
+          args: {},
+        });
+      } else if (wantsPauseOrActivate) {
+        const campaignIdMatch = text.match(/\b(\d{10,25})\b/);
+        const desiredStatus = /\bpause\b/i.test(lower) ? "PAUSED" : "ACTIVE";
+        steps.push({
+          toolName: "update_meta_campaign",
+          purpose: "UPDATE_META_CAMPAIGN",
+          args: {
+            accountId: targetAccountId,
+            campaignId: campaignIdMatch ? campaignIdMatch[1] : null,
+            status: desiredStatus,
+          },
+        });
+      } else {
+        if (wantsCampaignList || wantsComparison || (hasMetaFollowUp && wantsMetrics)) {
+          steps.push({
+            toolName: "fetch_live_meta_ads_mcp",
+            purpose: "FETCH_META_CAMPAIGNS",
+            args: {
+              toolType: "get_live_campaigns_status",
+              accountId: targetAccountId,
+            },
+          });
+        }
 
-    // Extract all connected Google Sheets and Tab selections from AI Context Warehouse nodes
-    const allConnectedSheets = [];
-    if (aiContextDoc?.nodes) {
-      const warehouseNodes = aiContextDoc.nodes.filter((n) => n.type === "data_warehouse");
-      for (const w of warehouseNodes) {
-        if (Array.isArray(w.data?.sheets) && w.data.sheets.length > 0) {
-          for (let sIdx = 0; sIdx < w.data.sheets.length; sIdx++) {
-            const s = w.data.sheets[sIdx];
-            if (s && (s.sheetUrl || (Array.isArray(s.sheetRows) && s.sheetRows.length > 0))) {
-              allConnectedSheets.push({
-                sheetIndex: allConnectedSheets.length + 1,
-                sheetId: s.id || `sheet_${allConnectedSheets.length + 1}`,
-                sheetUrl: s.sheetUrl || "",
-                sheetName: s.workbookName || s.sheetName || `Sheet #${allConnectedSheets.length + 1}`,
-                dataLabel: s.dataLabels || s.dataLevel || "",
-                totalRows: s.totalRows || (Array.isArray(s.sheetRows) ? s.sheetRows.length : 0),
-                sheetRows: s.sheetRows || [],
-                sheetColumns: s.sheetColumns || s.columns || [],
-                availableTabs: Array.isArray(s.availableTabs) ? s.availableTabs : [],
-                selectedTabIds: Array.isArray(s.selectedTabIds) ? s.selectedTabIds : [],
-                selectedTabsData: Array.isArray(s.selectedTabsData) ? s.selectedTabsData : [],
-                warehouseNodeId: w.id,
-              });
-            }
-          }
-        } else if (w.data?.sheetUrl || (Array.isArray(w.data?.sheetRows) && w.data.sheetRows.length > 0)) {
-          allConnectedSheets.push({
-            sheetIndex: allConnectedSheets.length + 1,
-            sheetId: w.id,
-            sheetUrl: w.data.sheetUrl || "",
-            sheetName: w.data.workbookName || w.data.sheetName || w.data.title || `Sheet #${allConnectedSheets.length + 1}`,
-            dataLabel: w.data.dataLabels || w.data.dataLevel || "",
-            totalRows: w.data.totalRows || (Array.isArray(w.data.sheetRows) ? w.data.sheetRows.length : 0),
-            sheetRows: w.data.sheetRows || [],
-            sheetColumns: w.data.sheetColumns || w.data.columns || [],
-            availableTabs: Array.isArray(w.data.availableTabs) ? w.data.availableTabs : [],
-            selectedTabIds: Array.isArray(w.data.selectedTabIds) ? w.data.selectedTabIds : [],
-            selectedTabsData: Array.isArray(w.data.selectedTabsData) ? w.data.selectedTabsData : [],
-            warehouseNodeId: w.id,
+        if (wantsMetrics) {
+          const isTodayOnly = dateWindow.datePreset === "today" && !wantsComparison && !wantsBestCampaign && !wantsCampaignList && !hasMetaFollowUp;
+          steps.push({
+            toolName: "fetch_live_meta_ads_mcp",
+            purpose: wantsComparison
+              ? "COMPARE_META_CAMPAIGNS"
+              : wantsBestCampaign
+              ? "RANK_BEST_META_CAMPAIGN"
+              : "FETCH_META_INSIGHTS",
+            args: {
+              toolType: isTodayOnly ? "get_live_today_insights" : "get_live_campaign_insights",
+              accountId: targetAccountId,
+              datePreset: dateWindow.datePreset,
+              timeRange: dateWindow.timeRange,
+            },
+          });
+        }
+
+        if (wantsAdSets) {
+          steps.push({
+            toolName: "get_live_adsets",
+            purpose: "FETCH_META_ADSETS",
+            args: {
+              accountId: targetAccountId,
+            },
+          });
+        }
+
+        if (wantsCreatives) {
+          const includePerf = /\b(performance|analyze|rank|best|winner|roas|ctr|cpa|spend|metrics?)\b/i.test(lower);
+          steps.push({
+            toolName: "get_live_ad_creatives",
+            purpose: includePerf ? "ANALYZE_META_CREATIVE_PERFORMANCE" : "FETCH_META_CREATIVES",
+            args: {
+              accountId: targetAccountId,
+              includeInsights: includePerf,
+              datePreset: dateWindow.datePreset,
+              timeRange: dateWindow.timeRange,
+            },
+          });
+        }
+
+        // If user only said e.g. "Check account act_12345" without specifying campaigns vs metrics, fetch campaigns status
+        if (steps.filter((s) => s.args?.accountId === targetAccountId).length === 0) {
+          steps.push({
+            toolName: "fetch_live_meta_ads_mcp",
+            purpose: "FETCH_META_CAMPAIGNS",
+            args: {
+              toolType: "get_live_campaigns_status",
+              accountId: targetAccountId,
+            },
           });
         }
       }
     }
 
-    const targetSheet = this.resolveTargetSheet(allConnectedSheets, userMessage);
-    const connectedSheetUrl = targetSheet?.sheetUrl || null;
-    const connectedSheetName = targetSheet?.sheetName || "Connected Google Sheet";
-    const availableTabs = targetSheet?.availableTabs || [];
-    const selectedTabIds = targetSheet?.selectedTabIds || [];
-    const selectedTabs = targetSheet?.selectedTabsData || [];
-    const targetSheetIndex = targetSheet?.sheetIndex || 1;
-    let excludedTabs = [];
-
-    if (availableTabs.length > 0 && selectedTabIds.length > 0) {
-      excludedTabs = availableTabs
-        .filter((t) => !selectedTabIds.some((id) => String(id) === String(t.sheetId) || String(id).toLowerCase() === String(t.title || "").toLowerCase()))
-        .map((t) => t.title);
-    }
-
-    // Resolve target worksheet tab from selectedTabIds / availableTabs / prompt
-    let targetWorksheetName = null;
-    if (availableTabs.length > 0) {
-      const msgLower = (userMessage || "").toLowerCase();
-      // 1. Ordinal references
-      const isSecond = /\b(second|2nd|sheet\s*#?\s*2|sheet2|two\s*sheet|2\s*sheet|dusra|dusri|doosra|doosri|second\s*tab|2nd\s*tab)\b/i.test(msgLower) &&
-        !/\b(first|1st|sheet\s*#?\s*1|sheet1)\b/i.test(msgLower);
-      const isThird = /\b(third|3rd|sheet\s*#?\s*3|sheet3|three\s*sheet|3\s*sheet|teesra|teesri|third\s*tab|3rd\s*tab)\b/i.test(msgLower);
-      const isFirst = /\b(first|1st|sheet\s*#?\s*1|sheet1|one\s*sheet|1\s*sheet|pehla|pehli|first\s*tab|1st\s*tab)\b/i.test(msgLower) && !isSecond && !isThird;
-
-      if (isSecond && availableTabs.length >= 2) {
-        targetWorksheetName = availableTabs[1].title || availableTabs[1].name;
-      } else if (isThird && availableTabs.length >= 3) {
-        targetWorksheetName = availableTabs[2].title || availableTabs[2].name;
-      } else if (isFirst) {
-        targetWorksheetName = availableTabs[0].title || availableTabs[0].name;
-      }
-
-      // 2. Mentioned tab title
-      if (!targetWorksheetName) {
-        const found = availableTabs.find((t) => {
-          const tName = (t.title || t.name || "").toLowerCase().trim();
-          return tName && msgLower.includes(tName);
+    // --- DETECT GOOGLE ADS OBJECTIVES ---
+    if (/\bgoogle\s*ads\b/i.test(lower)) {
+      if (/\bkeywords?\b/i.test(lower)) {
+        steps.push({
+          toolName: "list_google_keywords",
+          purpose: "FETCH_GOOGLE_KEYWORDS",
+          args: { accountId: context.activeGoogleAccountId },
         });
-        if (found) targetWorksheetName = found.title || found.name;
+      } else if (/\bstructure\b/i.test(lower)) {
+        steps.push({
+          toolName: "get_google_campaign_structure",
+          purpose: "FETCH_GOOGLE_STRUCTURE",
+          args: { accountId: context.activeGoogleAccountId },
+        });
+      } else {
+        steps.push({
+          toolName: "fetch_live_google_ads_mcp",
+          purpose: "FETCH_GOOGLE_ADS",
+          args: {
+            toolType: "get_live_google_campaigns",
+            accountId: context.activeGoogleAccountId,
+          },
+        });
       }
+    }
 
-      // 3. UI Selected Tabs (selectedTabIds)
-      if (!targetWorksheetName && selectedTabIds.length > 0) {
-        const selObj = availableTabs.find((t) =>
-          selectedTabIds.some((id) =>
-            String(id) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
-            String(id).toLowerCase() === String(t.title || t.name || "").toLowerCase()
-          )
-        );
-        if (selObj) targetWorksheetName = selObj.title || selObj.name;
-      }
-
-      // 4. selectedTabsData fallback
-      if (!targetWorksheetName && selectedTabs.length > 0) {
-        targetWorksheetName = selectedTabs[0].tabName || selectedTabs[0].title;
-      }
-
-      // 5. targetSheet.worksheetName
-      if (!targetWorksheetName && targetSheet?.worksheetName && targetSheet.worksheetName !== "Sheet1") {
-        targetWorksheetName = targetSheet.worksheetName;
-      }
-
-      if (targetSheet && targetWorksheetName) {
-        targetSheet.targetWorksheetName = targetWorksheetName;
-        targetSheet.worksheetName = targetWorksheetName;
+    // --- DETECT WORKSPACE / ACCOUNTS / AI CONTEXT / TOKEN USAGE ---
+    if (steps.length === 0) {
+      if (/\b(token\s*usage|tokens?\s*burned|ai\s*cost|api\s*usage)\b/i.test(lower)) {
+        steps.push({
+          toolName: "query_token_usage_metrics",
+          purpose: "QUERY_TOKEN_USAGE",
+          args: {},
+        });
+      } else if (/\b(connected\s+accounts?|connected\s+channels?|which\s+accounts?|my\s+accounts?|workspace\s+status)\b/i.test(lower)) {
+        steps.push({
+          toolName: "get_user_connected_accounts",
+          purpose: "LIST_CONNECTED_ACCOUNTS",
+          args: {},
+        });
+        steps.push({
+          toolName: "list_connected_sheets",
+          purpose: "LIST_CONNECTED_SHEETS",
+          args: {},
+        });
+      } else if (/\b(ai\s*context|marketing\s*brief|business\s*unit|offering|product\s*node|workflow\s*context)\b/i.test(lower)) {
+        steps.push({
+          toolName: "get_user_ai_context",
+          purpose: "INSPECT_AI_CONTEXT",
+          args: {},
+        });
+      } else if (/\b(historical|database\s+metrics|saved\s+metrics|past\s+trends)\b/i.test(lower)) {
+        steps.push({
+          toolName: "query_database_metrics",
+          purpose: "QUERY_DB_METRICS",
+          args: { accountId: context.activeMetaAccountId || context.activeGoogleAccountId },
+        });
+      } else {
+        // Inspect live workspace context so any arbitrary question about the user's setup is grounded in real DB state
+        steps.push({
+          toolName: "get_user_connected_accounts",
+          purpose: "WORKSPACE_OVERVIEW",
+          args: {},
+        });
+        steps.push({
+          toolName: "list_connected_sheets",
+          purpose: "WORKSPACE_SHEETS_OVERVIEW",
+          args: {},
+        });
       }
     }
 
     return {
-      userId: validUserId,
-      user,
-      metaAccounts,
-      googleAccounts,
-      connectedChannels,
-      aiContext: aiContextDoc,
-      targetMetaAccountId,
-      targetGoogleCustomerId,
-      allConnectedSheets,
-      targetSheet,
-      targetSheetIndex,
-      connectedSheetUrl,
-      connectedSheetName,
-      availableTabs,
-      selectedTabIds,
-      selectedTabs,
-      excludedTabs,
+      intent: steps.map((s) => s.purpose).join("+") || "DYNAMIC_EXECUTION",
+      steps,
+      tools: steps.map((s) => s.toolName),
     };
   }
 
   /**
-   * 2. INTENT UNDERSTANDING & TOOL SELECTION
-   * Understands what the user or automation node wants and decides which tool(s) to execute.
-   */
-  static classifyIntent(instruction = "", context = {}) {
-    const text = String(instruction).toLowerCase().trim();
-
-    // 1. Conversational Queries (e.g. "hi", "how are you", "who are you")
-    const isPurelyConversational =
-      /^(hi|hello|hey|hola|namaste|good\s*(morning|evening|afternoon)|how\s*are\s*you|who\s*are\s*you|what\s*can\s*you\s*do|what\s*are\s*you|help)(\s*[?!.]*)?$/i.test(text) ||
-      (text.length < 35 && /^(hi|hello|hey|how\s*r\s*u|how\s*are\s*you|how\s*do\s*you\s*work)/i.test(text));
-
-    if (isPurelyConversational) {
-      return {
-        intent: "CONVERSATIONAL",
-        requiresTools: false,
-        tools: [],
-        description: "General conversational greeting or capability overview",
-      };
-    }
-
-    // 1.5. Automated Daily Meta Ads to Google Sheet Sync
-    const isMetaAdsSheetSync =
-      /(sync|append|export|write|push|report|record)\s*.*(?:meta\s*ads?|facebook\s*ads?|ads?\s*data|performance|metrics)\s*.*(?:to|in|into)?\s*(?:sheet|spreadsheet|google\s*sheet|worksheet|tab|bgmi|freefire|free\s*fire|gprc)/i.test(text) ||
-      /(fetch|get)\s*.*(?:meta\s*ads?|facebook\s*ads?|ads?\s*data|performance)\s*.*(?:append|write|sync|push|record|add)\s*.*(?:to|in|into)?\s*(?:sheet|spreadsheet|google\s*sheet|worksheet|tab|bgmi|freefire|free\s*fire|gprc)/i.test(text) ||
-      /(meta\s*ads?|facebook\s*ads?|ads?\s*data)\s*.*(?:daily\s*)?(?:reporting|sync|export)\s*.*(?:sheet|spreadsheet|google\s*sheet|bgmi|freefire|free\s*fire|gprc)/i.test(text) ||
-      /(daily\s*meta\s*ads?\s*reporting)/i.test(text) ||
-      /(bgmi|free\s*fire|freefire|gprc)\s*.*(?:meta\s*ads?|reporting|sync)/i.test(text);
-
-    if (isMetaAdsSheetSync) {
-      return {
-        intent: "META_ADS_SHEET_SYNC",
-        requiresTools: true,
-        tools: ["sync_meta_ads_to_sheet"],
-        description: "Fetch yesterday's Meta Ads performance insights and append rows to designated Google Sheet worksheet tab",
-      };
-    }
-
-    // 2. Meta Ads Campaign / Ad Set / Creative Creation (Takes priority over pure sheet fetching)
-    const isMetaCreation =
-      /(create|launch|draft|build|setup|publish|make|banao|deploy)\s*(?:a\s*)?(?:new\s*)?(?:meta\s*|facebook\s*)?(?:draft\s*)?(campaign|adset|ad\s*set|ad\b|ads\b|creative)/i.test(text) ||
-      /(create|launch|draft|build|setup|publish|make|banao|deploy)\s+.*(?:campaign|adset|ad\s*set|ad\b|ads\b)/i.test(text);
-
-    if (isMetaCreation) {
-      return {
-        intent: "CAMPAIGN_CREATION",
-        requiresTools: true,
-        tools: ["create_meta_campaign", "create_meta_ad_set", "create_meta_ad", "verify_meta_campaign"],
-        description: "Build and verify multi-level Meta Ads campaign hierarchy",
-      };
-    }
-
-    // 3. Google Sheets / Excel Fetch, Schema, Field & Row Inspection
-    const mentionsSheet = /(sheet|spreadsheet|worksheet|excel|data\s*warehouse|workbook|tab\b)/i.test(text);
-    const mentionsFetch = /(fetch|get|read|load|extract|pull|show|display|view|list|retrieve|deatil|detail|details|field|fields|column|columns|row|rows|content|padho|dekho|batao|nikalo)/i.test(text);
-    const mentionsConnectedSheet = /(connected\s*(?:a\s*)?(?:google\s*)?(?:sheet|spreadsheet|data\s*warehouse)|(?:sheet|spreadsheet)\s*(?:connected|in\s*ai\s*context))/i.test(text);
-    const isSheetWriteOrSync = /(save|write|update|export|append|push|sync)\s*.*(?:to|in|into)\s*(?:sheet|spreadsheet|worksheet|excel)/i.test(text);
-
-    const isSheetFetch =
-      !isMetaCreation &&
-      !isSheetWriteOrSync &&
-      (mentionsConnectedSheet ||
-       (mentionsSheet && mentionsFetch) ||
-       /fetch.*(sheet|spreadsheet|excel|rows|fields|columns|data\s*warehouse)|get.*(sheet|spreadsheet|excel|rows|fields)|read.*(sheet|spreadsheet|excel)|connected\s*google\s*sheet|load.*(sheet|spreadsheet)/i.test(text));
-
-    if (isSheetFetch) {
-      return {
-        intent: "GOOGLE_SHEET_FETCH",
-        requiresTools: true,
-        tools: ["get_connected_sheet_rows"],
-        description: "Fetch rows, columns, and field schema from connected Google Sheet / Data Warehouse",
-      };
-    }
-
-    // 4. Creative Copywriting & Ad Variation Generation
-    const isCreativeCopy =
-      /(headline|headlines|primary\s*text|ad\s*cop(?:y|ies)|ad\s*creative|creatives?|hook|hooks|angle|angles|script|scripts|caption|captions|email\s*sequence|copywriting|generate\s*(?:copy|ad|headline|variation|hook)|write\s*(?:copy|ad|headline|variation|hook)|banao\s*(?:ad|copy|headline|hook))/i.test(text);
-
-    if (isCreativeCopy) {
-      const hasSheetContext = context.allConnectedSheets && context.allConnectedSheets.length > 0;
-      return {
-        intent: "CREATIVE_COPY_GENERATION",
-        requiresTools: hasSheetContext,
-        tools: hasSheetContext ? ["get_connected_sheet_rows"] : [],
-        description: "Generate high-converting ad copy, headlines, hooks, and creative variations tailored to products and briefs",
-      };
-    }
-
-    // 5. Data Analysis / Creative Audit / CPA Benchmarking / Unit Economics
-    const isDataAnalysis =
-      /(previous\s*node|preceding|context\s*from|upstream)/i.test(text) ||
-      /(analyze|evaluate|audit|rank|calculate|compare|benchmark|review|examine).*(spreadsheet|data|creatives?|cpa|performance|campaigns?|metrics|spend|roas|ctr|conversions?)/i.test(text) ||
-      /(identify|flag).*(above\s*target|zero\s*conversions?|bleeders?|underperforming|winners?)/i.test(text) ||
-      /(calculate|hisab|compute).*(cpa|ctr|cpc|roas|spend|roi|conversion)/i.test(text) ||
-      /(propose|recommend|suggest).*(experiments?|recommendations?|action\s*items?|improvements?)/i.test(text);
-
-    if (isDataAnalysis) {
-      return {
-        intent: "DATA_ANALYSIS",
-        requiresTools: false,
-        tools: [],
-        description: "Perform structured performance analysis, CPA benchmarking, and unit economics calculations",
-      };
-    }
-
-    // 6. Campaign Strategy, Scaling Plan & Funnel Architecture
-    const isCampaignStrategy =
-      /(strategy|scaling\s*plan|marketing\s*plan|blueprint|budget\s*allocation|funnel\s*structure|scale|scaling|optimization\s*plan|launch\s*plan)/i.test(text);
-
-    if (isCampaignStrategy) {
-      return {
-        intent: "CAMPAIGN_STRATEGY",
-        requiresTools: false,
-        tools: [],
-        description: "Synthesize full-funnel marketing strategy, budget distribution, and scaling criteria",
-      };
-    }
-
-    // 7. Google Sheets / Excel Write / Save Recommendations
-    const isSheetWrite =
-      /(save|write|update|export|append|push).*(recommendations?|results?|data|output|analysis|findings?).*(to|into).*(sheet|spreadsheet|excel|warehouse)/i.test(text) ||
-      /(save|write|update).*(sheet|spreadsheet)/i.test(text);
-
-    if (isSheetWrite) {
-      return {
-        intent: "GOOGLE_SHEET_WRITE",
-        requiresTools: true,
-        tools: ["write_connected_sheet_rows"],
-        description: "Save generated recommendations or analysis back to Google Sheet",
-      };
-    }
-
-    // 8. Meta Ads Performance, Insights & Spend Query (Explicit ad metrics request)
-    const isMetaMetrics =
-      /(campaign\s*performance|ad\s*performance|meta\s*ads?|facebook\s*ads?|roas|ctr|cpa|cpc|spend|clicks|impressions|conversions|purchases|top\s*campaigns?|winning\s*ads?)/i.test(text) &&
-      !/(create|launch|draft|build|setup|publish)\s*(campaign|adset|ad)/i.test(text) &&
-      /(how\s*much|spent|performance|live|metrics|insights|cost|spend|clicks|impressions)/i.test(text);
-
-    if (isMetaMetrics) {
-      return {
-        intent: "META_ADS_METRICS",
-        requiresTools: true,
-        tools: ["fetch_live_meta_ads_mcp", "query_database_metrics"],
-        description: "Fetch authentic Meta Ads campaign insights, performance, and unit economics",
-      };
-    }
-
-    // 9. Google Ads Performance Query (Explicit Google Ads metrics request)
-    const isGoogleMetrics =
-      /(google\s*ads?|google\s*campaign|adwords|search\s*campaign|keywords?)/i.test(text) &&
-      /(performance|spend|impressions|clicks|conversions|roas|cpc|cost)/i.test(text) &&
-      !/(create|launch|draft|build|setup)\s*(google\s*campaign|child\s*account)/i.test(text);
-
-    if (isGoogleMetrics) {
-      return {
-        intent: "GOOGLE_ADS_METRICS",
-        requiresTools: true,
-        tools: ["fetch_live_google_ads_mcp", "query_database_metrics"],
-        description: "Fetch live Google Ads campaign performance, keywords, and spend",
-      };
-    }
-
-    // 10. Dynamic Autonomous AI Task (ANY arbitrary task given in nodes)
-    const needsSheet = (mentionsSheet || /product|catalog|item|inventory/i.test(text)) && context.allConnectedSheets?.length > 0;
-
-    return {
-      intent: "DYNAMIC_TASK",
-      requiresTools: Boolean(needsSheet),
-      tools: needsSheet ? ["get_connected_sheet_rows"] : [],
-      description: "Autonomous AI execution for custom node task with dynamic reasoning",
-    };
-  }
-
-  /**
-   * 3. TOOL EXECUTION ENGINE
-   * Executes tools sequentially, gathers genuine responses, and prevents fabricated data.
+   * 3. EXECUTE MULTI-STEP TOOL PLAN
    */
   static async executeTools({
     intentObj,
@@ -479,249 +637,88 @@ export class AiAgentOrchestrator {
     onStatus = null,
   }) {
     const executedTools = [];
-    const targetAccountId = context.targetMetaAccountId;
+    const steps = intentObj?.steps || [];
 
-    const emitStatus = (toolName, msg) => {
+    for (const step of steps) {
+      if (step.toolName === "_missing_meta_account") {
+        executedTools.push({
+          toolName: "fetch_live_meta_ads_mcp",
+          purpose: step.purpose,
+          toolArgs: {},
+          toolResult: {
+            error: true,
+            message:
+              "No Meta Ad Account is connected or specified. Please specify a Meta Ad Account ID (e.g., act_1416124059911929) or connect a Meta Ads account in Channels / AI Context.",
+          },
+          status: "FAILED",
+        });
+        continue;
+      }
+
       if (typeof onStatus === "function") {
-        onStatus({ toolName, status: msg });
+        onStatus({ toolName: step.toolName, status: `Running ${step.toolName}...` });
       }
-    };
 
-    // --- TOOL: get_connected_sheet_rows ---
-    if (intentObj.intent === "GOOGLE_SHEET_FETCH" || intentObj.tools.includes("get_connected_sheet_rows")) {
-      const targetSheet = this.resolveTargetSheet(context.allConnectedSheets, instruction) || context.targetSheet;
-      const targetUrl = targetSheet?.sheetUrl || context.connectedSheetUrl;
-      const targetName = targetSheet?.sheetName || context.connectedSheetName;
-      const targetIndex = targetSheet?.sheetIndex || context.targetSheetIndex || 1;
-
-      emitStatus("get_connected_sheet_rows", `Fetching rows from Sheet #${targetIndex} (${targetName})...`);
-      const startTime = Date.now();
       try {
-        let sheetResult = await executeAgentTool("get_connected_sheet_rows", {
+        const toolArgs = {
+          ...step.args,
           userId: context.userId,
-          sheetUrl: targetUrl,
-          sheetIndex: targetIndex,
-          sheetName: targetName,
-          userMessage: instruction,
-        });
+        };
 
-        // Direct Sheets API fallback if executeAgentTool returned 0 rows and a URL is configured
-        if ((!sheetResult || !sheetResult.success || (sheetResult.rows && sheetResult.rows.length === 0)) && targetUrl) {
-          try {
-            const directRead = await sheetsService.readSpreadsheet({
-              spreadsheetIdOrUrl: targetUrl,
-              sheetTitle: targetSheet?.targetWorksheetName || targetSheet?.worksheetName || null,
-            });
-            if (directRead && directRead.rows && directRead.rows.length > 0) {
-              sheetResult = {
-                success: true,
-                sheetIndex: targetIndex,
-                sheetUrl: targetUrl,
-                sheetName: directRead.title || targetName || `Sheet #${targetIndex}`,
-                totalRows: directRead.rows.length,
-                columns: directRead.headers || Object.keys(directRead.rows[0] || {}),
-                rows: directRead.rows,
-              };
-            }
-          } catch (readErr) {
-            console.warn("[AiAgentOrchestrator Sheets Direct Read Error]:", readErr.message);
+        // If this is an inspect_sheet_schema call, attach dynamically extracted requestedFields after reading headers
+        const result = await executeAgentTool(step.toolName, toolArgs);
+
+        if (
+          step.toolName === "inspect_sheet_schema" &&
+          result &&
+          result.success &&
+          Array.isArray(result.headers)
+        ) {
+          const reqFields = extractRequestedSheetFields(instruction, result.headers);
+          if (reqFields.length > 0) {
+            result.requestedFields = reqFields;
+            result.fieldMatch = SheetInspectorService.matchRequestedFields(result.headers, reqFields);
           }
         }
 
-        executedTools.push({
-          toolName: "get_connected_sheet_rows",
-          toolArgs: { sheetUrl: targetUrl, sheetIndex: targetIndex, userId: context.userId },
-          toolResult: sheetResult,
-          status: sheetResult?.success && (sheetResult.rows?.length > 0 || sheetResult.totalRows > 0) ? "SUCCESS" : "FAILED",
-          durationMs: Date.now() - startTime,
-        });
-      } catch (err) {
-        executedTools.push({
-          toolName: "get_connected_sheet_rows",
-          toolArgs: { sheetUrl: targetUrl, sheetIndex: targetIndex },
-          toolResult: { success: false, error: err.message },
-          status: "FAILED",
-          durationMs: Date.now() - startTime,
-        });
-      }
-    }
-
-    // --- TOOL: write_connected_sheet_rows ---
-    if (intentObj.intent === "GOOGLE_SHEET_WRITE" || intentObj.tools.includes("write_connected_sheet_rows")) {
-      emitStatus("write_connected_sheet_rows", "Saving recommendations into Google Sheet...");
-      const startTime = Date.now();
-      try {
-        let writeResult = { success: false };
-        if (context.connectedSheetUrl) {
-          const sampleRows = [
-            ["Recommendation ID", "Target Campaign", "Action", "Proposed Budget / Change", "Expected Impact", "Status", "Timestamp"],
-            ["REC-001", "CBO Mix Campaign", "Scale Budget +15%", "₹1,500/day", "Improve Conversion Volume", "APPROVED", new Date().toISOString()],
-            ["REC-002", "Underperforming Static Ad", "Pause Creative", "Reallocate ₹500", "Reduce Wasteful CPA", "PENDING", new Date().toISOString()],
-          ];
-
-          writeResult = await sheetsService.batchUpdateValues({
-            spreadsheetIdOrUrl: context.connectedSheetUrl,
-            data: [{ range: "Recommendations!A1:G3", values: sampleRows }],
-          });
-        }
+        const isToolFailure =
+          result === null ||
+          result === undefined ||
+          result?.success === false ||
+          result?.error === true;
 
         executedTools.push({
-          toolName: "write_connected_sheet_rows",
-          toolArgs: { sheetUrl: context.connectedSheetUrl },
-          toolResult: writeResult,
-          status: writeResult.success ? "SUCCESS" : "FAILED",
-          durationMs: Date.now() - startTime,
-        });
-      } catch (err) {
-        executedTools.push({
-          toolName: "write_connected_sheet_rows",
-          toolArgs: { sheetUrl: context.connectedSheetUrl },
-          toolResult: { success: false, error: err.message },
-          status: "FAILED",
-          durationMs: Date.now() - startTime,
-        });
-      }
-    }
-
-    // --- TOOL: sync_meta_ads_to_sheet ---
-    if (intentObj.intent === "META_ADS_SHEET_SYNC" || intentObj.tools.includes("sync_meta_ads_to_sheet")) {
-      emitStatus("sync_meta_ads_to_sheet", "Syncing Meta Ads performance data to Google Sheet...");
-      const startTime = Date.now();
-      try {
-        const { default: MetaAdsSheetSyncService } = await import("../automation/metaAdsSheetSyncService.js");
-        const syncResult = await MetaAdsSheetSyncService.syncMetaAdsToSheet({
-          userId: context.userId,
-          instruction,
-          node: context.node || {},
-          context,
-          onProgress: (tool, msg) => emitStatus("sync_meta_ads_to_sheet", msg),
+          toolName: step.toolName,
+          purpose: step.purpose,
+          toolArgs: step.args,
+          toolResult: result,
+          status: isToolFailure ? "FAILED" : "SUCCESS",
         });
 
-        executedTools.push({
-          toolName: "sync_meta_ads_to_sheet",
-          toolArgs: { instruction, targetTab: syncResult.targetTab, metaAccountId: syncResult.metaAccountId },
-          toolResult: syncResult,
-          status: syncResult.success ? "SUCCESS" : "FAILED",
-          durationMs: Date.now() - startTime,
-        });
-      } catch (err) {
-        executedTools.push({
-          toolName: "sync_meta_ads_to_sheet",
-          toolArgs: { instruction },
-          toolResult: { success: false, error: err.message },
-          status: "FAILED",
-          durationMs: Date.now() - startTime,
-        });
-      }
-    }
-
-    // --- TOOL: fetch_live_meta_ads_mcp / query_database_metrics ---
-    if (
-      intentObj.intent === "META_ADS_METRICS" ||
-      intentObj.tools.includes("fetch_live_meta_ads_mcp") ||
-      (intentObj.intent === "DATA_ANALYSIS" && !previousNodeOutput && !context.targetSheet && (!context.allConnectedSheets || context.allConnectedSheets.length === 0))
-    ) {
-      emitStatus("fetch_live_meta_ads_mcp", `Fetching live Meta campaigns for act_${targetAccountId}...`);
-      const startTime = Date.now();
-      try {
-        let metaResult = null;
-        try {
-          metaResult = await MetaMcpClient.executeLiveTool("get_live_campaign_insights", {
-            accountId: targetAccountId,
-            userId: context.userId,
-            datePreset: "last_7d",
-          });
-        } catch (mcpErr) {
-          console.warn("[AiAgentOrchestrator Live Meta MCP Warning]:", mcpErr.message);
-        }
-
-        // Secondary fallback to MongoDB metrics if live API is temporarily unreachable
-        if (!metaResult || !metaResult.insights || metaResult.insights.length === 0) {
-          if (mongoose.connection?.readyState === 1) {
-            const dbMetrics = await executeAgentTool("query_database_metrics", {
-              accountId: targetAccountId,
-              userId: context.userId,
-              channel: "meta",
-            });
-            metaResult = {
-              status: "DATABASE_METRICS",
-              accountId: targetAccountId,
-              insights: dbMetrics.insights || [],
-              campaigns: dbMetrics.campaigns || [],
-              summary: dbMetrics.summary || {},
-            };
-          }
-        }
-
-        executedTools.push({
-          toolName: "fetch_live_meta_ads_mcp",
-          toolArgs: { accountId: `act_${targetAccountId}`, datePreset: "last_7d" },
-          toolResult: metaResult,
-          status: metaResult ? "SUCCESS" : "FAILED",
-          durationMs: Date.now() - startTime,
-        });
-      } catch (err) {
-        executedTools.push({
-          toolName: "fetch_live_meta_ads_mcp",
-          toolArgs: { accountId: `act_${targetAccountId}` },
-          toolResult: { success: false, error: err.message },
-          status: "FAILED",
-          durationMs: Date.now() - startTime,
-        });
-      }
-    }
-
-    // --- TOOL: CAMPAIGN CREATION ---
-    if (intentObj.intent === "CAMPAIGN_CREATION") {
-      emitStatus("create_meta_campaign", `Preparing Meta campaign creation for act_${targetAccountId}...`);
-      const startTime = Date.now();
-      try {
-        const campNameMatch = instruction.match(/name\s*(?:is|:|-)?\s*["']?([^,\n\r]+?)["']?(?:,|$|\n|adset)/i);
-        const campName = campNameMatch ? campNameMatch[1].trim() : "Performance Marketing Campaign";
-
-        const budgetMatch = instruction.match(/budget\s*(?:is|of|:)?\s*(?:₹|inr|rs\.?)?\s*(\d+(?:,\d+)*)/i);
-        const dailyBudget = budgetMatch ? Number(budgetMatch[1].replace(/,/g, "")) : 1000;
-
-        const campRes = await MetaMcpClient.executeLiveTool("create_meta_campaign", {
-          name: campName,
-          objective: "OUTCOME_SALES",
-          dailyBudget,
-          status: "PAUSED",
-          accountId: targetAccountId,
-          userId: context.userId,
-        });
-
-        executedTools.push({
-          toolName: "create_meta_campaign",
-          toolArgs: { name: campName, dailyBudget, accountId: `act_${targetAccountId}` },
-          toolResult: campRes,
-          status: campRes?.campaignId ? "SUCCESS" : "FAILED",
-          durationMs: Date.now() - startTime,
-        });
-
-        if (campRes?.campaignId) {
-          emitStatus("verify_meta_campaign", `Verifying campaign ${campRes.campaignId}...`);
-          const verifyRes = await MetaMcpClient.executeLiveTool("verify_meta_campaign", {
-            campaignId: campRes.campaignId,
-            accountId: targetAccountId,
-            userId: context.userId,
-          });
-          executedTools.push({
-            toolName: "verify_meta_campaign",
-            toolArgs: { campaignId: campRes.campaignId, accountId: `act_${targetAccountId}` },
-            toolResult: verifyRes,
-            status: verifyRes?.success ? "SUCCESS" : "FAILED",
-            durationMs: 50,
+        if (typeof onStatus === "function") {
+          onStatus({
+            toolName: step.toolName,
+            status: isToolFailure ? `Failed ${step.toolName}` : `Completed ${step.toolName}`,
           });
         }
       } catch (err) {
         executedTools.push({
-          toolName: "create_meta_campaign",
-          toolArgs: { accountId: `act_${targetAccountId}` },
-          toolResult: { success: false, error: err.message },
+          toolName: step.toolName,
+          purpose: step.purpose,
+          toolArgs: step.args,
+          toolResult: {
+            error: true,
+            message: err.message || "Tool execution failed",
+          },
           status: "FAILED",
-          durationMs: Date.now() - startTime,
         });
+
+        if (typeof onStatus === "function") {
+          onStatus({
+            toolName: step.toolName,
+            status: `Failed ${step.toolName}: ${err.message}`,
+          });
+        }
       }
     }
 
@@ -729,918 +726,950 @@ export class AiAgentOrchestrator {
   }
 
   /**
-   * 4. STRICT COMPLETION VERIFICATION & EXECUTION GATE
-   * A node must NEVER be marked completed simply because an LLM generated text.
-   * Requires authentic tool results and task-specific outcome validation.
+   * 4. VALIDATE ACTUAL EXECUTION OUTCOMES (Never fabricates verification!)
    */
-  static verifyTaskCompletion({
-    intentObj,
-    instruction,
-    executedTools = [],
-    previousNodeOutput = null,
-  }) {
-    const checks = [];
-    let isPassed = true;
-    let status = "completed";
-    let failureReason = null;
-    let verifiedOutputData = null;
+  static verifyTaskCompletion({ intentObj, instruction, executedTools = [], previousNodeOutput = null }) {
+    if (executedTools.length === 0) {
+      return {
+        verified: false,
+        partial: false,
+        reason: "No tools were executed for this request.",
+        outputData: null,
+      };
+    }
 
-    switch (intentObj.intent) {
-      case "CONVERSATIONAL": {
-        checks.push({ name: "Conversational Request", passed: true, detail: "Direct response without tool overhead" });
-        return {
-          verified: true,
-          status: "completed",
-          reason: "Conversational response generated successfully",
-          checks,
-          outputData: { type: "conversational", message: instruction },
-        };
-      }
+    const succeeded = executedTools.filter((t) => t.status === "SUCCESS");
+    const failed = executedTools.filter((t) => t.status === "FAILED");
 
-      case "GOOGLE_SHEET_FETCH": {
-        const sheetTool = executedTools.find((t) => t.toolName === "get_connected_sheet_rows");
-        if (!sheetTool || sheetTool.status !== "SUCCESS") {
-          isPassed = false;
-          status = "failed";
-          failureReason = sheetTool?.toolResult?.error || sheetTool?.toolResult?.message || "Failed to connect to Google Sheet.";
-          checks.push({ name: "Google Sheets API Access", passed: false, detail: failureReason });
-          break;
-        }
-
-        const rows = sheetTool.toolResult?.rows || [];
-        const totalRows = sheetTool.toolResult?.totalRows || rows.length;
-
-        if (totalRows === 0 || rows.length === 0) {
-          isPassed = false;
-          status = "failed";
-          failureReason = "Connected Google Sheet returned 0 rows. Downstream execution blocked to prevent propagating empty state.";
-          checks.push({ name: "Non-Empty Row Validation", passed: false, detail: failureReason });
-          break;
-        }
-
-        const sIdx = sheetTool.toolResult?.sheetIndex || context.targetSheetIndex || 1;
-        const sName = sheetTool.toolResult?.sheetName || "Sheet";
-        checks.push({ name: "Google Sheets Connection", passed: true, detail: `Found Sheet #${sIdx}: ${sName}` });
-        checks.push({ name: "Data Ingestion", passed: true, detail: `Retrieved ${totalRows} rows and ${sheetTool.toolResult?.columns?.length || 0} columns` });
-
-        verifiedOutputData = {
-          type: "google_sheet_data",
-          sheetIndex: sIdx,
-          spreadsheet: sName,
-          sheetUrl: sheetTool.toolResult?.sheetUrl,
-          columns: sheetTool.toolResult?.columns || Object.keys(rows[0] || {}),
-          rowsFetched: totalRows,
-          sampleRows: rows.slice(0, 5),
-          fullRows: rows,
-          status: "success",
-        };
-        break;
-      }
-
-      case "META_ADS_SHEET_SYNC": {
-        const syncTool = executedTools.find((t) => t.toolName === "sync_meta_ads_to_sheet");
-        if (!syncTool || syncTool.status !== "SUCCESS" || !syncTool.toolResult?.success) {
-          isPassed = false;
-          status = "failed";
-          failureReason = syncTool?.toolResult?.error || "Failed to execute Meta Ads daily sync to Google Sheet.";
-          checks.push({ name: "Daily Meta Ads Sheet Sync", passed: false, detail: failureReason });
-          break;
-        }
-
-        const res = syncTool.toolResult;
-        checks.push({ name: "Meta Account Verified", passed: true, detail: `act_${res.metaAccountId} (${res.metaAccountName})` });
-        checks.push({ name: "Worksheet Target", passed: true, detail: `Tab "${res.targetTab}" on sheet ${res.spreadsheetId}` });
-        checks.push({ name: "Data Ingestion & Duplicate Protection", passed: true, detail: `${res.totalInsightsFetched} fetched, ${res.duplicatesSkipped} skipped, ${res.recordsAppended} appended` });
-
-        verifiedOutputData = {
-          type: "meta_ads_sheet_sync",
-          status: "success",
-          metaAccountId: res.metaAccountId,
-          targetTab: res.targetTab,
-          targetDate: res.targetDate,
-          recordsAppended: res.recordsAppended,
-          duplicatesSkipped: res.duplicatesSkipped,
-          totalInsightsFetched: res.totalInsightsFetched,
-          auditLogs: res.auditLogs,
-        };
-        break;
-      }
-
-      case "GOOGLE_SHEET_WRITE": {
-        const writeTool = executedTools.find((t) => t.toolName === "write_connected_sheet_rows");
-        if (!writeTool || writeTool.status !== "SUCCESS") {
-          isPassed = false;
-          status = "failed";
-          failureReason = writeTool?.toolResult?.error || "Failed to write updates to Google Sheet.";
-          checks.push({ name: "Google Sheet Batch Update", passed: false, detail: failureReason });
-          break;
-        }
-
-        checks.push({ name: "Spreadsheet Write Access", passed: true, detail: "Updated cells successfully" });
-        verifiedOutputData = {
-          type: "sheet_write_confirmation",
-          status: "success",
-          updatedCells: writeTool.toolResult?.updatedCells || 1,
-        };
-        break;
-      }
-
-      case "META_ADS_METRICS": {
-        const metaTool = executedTools.find((t) => t.toolName === "fetch_live_meta_ads_mcp");
-        if (!metaTool || metaTool.status !== "SUCCESS") {
-          isPassed = false;
-          status = "failed";
-          failureReason = metaTool?.toolResult?.error || "Meta Ads API authorization error or account unreachable.";
-          checks.push({ name: "Meta Ads Graph API Call", passed: false, detail: failureReason });
-          break;
-        }
-
-        const insights = metaTool.toolResult?.insights || [];
-        const campaigns = metaTool.toolResult?.campaigns || [];
-        checks.push({ name: "Meta Account Connection", passed: true, detail: `Target account act_${metaTool.toolResult?.accountId}` });
-        checks.push({ name: "Performance Ingestion", passed: true, detail: `Ingested records: ${insights.length} insight periods, ${campaigns.length} campaigns` });
-
-        verifiedOutputData = {
-          type: "meta_ads_metrics",
-          accountId: metaTool.toolResult?.accountId,
-          campaignsCount: campaigns.length,
-          insightsCount: insights.length,
-          summary: metaTool.toolResult?.summary || {},
-          rawInsights: insights.slice(0, 20),
-          status: "success",
-        };
-        break;
-      }
-
-      case "CREATIVE_COPY_GENERATION": {
-        checks.push({ name: "Creative Strategy Alignment", passed: true, detail: "Synthesized multi-angle ad hooks and copywriting variations" });
-        verifiedOutputData = {
-          type: "creative_copy",
-          status: "success",
-          copyGenerated: true,
-        };
-        break;
-      }
-
-      case "CAMPAIGN_STRATEGY": {
-        checks.push({ name: "Strategy Synthesis", passed: true, detail: "Derived full-funnel growth architecture and scaling rules" });
-        verifiedOutputData = {
-          type: "campaign_strategy",
-          status: "success",
-          strategyCompleted: true,
-        };
-        break;
-      }
-
-      case "DYNAMIC_TASK": {
-        checks.push({ name: "Dynamic Autonomous Verification", passed: true, detail: "Evaluated prompt instructions and executed task successfully" });
-        verifiedOutputData = {
-          type: "dynamic_ai_task",
-          status: "success",
-          completed: true,
-        };
-        break;
-      }
-
-      case "CAMPAIGN_CREATION": {
-        const createTool = executedTools.find((t) => t.toolName === "create_meta_campaign");
-        if (!createTool || createTool.status !== "SUCCESS" || !createTool.toolResult?.campaignId) {
-          isPassed = false;
-          status = "failed";
-          failureReason = createTool?.toolResult?.error || "Failed to create campaign on Meta Graph API.";
-          checks.push({ name: "Meta Campaign Creation", passed: false, detail: failureReason });
-          break;
-        }
-
-        checks.push({ name: "Meta Campaign Deployment", passed: true, detail: `Created Campaign ID: ${createTool.toolResult.campaignId}` });
-        verifiedOutputData = {
-          type: "campaign_creation",
-          campaignId: createTool.toolResult.campaignId,
-          status: "success",
-        };
-        break;
-      }
-
-      case "DATA_ANALYSIS": {
-        // If predecessor node had data, verify it wasn't empty
-        if (previousNodeOutput) {
-          const strPrev = typeof previousNodeOutput === "string" ? previousNodeOutput : JSON.stringify(previousNodeOutput);
-          if (strPrev.includes("0 rows") || strPrev.includes("failed") || strPrev.length < 20) {
-            isPassed = false;
-            status = "blocked";
-            failureReason = "Upstream node produced insufficient or failed output. Cannot perform analysis on empty state.";
-            checks.push({ name: "Upstream Data Ingestion", passed: false, detail: failureReason });
-            break;
-          }
-        }
-        checks.push({ name: "Data Evaluation & Synthesis", passed: true, detail: "Derived insights from authentic predecessor records" });
-        verifiedOutputData = {
-          type: "analysis_result",
-          status: "success",
-          analysisCompleted: true,
-        };
-        break;
-      }
-
-      default: {
-        checks.push({ name: "Execution Verification", passed: true, detail: "Task executed successfully" });
-        verifiedOutputData = { status: "success" };
-      }
+    if (succeeded.length === 0) {
+      const reasons = failed
+        .map((f) => f.toolResult?.message || f.toolResult?.error || `${f.toolName} failed`)
+        .join("; ");
+      return {
+        verified: false,
+        partial: false,
+        reason: reasons || "All tool executions failed.",
+        failedSteps: failed,
+        succeededSteps: [],
+        outputData: failed[0]?.toolResult || null,
+      };
     }
 
     return {
-      verified: isPassed,
-      status: isPassed ? "completed" : status,
-      reason: failureReason || "Task verified and completed successfully.",
-      checks,
-      outputData: verifiedOutputData,
+      verified: failed.length === 0,
+      partial: failed.length > 0 && succeeded.length > 0,
+      reason:
+        failed.length > 0
+          ? `${succeeded.length} step(s) succeeded and ${failed.length} step(s) failed.`
+          : "All tool executions returned live data.",
+      failedSteps: failed,
+      succeededSteps: succeeded,
+      outputData: succeeded[succeeded.length - 1]?.toolResult || null,
     };
   }
 
   /**
-   * 5. DIRECT LLM INVOCATION VIA CLAUDE MESSAGES API
-   * Calls Anthropic Claude with full instruction, upstream context, sheet data, and workspace parameters.
+   * 5. BUILD STRUCTURED CONTEXT METADATA FOR MULTI-TURN MEMORY
    */
-  static async callClaudeDirect({ instruction, context, previousNodeOutput, executedTools, intentObj }) {
-    const rawApiKey = (process.env.ANTHROPIC_API_KEY || "").trim().replace(/^["']|["']$/g, "");
-    if (!rawApiKey || rawApiKey.length < 15 || rawApiKey.includes("your_anthropic")) {
+  static extractContextMetadata(executedTools = [], fallbackMemory = null) {
+    let sheetContext = fallbackMemory?.lastSheetContext || null;
+    let metaContext = fallbackMemory?.lastMetaContext || null;
+
+    for (const tc of executedTools) {
+      if (tc.status !== "SUCCESS" || !tc.toolResult) continue;
+      const res = tc.toolResult;
+
+      if (
+        tc.toolName === "extract_sheet_video_links" ||
+        tc.toolName === "inspect_sheet_schema" ||
+        tc.toolName === "update_connected_sheet_cells"
+      ) {
+        sheetContext = {
+          sheetIndex: res.sheetIndex || null,
+          sheetId: res.sheetId || null,
+          spreadsheetId: res.spreadsheetId || null,
+          sheetName: res.sheetName || null,
+          sheetUrl: res.sheetUrl || null,
+          worksheetTab: res.worksheetTab || null,
+          availableTabs: res.availableTabs || [],
+          headers: res.headers || sheetContext?.headers || [],
+          detectedColumns: res.detectedColumns || res.schema?.semanticMap || null,
+          videoEntries: Array.isArray(res.entries)
+            ? res.entries.slice(0, 50)
+            : sheetContext?.videoEntries || null,
+        };
+      }
+
+      if (
+        tc.toolName === "fetch_live_meta_ads_mcp" ||
+        tc.toolName === "get_live_adsets" ||
+        tc.toolName === "get_live_ad_creatives"
+      ) {
+        const rawCampaigns =
+          res.campaigns || res.allCampaignsPerformance || res.topCampaignsBySpend || metaContext?.campaigns || [];
+        metaContext = {
+          accountId: res.accountId
+            ? String(res.accountId).startsWith("act_")
+              ? String(res.accountId)
+              : `act_${String(res.accountId).replace(/^act_/, "")}`
+            : metaContext?.accountId || null,
+          accountName: res.accountName || metaContext?.accountName || null,
+          currency: res.currency || metaContext?.currency || "INR",
+          datePreset: res.datePreset || tc.toolArgs?.datePreset || metaContext?.datePreset || "maximum",
+          campaigns: Array.isArray(rawCampaigns)
+            ? rawCampaigns.slice(0, 100).map((c) => ({
+                id: c.id || c.campaignId || null,
+                name: c.name || c.campaignName || null,
+                status: c.status || c.effective_status || null,
+              }))
+            : [],
+          campaignIds: Array.isArray(rawCampaigns)
+            ? rawCampaigns.map((c) => c.id || c.campaignId).filter(Boolean)
+            : [],
+        };
+      }
+    }
+
+    return { sheetContext, metaContext };
+  }
+
+  /**
+   * Optional LLM synthesis via Anthropic API (with model fallback chain).
+   * Only used when ANTHROPIC_API_KEY is valid; strictly grounded in executedTools JSON.
+   */
+  static async trySynthesizeWithClaude({ instruction, executedTools, context }) {
+    const apiKey = (process.env.ANTHROPIC_API_KEY || "").trim().replace(/^["']|["']$/g, "");
+    if (!apiKey || apiKey.length < 20 || apiKey.includes("your_anthropic")) {
       return null;
     }
 
-    try {
-      const axios = (await import("axios")).default;
-      const model = process.env.CLAUDE_AGENT_MODEL || "claude-3-5-sonnet-20241022";
-      const cleanModel = (model.includes("4-5") || model.includes("sonnet-4")) ? "claude-3-5-sonnet-20241022" : model;
+    const memoryBlock = ConversationMemoryService.formatPromptMemoryBlock(context.sessionMemory);
+    const toolSummaryJson = JSON.stringify(
+      executedTools.map((t) => ({
+        toolName: t.toolName,
+        purpose: t.purpose,
+        status: t.status,
+        args: t.toolArgs,
+        result: t.toolResult,
+      })),
+      null,
+      2
+    ).slice(0, 48000);
 
-      const buName = context.aiContext?.businessUnits?.[0]?.name || "Performance Marketing";
-      const prodName = context.aiContext?.products?.[0]?.name || "Active Product Catalog";
-      const briefText = context.aiContext?.briefs?.[0]?.description || "";
+    const systemPrompt = `You are a precise Marketing Data & Operations AI Agent.
+Generate your response EXCLUSIVELY from the ACTUAL TOOL EXECUTION RESULTS provided below.
+STRICT RULES:
+1. NEVER invent campaign names, IDs, metrics, spreadsheet rows, column values, or URLs.
+2. NEVER output static filler like "Autonomous Task Execution Completed" or claim "VERIFIED & VALIDATED" unless an actual verification check occurred.
+3. For Google Sheets video link extraction: output a concise Markdown table showing ONLY fields that actually exist (e.g. | Row | Creative Code | Media Type | Creative Name | Video URL | Validation |) with COMPLETE, UNTRUNCATED URLs. Do NOT dump all spreadsheet columns unless explicitly requested.
+4. If a user requested a spreadsheet field/column that is in fieldMatch.missing, explicitly state that the field was not found in the worksheet headers and list actual available headers. Do NOT fabricate values.
+5. For Meta Ads campaign lists: output "### Campaigns Retrieved" with "| Campaign Name | Campaign ID | Status |" and state the exact total number of campaigns returned (noting if pagination indicates more results).
+6. If any tool failed or returned an API/permission error, explain the exact error clearly and honestly. If multi-step execution partially succeeded, report both succeeded and failed steps.`;
 
-      const sheetTool = executedTools?.find((t) => t.toolName === "get_connected_sheet_rows");
-      const sheetRes = sheetTool?.toolResult || {};
-      const sheetRows = sheetRes.rows || context.targetSheet?.sheetRows || [];
-      const sheetCols = sheetRes.columns || context.targetSheet?.sheetColumns || [];
-
-      let sheetDataSummary = "";
-      if (sheetRows.length > 0) {
-        const sampleRows = sheetRows.slice(0, 10);
-        sheetDataSummary = `\nCONNECTED SHEET DATA (${sheetRows.length} total rows, Sheet: "${sheetRes.sheetName || context.connectedSheetName}", Tab: "${sheetRes.targetWorksheetName || context.targetSheet?.targetWorksheetName || "Default"}"):\nColumns: ${sheetCols.join(", ")}\nSample Records:\n${JSON.stringify(sampleRows, null, 2)}`;
-      }
-
-      let upstreamText = "";
-      if (previousNodeOutput) {
-        const str = typeof previousNodeOutput === "string" ? previousNodeOutput : JSON.stringify(previousNodeOutput, null, 2);
-        upstreamText = `\nUPSTREAM NODE OUTPUT / PRECEDING STEPS CONTEXT:\n${str.slice(0, 4000)}`;
-      }
-
-      const prompt = `You are Newton Ads AI, an advanced multi-channel performance marketing intelligence assistant and autonomous workflow execution engine.
-
-READ THE USER'S TASK CAREFULLY AND EXECUTE IT IN FULL ("pura task"):
-"${instruction}"
-
-WORKSPACE CONTEXT:
-- Active Ad Account: act_${context.targetMetaAccountId || "N/A"}
-- Business Unit: ${buName}
-- Target Product/Offering: ${prodName}
-${briefText ? `- Marketing Brief: ${briefText}` : ""}${upstreamText}${sheetDataSummary}
-
-CRITICAL EXECUTION REQUIREMENTS:
-1. Address EVERY part of the user's task instruction thoroughly. Never truncate, omit requirements, or return placeholder text.
-2. If the user asked to fetch, inspect, or list fields/details from a sheet, provide ALL requested details and fields clearly.
-3. If the user asked for creative copywriting (headlines, primary text, hooks, scripts), generate high-converting, professional variations tailored to the products and briefs.
-4. If the user asked for calculations or data analysis (CPA, ROAS, CTR, comparisons), compute the exact metrics using real numbers and categorize winners vs. bleeders.
-5. If the user asked for recommendations or a strategy, provide concrete, actionable steps.
-6. Format your response in clean, professional GitHub-flavored markdown with structured tables where appropriate.`;
-
-      const response = await axios.post(
-        "https://api.anthropic.com/v1/messages",
-        {
-          model: cleanModel,
-          max_tokens: 3000,
-          system: "You are Newton Ads AI, an advanced multi-channel performance marketing intelligence assistant and autonomous workflow engine. Read the user's task instruction in its entirety, evaluate all provided data thoroughly, and generate an exact, highly detailed, professional, and directly actionable result in clean markdown.",
-          messages: [{ role: "user", content: prompt }],
-        },
-        {
-          headers: {
-            "x-api-key": rawApiKey,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
+    for (const model of ANTHROPIC_MODEL_CANDIDATES) {
+      try {
+        const resp = await axios.post(
+          "https://api.anthropic.com/v1/messages",
+          {
+            model,
+            max_tokens: 3000,
+            temperature: 0.1,
+            system: systemPrompt,
+            messages: [
+              {
+                role: "user",
+                content: `${memoryBlock ? `${memoryBlock}\n\n` : ""}USER INSTRUCTION:\n${instruction}\n\nACTUAL TOOL EXECUTION RESULTS:\n${toolSummaryJson}`,
+              },
+            ],
           },
-          timeout: 15000,
-        }
-      );
+          {
+            headers: {
+              "x-api-key": apiKey,
+              "anthropic-version": "2023-06-01",
+              "content-type": "application/json",
+            },
+            timeout: 25000,
+          }
+        );
 
-      const text = response.data?.content?.[0]?.text;
-      if (text && text.trim().length > 30) {
-        return text.trim();
+        const textBlock = (resp.data?.content || []).find((b) => b.type === "text")?.text;
+        if (textBlock && textBlock.trim()) {
+          return {
+            text: textBlock.trim(),
+            model,
+            usage: resp.data?.usage || null,
+          };
+        }
+      } catch (err) {
+        const status = err.response?.status;
+        if (status === 404) {
+          continue; // Try next candidate model if retired/not found
+        }
+        // Auth / 401 / credit / timeout -> fall through to deterministic tool-grounded formatter
+        break;
       }
-    } catch (err) {
-      console.warn("[AiAgentOrchestrator callClaudeDirect warning]:", err.response?.data?.error?.message || err.message);
     }
+
     return null;
   }
 
   /**
-   * 5.5. COGNITIVE AUTONOMOUS SYNTHESIS ENGINE
-   * Guaranteed deterministic intelligence for any task when external LLM API is unavailable, unkeyed, or offline.
-   */
-  static synthesizeCognitiveResponse({
-    intentObj,
-    instruction,
-    context,
-    executedTools = [],
-    previousNodeOutput = null,
-  }) {
-    const isAutomation = Boolean(context.isAutomation || context.conversationId?.startsWith("automation_"));
-
-    // --- CASE 1: Google Sheets Fetch & Field Directory ---
-    if (intentObj.intent === "GOOGLE_SHEET_FETCH") {
-      const sheetTool = executedTools.find((t) => t.toolName === "get_connected_sheet_rows");
-      const res = sheetTool?.toolResult || {};
-      let rows = res.rows || [];
-      let columns = res.columns || (rows.length > 0 ? Object.keys(rows[0]) : []);
-
-      if (rows.length === 0 && context.targetSheet?.sheetRows?.length > 0) {
-        rows = context.targetSheet.sheetRows;
-        columns = context.targetSheet.sheetColumns || Object.keys(rows[0] || {});
-      }
-
-      const sIdx = res.sheetIndex || context.targetSheetIndex || 1;
-      const sTitle = res.sheetName || context.connectedSheetName || `Sheet #${sIdx}`;
-      const activeTab = res.targetWorksheetName || res.worksheetName || context.targetSheet?.targetWorksheetName || context.targetSheet?.worksheetName || "Selected Tab";
-      const totalRowsCount = res.totalRows || rows.length;
-
-      const fieldListMarkdown = columns.map((col, idx) => {
-        const sampleVal = rows[0] && rows[0][col] !== undefined ? String(rows[0][col]).slice(0, 35) : "-";
-        return `- **\`${col}\`** *(Column #${idx + 1})*: sample value: \`"${sampleVal}"\``;
-      }).join("\n");
-
-      const displayColumns = columns.slice(0, 10);
-      const tableHeaders = displayColumns.join(" | ");
-      const tableSeparator = displayColumns.map(() => ":---").join(" | ");
-      const tableRows = rows
-        .slice(0, 10)
-        .map((r) => displayColumns.map((col) => String(r[col] || "-").replace(/\n/g, " ").slice(0, 50)).join(" | "))
-        .join("\n");
-
-      return `### 📄 Connected Spreadsheet Data & Field Directory (Sheet #${sIdx}: ${sTitle})
-
-${isAutomation ? `> **Node Instruction:** *"${instruction}"*  \n` : ""}> **Workbook:** **Sheet #${sIdx} — ${sTitle}**  
-> **Active Worksheet Tab:** \`${activeTab}\`  
-> **Total Records Extracted:** **${totalRowsCount} rows**  
-${res.sheetUrl ? `> **Spreadsheet Link:** [Open in Google Sheets](${res.sheetUrl})  \n` : ""}> **Verification Status:** **✅ VERIFIED & VALIDATED**
-
----
-
-#### 📋 Complete Detected Fields (${columns.length} Total Columns)
-${fieldListMarkdown || "- No columns detected"}
-
----
-
-#### 📊 Ingested Records (First ${Math.min(10, rows.length)} Rows)
-| ${tableHeaders} |
-| ${tableSeparator} |
-${tableRows || "| No records found in worksheet |"}
-
----
-
-#### 🔍 Execution & Data Lineage
-- **Field Extraction Completeness:** All **${columns.length} fields** identified and verified.
-- **Data Integrity:** Extracted directly from live connected spreadsheet tab \`${activeTab}\`.
-- **Downstream Node Access:** ${isAutomation ? "All extracted fields and row objects are saved into node output for downstream workflow steps." : "Data ready in workspace context."}`;
-    }
-
-    // --- CASE 2: Creative Copywriting & Ad Variation Suite ---
-    if (intentObj.intent === "CREATIVE_COPY_GENERATION") {
-      const sheetTool = executedTools.find((t) => t.toolName === "get_connected_sheet_rows");
-      const sheetRows = sheetTool?.toolResult?.rows || context.targetSheet?.sheetRows || [];
-      const firstRow = sheetRows[0] || {};
-
-      const productName =
-        firstRow["Product Name"] || firstRow["product_name"] || firstRow["Ad Name"] || firstRow["ad_name"] || firstRow["Title"] ||
-        context.aiContext?.products?.[0]?.name ||
-        "Premium Performance Offering";
-
-      const brandName = context.aiContext?.businessUnits?.[0]?.name || "Newton Marketing";
-      const targetAudience = context.aiContext?.briefs?.[0]?.targetAudience || "High-intent consumers looking for authentic quality and fast fulfillment.";
-
-      return `### ✍️ High-Converting Ad Creative & Copy Suite
-
-${isAutomation ? `> **Node Instruction:** *"${instruction}"*  \n` : ""}> **Target Product / Offering:** **${productName}**  
-> **Brand / Business Unit:** **${brandName}**  
-> **Target Audience:** *${targetAudience}*  
-> **Verification Status:** **✅ VERIFIED (Generated from authentic workspace context)**
-
----
-
-#### 🎯 Concept 1: Problem-Agitate-Solution (PAS Angle)
-- **Concept Name:** \`${productName.slice(0, 30)} | PAS Problem Agitator\`
-- **Angle / Hook:** Highlight the frustrating problem customers face with generic alternatives, and position **${productName}** as the proven solution.
-- **Primary Text:**
-  > Tired of subpar results that don't last? Most alternatives make big promises but fall short when it matters. With **${productName}**, you get verified authenticity, premium craftsmanship, and immediate peace of mind. Over 10,000+ satisfied customers have already made the switch. Don't settle for less—upgrade today!
-- **Headline (34 chars):** \`Experience The Real Difference\`
-- **Description:** \`Verified Quality • 100% Authentic • Fast Delivery\`
-- **Call to Action (CTA):** \`Shop Now\` / \`Order Now\`
-- **Recommended Creative Format:** \`9:16 Vertical Video (Problem Demo Hook in first 3 seconds)\`
-
----
-
-#### 💎 Concept 2: Transformation & Direct Value Offer
-- **Concept Name:** \`${productName.slice(0, 30)} | Direct Value Offer\`
-- **Angle / Hook:** Focus on immediate positive transformation, confidence, and exclusive pricing.
-- **Primary Text:**
-  > Bring positivity, confidence, and protection into your life. Whether for yourself or a loved one, **${productName}** is designed to deliver undeniable impact from Day 1. Backed by guaranteed quality and top customer ratings across the country. Order yours now while stocks last!
-- **Headline (36 chars):** \`Claim Your Exclusive Special Offer\`
-- **Description:** \`Special Limited-Time Price • Free Express Shipping\`
-- **Call to Action (CTA):** \`Claim Offer\` / \`Shop Now\`
-- **Recommended Creative Format:** \`1:1 High-Resolution Carousel / Product Showcase Image\`
-
----
-
-#### 🌟 Concept 3: Social Proof & Authority Hook
-- **Concept Name:** \`${productName.slice(0, 30)} | Social Proof Verified\`
-- **Angle / Hook:** "See why thousands rate this 5 stars." Leverages FOMO and customer satisfaction.
-- **Primary Text:**
-  > ⭐⭐⭐⭐⭐ *"Hands down the best decision I've made this month."* Join a thriving community of people who transformed their daily routine with **${productName}**. Premium materials, authentic sourcing, and zero compromise. Tap below to see real customer reviews and secure yours!
-- **Headline (32 chars):** \`Top Rated By 10,000+ Customers\`
-- **Description:** \`Rated 4.9/5 by Verified Buyers Across India\`
-- **Call to Action (CTA):** \`Learn More\` / \`Shop Now\`
-- **Recommended Creative Format:** \`9:16 UGC / Customer Testimonial Reaction Video\`
-
----
-
-#### 📊 Recommended Campaign Deployment
-- **Meta Ads Objective:** \`OUTCOME_SALES\`
-- **Optimization Goal:** \`OFFSITE_CONVERSIONS\` / \`PURCHASE\`
-- **Recommended Placements:** Advantage+ Placements with priority on Instagram Reels and Facebook Mobile Feed.`;
-    }
-
-    // --- CASE 3: Performance Analysis & CPA Calculations ---
-    if (intentObj.intent === "DATA_ANALYSIS") {
-      let textToParse = typeof previousNodeOutput === "string" ? previousNodeOutput : JSON.stringify(previousNodeOutput || {});
-      const campaigns = [];
-      const lines = textToParse.split("\n");
-
-      for (const line of lines) {
-        const campMatch = line.match(/\|\s*([^|]+)\s*\|\s*`?([0-9a-zA-Z_-]+)`?\s*\|\s*[₹$]?([0-9,.]+)\s*\|\s*([0-9,.]+)\s*\|\s*([0-9,.]+)\s*\|\s*([0-9,.]+)%?\s*\|\s*[₹$]?([0-9,.]+)\s*\|\s*([0-9,.]+)\s*\|\s*[₹$]?([0-9,.]+|N\/A)/i);
-        if (campMatch) {
-          const name = campMatch[1].trim();
-          const id = campMatch[2].trim();
-          const spend = parseFloat(campMatch[3].replace(/,/g, "")) || 0;
-          const impr = parseFloat(campMatch[4].replace(/,/g, "")) || 0;
-          const clicks = parseFloat(campMatch[5].replace(/,/g, "")) || 0;
-          const conv = parseFloat(campMatch[8].replace(/,/g, "")) || 0;
-          if (name && id && id !== "Campaign ID") {
-            const cpa = conv > 0 ? (spend / conv).toFixed(2) : "BLEEDER (0 Conv)";
-            const ctr = impr > 0 ? ((clicks / impr) * 100).toFixed(2) : "0.00";
-            campaigns.push({ name, id, spend, impr, clicks, conv, cpa, ctr });
-          }
-        }
-      }
-
-      if (campaigns.length === 0) {
-        const metaTool = executedTools.find((t) => t.toolName === "fetch_live_meta_ads_mcp");
-        const insights = metaTool?.toolResult?.insights || [];
-        for (const row of insights) {
-          const spend = parseFloat(row.spend || 0);
-          const clicks = parseFloat(row.clicks || 0);
-          const impr = parseFloat(row.impressions || 0);
-          const conv = parseFloat(row.conversions || row.purchases || row.actions?.[0]?.value || 0);
-          const cpa = conv > 0 ? (spend / conv).toFixed(2) : "BLEEDER (0 Conv)";
-          const ctr = impr > 0 ? ((clicks / impr) * 100).toFixed(2) : "0.00";
-          campaigns.push({
-            name: row.campaign_name || "Campaign",
-            id: row.campaign_id || "act_cam",
-            spend,
-            impr,
-            clicks,
-            conv,
-            cpa,
-            ctr,
-          });
-        }
-      }
-
-      const targetCpa = 500.00;
-      const winners = campaigns.filter((c) => c.conv > 0 && typeof c.cpa === "string" && parseFloat(c.cpa) <= targetCpa);
-      const aboveTarget = campaigns.filter((c) => c.conv > 0 && typeof c.cpa === "string" && parseFloat(c.cpa) > targetCpa);
-      const bleeders = campaigns.filter((c) => c.spend > 0 && c.conv === 0);
-      const insufficientData = campaigns.filter((c) => c.impr < 500);
-
-      const formatCampList = (arr) => {
-        if (arr.length === 0) return "- *None detected in this evaluation window.*";
-        return arr.map((c) => `- **${c.name}** (\`${c.id}\`): Spend: **₹${c.spend.toLocaleString("en-IN")}** | Conv: **${c.conv}** | CPA: **${typeof c.cpa === "string" && c.cpa.includes("BLEEDER") ? `⚠️ ${c.cpa}` : `₹${c.cpa}`}** | CTR: **${c.ctr}%**`).join("\n");
-      };
-
-      return `### 📊 Structured Performance, CPA & Creative Audit Report
-
-${isAutomation ? `> **Node Instruction:** *"${instruction}"*  \n` : ""}> **Target Benchmark Baseline CPA:** **₹${targetCpa.toFixed(2)}**  
-> **Total Campaigns Audited:** **${campaigns.length} campaigns**  
-> **Verification Status:** **✅ VERIFIED (Computed from authentic upstream metrics)**
-
----
-
-#### 🏆 1. Top High-Efficiency Winners (Within Target CPA)
-${formatCampList(winners)}
-
----
-
-#### ⚠️ 2. Campaigns Above Target CPA (Acquisition Overrun)
-${formatCampList(aboveTarget)}
-
----
-
-#### 🛑 3. Flagged Bleeders (Spend Incurred with ZERO Conversions)
-${formatCampList(bleeders)}
-
----
-
-#### ⏳ 4. Insufficient Attribution Data (<500 Impressions)
-${formatCampList(insufficientData)}
-
----
-
-#### 💡 Actionable Optimization Directives
-1. **Budget Reallocation:** Shift +20% daily budget towards Top Winners; reduce budget or pause Flagged Bleeders that have spent >2x target CPA with 0 conversions.
-2. **Creative Refresh:** Retire static creatives with low CTR (<1.5%) and deploy 9:16 problem-hook video variations.
-3. **Audience Clean-Up:** Apply 30-day past purchaser exclusions to eliminate budget waste on recent buyers.
-> 🔒 *Compliance Note: Purely analytical advice. Zero ad entities modified without explicit confirmation.*`;
-    }
-
-    // --- CASE 4: Campaign Strategy & Scaling Roadmap ---
-    if (intentObj.intent === "CAMPAIGN_STRATEGY") {
-      const brand = context.aiContext?.businessUnits?.[0]?.name || "Performance Brand";
-      const product = context.aiContext?.products?.[0]?.name || "Core Product Catalog";
-      return `### 🚀 Full-Funnel Growth Strategy & Scaling Blueprint
-
-${isAutomation ? `> **Node Instruction:** *"${instruction}"*  \n` : ""}> **Business Unit:** **${brand}**  
-> **Focus Offering:** **${product}**  
-> **Target Goal:** Maximize scalable acquisition while maintaining target CPA  
-> **Verification Status:** **✅ VERIFIED & STRATEGICALLY ALIGNED**
-
----
-
-#### 🏗️ Architecture: 3-Tier Acquisition Funnel
-1. **Top of Funnel (TOFU) — Cold Prospecting (65% Budget)**
-   - **Audience:** Broad Targeting + 1-2 Lookalikes (Purchasers 180D, 1-2%).
-   - **Objective:** \`OUTCOME_SALES\` with Advantage+ Campaign Budget (CBO).
-   - **Creatives:** 3-5 variations testing Problem-Agitate vs. Devotional/Emotional vs. Social Proof hooks.
-2. **Middle of Funnel (MOFU) — Consideration & Re-engagement (20% Budget)**
-   - **Audience:** Video viewers (50%+ watch time on 9:16 reels) + 60D Instagram/Facebook page engagers.
-   - **Creatives:** Customer review mashups, FAQ objection busters, product demonstrations.
-3. **Bottom of Funnel (BOFU) — Direct Cart Conversion (15% Budget)**
-   - **Audience:** Website Visitors (30D) + ViewContent / AddToCart (14D), excluding Past Purchasers (60D).
-   - **Creatives:** Limited-time special offer, risk-reversal (guarantee, free shipping, cash on delivery).
-
----
-
-#### ⚖️ Scale & Kill Guardrails
-- **Scaling Rule:** When an ad set sustains CPA <= target for 3 consecutive days with ROAS >= 2.0x, increase budget by +20% every 48 hours.
-- **Kill Rule:** If an ad set spends 2x target CPA with 0 conversions, pause it immediately.`;
-    }
-
-    // --- CASE 5: Generic Autonomous Task Execution ---
-    const promptLines = instruction.split("\n").map((l) => l.trim()).filter(Boolean);
-    const primaryGoal = promptLines[0] || instruction;
-
-    let upstreamSummary = "";
-    if (previousNodeOutput) {
-      const prevStr = typeof previousNodeOutput === "string" ? previousNodeOutput : JSON.stringify(previousNodeOutput);
-      upstreamSummary = `\n- **Upstream Context Evaluated:** ${prevStr.length} characters of predecessor data ingested.`;
-    }
-
-    let sheetSummary = "";
-    if (context.allConnectedSheets?.length > 0) {
-      const s = context.targetSheet || context.allConnectedSheets[0];
-      sheetSummary = `\n- **Connected Data Source:** Sheet #${s.sheetIndex || 1} (${s.sheetName}) with ${s.totalRows || 0} rows.`;
-    }
-
-    return `### ⚡ Autonomous Task Execution Completed
-
-${isAutomation ? `> **Task Instruction:** *"${instruction}"*  \n` : ""}> **Execution Status:** **✅ COMPLETED & VERIFIED**  
-> **Processing Mode:** Newton Autonomous AI Engine  
-${upstreamSummary}${sheetSummary}
-
----
-
-#### 📌 Task Analysis & Objective
-- **Assigned Goal:** ${primaryGoal}
-- **Context Evaluated:** Workspace marketing briefs, active ad accounts (\`act_${context.targetMetaAccountId}\`), and connected workflow data.
-
----
-
-#### 🔍 Execution Findings & Deliverables
-1. **Thorough Task Fulfillment:**
-   - Evaluated the entire instruction without truncation or omissions.
-   - Verified alignment with active campaign objectives and workspace parameters.
-2. **Actionable Insights & Data Synthesis:**
-   - Addressed all specific requirements stated in the prompt.
-   - Structured outcomes prepared for downstream nodes and execution verification.
-
----
-
-#### 💡 Next Steps in Automation Workflow
-- All output parameters and validated payload have been recorded.
-- Downstream nodes in the workflow can now consume this verified output state.`;
-  }
-
-  /**
-   * 5. ZERO-HALLUCINATION RESPONSE SYNTHESIS
-   * Synthesizes genuine, accurate, data-backed markdown responses without hardcoded mock tables.
+   * 6. DYNAMIC TOOL-GROUNDED RESPONSE SYNTHESIZER
+   * Generates concise, accurate Markdown strictly from actual tool results and errors.
    */
   static async synthesizeResponse({
     intentObj,
-    instruction,
-    context,
+    instruction = "",
+    context = {},
     executedTools = [],
-    validation,
+    validation = {},
     previousNodeOutput = null,
   }) {
-    const isAutomation = Boolean(context.isAutomation || context.conversationId?.startsWith("automation_"));
-
-    // If validation failed, report the actual reason transparently
-    if (!validation.verified) {
-      return `### ❌ Execution Alert: Task Validation Failed
-
-${isAutomation ? `> **Instruction:** *"${instruction}"*  \n` : ""}> **Status:** **${validation.status.toUpperCase()}**
-
-#### 🛑 Error & Barrier Details
-${validation.reason}
-
-#### 📋 Validation Checks
-${validation.checks.map((c) => `- ${c.passed ? "✅" : "❌"} **${c.name}**: ${c.detail}`).join("\n")}
-
-#### 💡 Action Required
-- Please check your connected accounts and input parameters before retrying.
-${isAutomation ? "- Downstream automation steps have been halted to prevent cascading corruptions." : ""}`;
+    // First attempt live Claude synthesis if API key is valid
+    const llmResult = await this.trySynthesizeWithClaude({
+      instruction,
+      executedTools,
+      context,
+    });
+    if (llmResult?.text) {
+      return llmResult.text;
     }
 
-    // 1. Conversational Response
-    if (intentObj.intent === "CONVERSATIONAL") {
-      const buName = context.aiContext?.businessUnits?.[0]?.name || "Performance Marketing";
-      return `👋 Hello! I am your Newton AI Agent.
+    const lower = String(instruction || "").toLowerCase();
+    const sections = [];
+    const fmtTab = (t) =>
+      typeof t === "object" && t !== null ? t.title || t.tabName || t.name || "" : String(t || "");
 
-I am connected to your workspace:
-- **Active Business Unit:** ${buName}
-- **Target Meta Ad Account:** \`act_${context.targetMetaAccountId}\`
-- **Connected Sheets:** ${context.connectedSheetUrl ? `[${context.connectedSheetName}](${context.connectedSheetUrl})` : "None attached in AI Context"}
-
-How can I help you today? You can ask me to:
-1. Inspect live Meta Ads campaign performance or unit economics (CPA, CTR, ROAS).
-2. Read data or creative variations from your connected Google Sheet.
-3. Draft or prepare new campaigns following your AI Context strategy.`;
+    // Report partial execution banner if some steps succeeded and some failed
+    if (validation?.partial) {
+      sections.push(
+        `> **Partial Execution Notice:** ${validation.succeededSteps.length} operation(s) completed and ${validation.failedSteps.length} operation(s) failed. Details for each step are shown below.`
+      );
     }
 
-    // 2. Daily Meta Ads Google Sheet Sync Response
-    if (intentObj.intent === "META_ADS_SHEET_SYNC") {
-      const syncTool = executedTools.find((t) => t.toolName === "sync_meta_ads_to_sheet");
-      const res = syncTool?.toolResult || {};
-      const logs = res.auditLogs || [];
+    for (const tc of executedTools) {
+      const res = tc.toolResult || {};
 
-      const logsMarkdown = logs
-        .map((l) => `- **[Step ${l.step}/9] ${l.name}:** ${l.detail} (${l.status === "SUCCESS" ? "✅" : "⚠️"})`)
-        .join("\n");
+      // Skip intermediate metadata step if a downstream sheet extraction/inspection step also ran
+      if (
+        tc.purpose === "VERIFY_CONNECTED_SHEET_METADATA" &&
+        executedTools.some(
+          (other) =>
+            other !== tc &&
+            (other.toolName === "extract_sheet_video_links" ||
+              other.toolName === "inspect_sheet_schema" ||
+              other.toolName === "update_connected_sheet_cells")
+        )
+      ) {
+        continue;
+      }
 
-      return `### 📊 Daily Meta Ads Reporting Sync Completed
-
-${isAutomation ? `> **Node Instruction:** *"${instruction}"*  \n` : ""}> **Connected Meta Account:** **act_${res.metaAccountId}** (${res.metaAccountName || "Meta Ads"})  
-> **Spreadsheet ID:** \`${res.spreadsheetId}\`  
-> **Worksheet Tab:** **${res.targetTab}**  
-> **Reporting Period:** **${res.targetDate}** (${res.timeZone || "Asia/Kolkata"})  
-> **Verification Status:** **✅ VERIFIED (${res.recordsAppended || 0} rows appended)**  
-
----
-
-#### 📋 Execution & Audit Trail (9-Step Pipeline)
-${logsMarkdown}
-
----
-
-#### 📈 Sync Summary
-| Metric | Value |
-|---|---|
-| **Target Worksheet Tab** | \`${res.targetTab}\` |
-| **Previous Completed Day** | \`${res.targetDate}\` |
-| **Total Meta Insights Fetched** | \`${res.totalInsightsFetched || 0}\` records |
-| **Duplicate Records Skipped** | \`${res.duplicatesSkipped || 0}\` records |
-| **New Records Appended** | **${res.recordsAppended || 0}** rows |
-| **Execution Duration** | \`${res.durationMs || 0}ms\` |
-
-*All performance metrics have been appended to the bottom of worksheet **${res.targetTab}** without overwriting existing data.*`;
-    }
-
-    // 3. Google Sheets Write Response
-    if (intentObj.intent === "GOOGLE_SHEET_WRITE") {
-      return `### 💾 Recommendations Saved to Google Sheet
-
-${isAutomation ? `> **Node Instruction:** *"${instruction}"*  \n` : ""}> **Target Sheet:** **${context.connectedSheetName}**  
-> **Verification Status:** **✅ VERIFIED (Cells Updated)**
-
----
-
-#### 📝 Action Details
-- Successfully transmitted structured creative & budget recommendations into the designated sheet.
-- Written records have been committed to live Google Sheets storage and verified.
-${isAutomation ? "- Downstream nodes can now reference the confirmed sheet state." : ""}`;
-    }
-
-    // 4. Explicit Meta Ads Performance Response
-    if (intentObj.intent === "META_ADS_METRICS") {
-      const metaTool = executedTools.find((t) => t.toolName === "fetch_live_meta_ads_mcp");
-      const toolRes = metaTool?.toolResult || {};
-      const insights = toolRes.insights || [];
-      const campaigns = toolRes.campaigns || [];
-      const summary = toolRes.summary || {};
-
-      let totalSpend = 0;
-      let totalClicks = 0;
-      let totalImpr = 0;
-      let totalConv = 0;
-
-      const campMap = new Map();
-      insights.forEach((row) => {
-        const cId = row.campaign_id || row.campaignId || "default";
-        const cName = row.campaign_name || row.campaignName || "Campaign";
-        const spend = Number(row.spend || 0);
-        const clicks = Number(row.clicks || 0);
-        const impr = Number(row.impressions || 0);
-        const conv = Number(row.conversions || row.purchases || (row.actions?.[0]?.value) || 0);
-
-        totalSpend += spend;
-        totalClicks += clicks;
-        totalImpr += impr;
-        totalConv += conv;
-
-        if (!campMap.has(cId)) {
-          campMap.set(cId, { id: cId, name: cName, spend, clicks, impr, conv });
+      // Handle failed tool step transparently
+      if (tc.status === "FAILED" || res.error === true || res.success === false) {
+        const errMsg = res.message || res.error || "Operation failed.";
+        if (tc.toolName === "fetch_live_meta_ads_mcp" || tc.toolName.includes("meta")) {
+          sections.push(
+            `### Meta Ads Request Failed\n\n` +
+              `**Error:** ${errMsg}\n\n` +
+              (res.requestedAccountId ? `- **Requested Account:** \`${res.requestedAccountId}\`\n` : "") +
+              (Array.isArray(res.connectedAccountIds) && res.connectedAccountIds.length > 0
+                ? `- **Connected Meta Accounts in Workspace:** ${res.connectedAccountIds.map((id) => `\`${id}\``).join(", ")}\n`
+                : "")
+          );
+        } else if (tc.toolName.includes("sheet")) {
+          sections.push(
+            `### Google Sheets Operation Failed\n\n` +
+              `**Error:** ${errMsg}` +
+              (Array.isArray(res.availableTabs) && res.availableTabs.length > 0
+                ? `\n\n**Available Worksheet Tabs:** ${res.availableTabs.map((t) => `\`${fmtTab(t)}\``).join(", ")}`
+                : "")
+          );
         } else {
-          const prev = campMap.get(cId);
-          prev.spend += spend;
-          prev.clicks += clicks;
-          prev.impr += impr;
-          prev.conv += conv;
+          sections.push(`### Tool Error (\`${tc.toolName}\`)\n\n${errMsg}`);
         }
-      });
+        continue;
+      }
 
-      const uniqueCamps = Array.from(campMap.values());
-      const tableRows = uniqueCamps.slice(0, 8).map((c) => {
-        const ctr = c.impr > 0 ? ((c.clicks / c.impr) * 100).toFixed(2) : "0.00";
-        const cpc = c.clicks > 0 ? (c.spend / c.clicks).toFixed(2) : "0.00";
-        const cpa = c.conv > 0 ? (c.spend / c.conv).toFixed(2) : "N/A";
-        return `| ${c.name} | \`${c.id}\` | ₹${c.spend.toLocaleString("en-IN")} | ${c.impr.toLocaleString("en-IN")} | ${c.clicks.toLocaleString("en-IN")} | ${ctr}% | ₹${cpc} | ${c.conv} | ${cpa !== "N/A" ? `₹${cpa}` : "N/A"} |`;
-      }).join("\n");
+      // --- 1. LIST CONNECTED SHEETS ---
+      if (tc.toolName === "list_connected_sheets" && tc.purpose !== "WORKSPACE_SHEETS_OVERVIEW") {
+        const sheets = res.sheets || [];
+        if (sheets.length === 0) {
+          sections.push(
+            `### Connected Google Spreadsheets\n\nNo Google Spreadsheets are currently connected in your AI Context Data Warehouse.`
+          );
+        } else {
+          const rowsMd = sheets
+            .map(
+              (s) =>
+                `| Sheet #${s.sheetIndex} | ${s.sheetName} | \`${s.spreadsheetId || "—"}\` | ${(s.availableTabs || []).join(", ") || "Default"} | ${(s.selectedTabNames || []).join(", ") || "All / Default"} |`
+            )
+            .join("\n");
+          sections.push(
+            `### Connected Google Spreadsheets (${sheets.length})\n\n` +
+              `| Sheet # | Spreadsheet Name | Spreadsheet ID | Available Tabs | Selected Tabs |\n` +
+              `|---|---|---|---|---|\n` +
+              rowsMd
+          );
+        }
+        continue;
+      }
 
-      return `### 📊 Live Meta Ads Performance Evaluation
+      // --- 2. EXTRACT SHEET VIDEO LINKS & MAP CREATIVE CODES ---
+      if (tc.toolName === "extract_sheet_video_links") {
+        const entries = res.entries || [];
+        const det = res.detectedColumns || {};
 
-> **Account:** **\`act_${context.targetMetaAccountId}\`**  
-> **Evaluation Period:** Last 7 Complete Days  
-> **Execution Status:** **✅ VERIFIED (Live Source Metrics)**
+        if (tc.purpose === "MAP_VIDEOS_TO_CREATIVE_CODES") {
+          if (entries.length === 0) {
+            sections.push(
+              `### Creative Codes for Videos — ${res.sheetName} (\`${res.worksheetTab}\`)\n\n` +
+                `No video rows were found in **Sheet #${res.sheetIndex}: ${res.sheetName}** (Worksheet: \`${res.worksheetTab}\`).`
+            );
+          } else if (!det.creativeCodeColumn) {
+            sections.push(
+              `### Creative Codes Lookup — ${res.sheetName} (\`${res.worksheetTab}\`)\n\n` +
+                `No **Creative Code** column was found in **Sheet #${res.sheetIndex}: ${res.sheetName}** (Worksheet: \`${res.worksheetTab}\`).\n` +
+                `Video rows found: **${entries.length}**.`
+            );
+          } else {
+            const hasName = entries.some((e) => e.creativeName);
+            const headerCols = ["Row", "Creative Code"];
+            if (hasName) headerCols.push("Creative Name");
+            headerCols.push("Video URL");
 
----
+            const sep = `|${headerCols.map(() => "---").join("|")}|`;
+            const body = entries
+              .map((e) => {
+                const cells = [
+                  e.rowNumber,
+                  `\`${e.creativeCode || "—"}\``,
+                ];
+                if (hasName) cells.push(String(e.creativeName || "—").replace(/\|/g, "\\|"));
+                cells.push(e.videoUrl || "Missing URL");
+                return `| ${cells.join(" | ")} |`;
+              })
+              .join("\n");
 
-#### 📈 Aggregate Performance Overview
-- **Total Period Spend:** **₹${totalSpend.toLocaleString("en-IN", { maximumFractionDigits: 2 })}**
-- **Total Impressions:** **${totalImpr.toLocaleString("en-IN")}**
-- **Total Link Clicks:** **${totalClicks.toLocaleString("en-IN")}**
-- **Total Attributed Conversions:** **${totalConv.toLocaleString("en-IN")}**
-- **Blended CPC:** **₹${totalClicks > 0 ? (totalSpend / totalClicks).toFixed(2) : "0.00"}**
-- **Blended CPA:** **${totalConv > 0 ? `₹${(totalSpend / totalConv).toFixed(2)}` : "N/A"}**
+            sections.push(
+              `### Video Creative Codes — Sheet #${res.sheetIndex}: ${res.sheetName}\n` +
+                `- **Worksheet Tab:** \`${res.worksheetTab}\` (Spreadsheet ID: \`${res.spreadsheetId}\`)\n` +
+                `- **Matched Column:** \`${det.creativeCodeColumn}\` → \`${(det.videoUrlColumns || []).join(", ") || "Video URL"}\`\n` +
+                `- **Total Video Entries Mapped:** ${entries.length} (from ${res.totalRowsInWorksheet} worksheet row${res.totalRowsInWorksheet === 1 ? "" : "s"})\n\n` +
+                `| ${headerCols.join(" | ")} |\n${sep}\n${body}`
+            );
+          }
+          continue;
+        }
 
----
+        // Standard Video Link Extraction Table (concise: only existing fields!)
+        if (entries.length === 0) {
+          sections.push(
+            `### Video Link Extraction — Sheet #${res.sheetIndex}: ${res.sheetName}\n` +
+              `- **Worksheet Tab:** \`${res.worksheetTab}\` (Spreadsheet ID: \`${res.spreadsheetId}\`)\n` +
+              `- **Rows Inspected:** ${res.totalRowsInWorksheet}\n\n` +
+              `No video rows or video URLs were found in this worksheet.` +
+              (det.videoUrlColumns?.length === 0
+                ? ` Detected columns did not include a populated video link field.`
+                : "")
+          );
+        } else {
+          const cols = res.existingTableFields || [
+            "Row",
+            ...(det.creativeCodeColumn ? ["Creative Code"] : []),
+            ...(det.mediaTypeColumn ? ["Media Type"] : []),
+            ...(entries.some((e) => e.creativeName) ? ["Creative Name"] : []),
+            "Video URL",
+            "Validation",
+          ];
+          const sep = `|${cols.map(() => "---").join("|")}|`;
+          const tableRows = entries
+            .map((e) => {
+              const rowCells = cols.map((colName) => {
+                if (colName === "Row") return e.rowNumber;
+                if (colName === "Creative Code") return e.creativeCode ? `\`${e.creativeCode}\`` : "—";
+                if (colName === "Media Type") return String(e.mediaType || "—").replace(/\|/g, "\\|");
+                if (colName === "Creative Name") return String(e.creativeName || "—").replace(/\|/g, "\\|");
+                if (colName === "Video URL") return e.videoUrl || "Missing Video URL";
+                if (colName === "Validation") return String(e.validation || "—").replace(/\|/g, "\\|");
+                return "—";
+              });
+              return `| ${rowCells.join(" | ")} |`;
+            })
+            .join("\n");
 
-#### 📑 Evaluated Campaign Performance
-| Campaign Name | Campaign ID | Spend | Impressions | Clicks | CTR | CPC | Conv | CPA |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-${tableRows || "| No active campaign spend recorded in this period | - | ₹0 | 0 | 0 | 0% | ₹0 | 0 | - |"}
+          sections.push(
+            `### Video Links Extracted — Sheet #${res.sheetIndex}: ${res.sheetName}\n` +
+              `- **Worksheet Tab:** \`${res.worksheetTab}\` (Spreadsheet ID: \`${res.spreadsheetId}\`)\n` +
+              `- **Source Video Column(s):** ${(det.videoUrlColumns || []).map((c) => `\`${c}\``).join(", ") || "Auto-detected URL cells"}\n` +
+              `- **Records Extracted:** ${entries.length} video entr${entries.length === 1 ? "y" : "ies"} from ${res.totalRowsInWorksheet} worksheet row${res.totalRowsInWorksheet === 1 ? "" : "s"}${res.skippedNonVideoRows > 0 ? ` (${res.skippedNonVideoRows} non-video row(s) skipped)` : ""}\n\n` +
+              `| ${cols.join(" | ")} |\n${sep}\n${tableRows}`
+          );
+        }
+        continue;
+      }
 
----
+      // --- 3. DYNAMIC SPREADSHEET SCHEMA & FIELD INSPECTION ---
+      if (tc.toolName === "inspect_sheet_schema") {
+        const headers = res.headers || [];
+        const rows = res.rows || [];
+        const fm = res.fieldMatch;
 
-#### 💡 Analytical Findings & Recommendations
-1. **Budget Efficiency**: Direct spend towards initiatives driving conversions under target CPA.
-2. **Next Steps**: ${isAutomation ? "Output data has been validated and packaged for downstream execution nodes." : "Performance evaluation completed successfully."}`;
+        const asksForTabsOnly =
+          /\b(worksheet\s*tabs?|tab\s*names?|list\s*tabs?|available\s*tabs?|which\s*tabs?)\b/i.test(lower) &&
+          !/\b(rows?|values?|columns?|headers?)\b/i.test(lower);
+
+        if (asksForTabsOnly) {
+          sections.push(
+            `### Worksheet Tabs — Sheet #${res.sheetIndex}: ${res.sheetName}\n` +
+              `- **Spreadsheet ID:** \`${res.spreadsheetId}\`\n` +
+              `- **Available Tabs (${(res.availableTabs || []).length}):** ${(res.availableTabs || []).map((t) => `\`${fmtTab(t)}\``).join(", ")}\n` +
+              `- **Active / Selected Tab(s):** ${(res.selectedTabNames || [res.worksheetTab]).filter(Boolean).map((t) => `\`${fmtTab(t)}\``).join(", ")}`
+          );
+          continue;
+        }
+
+        // If user asked for specific column(s) that DO NOT exist in the sheet -> report honestly, zero fabricated data!
+        if (fm && fm.missing.length > 0 && fm.matched.length === 0) {
+          sections.push(
+            `### Requested Field Not Found — Sheet #${res.sheetIndex}: ${res.sheetName} (\`${res.worksheetTab}\`)\n\n` +
+              `The requested field(s) ${fm.missing.map((m) => `**"${m}"**`).join(", ")} do not exist in worksheet **\`${res.worksheetTab}\`**.\n\n` +
+              `**Actual Available Columns (${headers.length}):**\n` +
+              headers.map((h) => `- \`${h}\``).join("\n")
+          );
+          continue;
+        }
+
+        const wantsAllColumns = /\b(all\s+columns|entire\s+sheet|full\s+spreadsheet|every\s+column)\b/i.test(lower);
+        let displayCols = [];
+
+        if (fm && fm.matched.length > 0) {
+          displayCols = fm.matched.map((m) => m.actualHeader);
+        } else if (wantsAllColumns) {
+          displayCols = headers;
+        } else {
+          // Pick up to 7 non-empty meaningful columns dynamically based on populated stats
+          const populatedHeaders = (res.schema?.columnStats || [])
+            .filter((cs) => cs.populatedCount > 0)
+            .map((cs) => cs.header);
+          displayCols = (populatedHeaders.length > 0 ? populatedHeaders : headers).slice(0, 7);
+        }
+
+        const missingNotice =
+          fm && fm.missing.length > 0
+            ? `> **Note:** Field(s) ${fm.missing.map((m) => `\`${m}\``).join(", ")} were not found in \`${res.worksheetTab}\`. Showing matched existing column(s) only.\n\n`
+            : "";
+
+        const maxRowsToShow = Math.min(rows.length, 25);
+        const shownRows = rows.slice(0, maxRowsToShow);
+
+        let tableBlock = "_Worksheet contains 0 data rows._";
+        if (shownRows.length > 0 && displayCols.length > 0) {
+          const th = `| Row | ${displayCols.map((c) => String(c).replace(/\|/g, "\\|")).join(" | ")} |`;
+          const sep = `|---|${displayCols.map(() => "---").join("|")}|`;
+          const tr = shownRows
+            .map((r, i) => {
+              const rNum = r._rowNumber || i + 2;
+              const vals = displayCols.map((col) => {
+                const v = r[col];
+                const str = v === undefined || v === null || String(v).trim() === "" ? "—" : String(v).trim();
+                return str.replace(/\|/g, "\\|").replace(/\n+/g, " ");
+              });
+              return `| ${rNum} | ${vals.join(" | ")} |`;
+            })
+            .join("\n");
+          tableBlock = `${th}\n${sep}\n${tr}`;
+        }
+
+        const subsetNote =
+          rows.length > maxRowsToShow
+            ? `\n\n_Showing ${maxRowsToShow} of ${rows.length} rows retrieved from \`${res.worksheetTab}\`._`
+            : "";
+
+        sections.push(
+          `### Spreadsheet Data — Sheet #${res.sheetIndex}: ${res.sheetName}\n` +
+            `- **Worksheet Tab:** \`${res.worksheetTab}\` (Available Tabs: ${(res.availableTabs || []).map((t) => `\`${fmtTab(t)}\``).join(", ")})\n` +
+            `- **Total Rows in Tab:** ${rows.length} | **Total Columns Discovered:** ${headers.length}` +
+            (!wantsAllColumns && !fm && headers.length > displayCols.length
+              ? ` _(displaying ${displayCols.length} populated columns; ask for specific columns or all columns if needed)_`
+              : "") +
+            `\n\n${missingNotice}${tableBlock}${subsetNote}`
+        );
+        continue;
+      }
+
+      // --- 4. UPDATE SHEET CELLS ---
+      if (tc.toolName === "update_connected_sheet_cells") {
+        const applied = (res.updatesApplied || [])
+          .map((u) => `- Range \`${u.range}\` → \`${JSON.stringify(u.values)}\``)
+          .join("\n");
+        sections.push(
+          `### Spreadsheet Updated — Sheet #${res.sheetIndex}: ${res.sheetName} (\`${res.worksheetTab}\`)\n` +
+            `- **Updated Cells:** ${res.updatedCells || 0}\n` +
+            `${applied}\n` +
+            `- **Read-Back Verification:** \`${JSON.stringify(res.verifiedValues || [])}\``
+        );
+        continue;
+      }
+
+      // --- 5. META ADS CAMPAIGNS LIST (`get_live_campaigns_status`) ---
+      if (
+        tc.toolName === "fetch_live_meta_ads_mcp" &&
+        tc.toolArgs?.toolType === "get_live_campaigns_status"
+      ) {
+        // Skip standalone campaign list table if a comparison/insights step in the same turn will merge them,
+        // UNLESS the user explicitly asked to fetch/list campaigns as part of a multi-step prompt.
+        const alsoHasInsightsStep = executedTools.some(
+          (other) =>
+            other !== tc &&
+            other.status === "SUCCESS" &&
+            other.toolName === "fetch_live_meta_ads_mcp" &&
+            other.toolArgs?.toolType === "get_live_campaign_insights"
+        );
+        const explicitlyAskedForCampaignNames = /\b(campaign\s+names?|all\s+campaigns?|fetch\s+campaigns?|list\s+campaigns?)\b/i.test(
+          lower
+        );
+        if (alsoHasInsightsStep && !explicitlyAskedForCampaignNames) {
+          continue;
+        }
+
+        let campaigns = res.campaigns || [];
+        // Optional status filter if user explicitly requested only ACTIVE or only PAUSED campaigns
+        let filterLabel = "";
+        if (/\bactive\s+campaigns?\b/i.test(lower) && !/\ball\s+campaigns?\b/i.test(lower)) {
+          campaigns = campaigns.filter((c) => String(c.status).toUpperCase() === "ACTIVE");
+          filterLabel = " (filtered to ACTIVE)";
+        } else if (/\bpaused\s+campaigns?\b/i.test(lower) && !/\ball\s+campaigns?\b/i.test(lower)) {
+          campaigns = campaigns.filter((c) => String(c.status).toUpperCase() === "PAUSED");
+          filterLabel = " (filtered to PAUSED)";
+        }
+
+        const pag = res.pagination || {};
+        const paginationNote = pag.hasMore
+          ? `_Note: Retrieved ${campaigns.length} campaigns across ${pag.pagesFetched || 1} API page(s); additional pages exist on Meta Ads API._`
+          : `**Total Campaigns Returned:** ${campaigns.length}${filterLabel} (Account: \`${res.accountId}\`${res.accountName ? ` — ${res.accountName}` : ""})`;
+
+        if (campaigns.length === 0) {
+          sections.push(
+            `### Campaigns Retrieved\n\nNo campaigns${filterLabel} were returned for Meta Ad Account \`${res.accountId}\`.`
+          );
+        } else {
+          const tableRows = campaigns
+            .map(
+              (c) =>
+                `| ${String(c.name || "Unnamed").replace(/\|/g, "\\|")} | \`${c.id}\` | ${c.status || "UNKNOWN"} |`
+            )
+            .join("\n");
+          sections.push(
+            `### Campaigns Retrieved\n\n` +
+              `| Campaign Name | Campaign ID | Status |\n` +
+              `|---|---|---|\n` +
+              `${tableRows}\n\n` +
+              `${paginationNote}`
+          );
+        }
+        continue;
+      }
+
+      // --- 6. META ADS PERFORMANCE / SPEND / COMPARISON / BEST CAMPAIGN ---
+      if (
+        tc.toolName === "fetch_live_meta_ads_mcp" &&
+        (tc.toolArgs?.toolType === "get_live_campaign_insights" ||
+          tc.toolArgs?.toolType === "get_live_today_insights")
+      ) {
+        const currency = res.currency || "INR";
+
+        if (tc.toolArgs?.toolType === "get_live_today_insights") {
+          const d = res.todayData || {};
+          sections.push(
+            `### Today's Meta Ads Performance (\`${res.accountId}\`)\n\n` +
+              `| Metric | Value |\n|---|---|\n` +
+              `| Spend | ${formatCurrency(d.spend || 0, currency)} |\n` +
+              `| Impressions | ${Number(d.impressions || 0).toLocaleString("en-IN")} |\n` +
+              `| Clicks | ${Number(d.clicks || 0).toLocaleString("en-IN")} |\n` +
+              `| CTR | ${Number(d.ctr || 0).toFixed(2)}% |\n` +
+              `| CPC | ${formatCurrency(d.cpc || 0, currency)} |`
+          );
+          continue;
+        }
+
+        const statusStep = executedTools.find(
+          (s) =>
+            s.status === "SUCCESS" &&
+            s.toolName === "fetch_live_meta_ads_mcp" &&
+            s.toolArgs?.toolType === "get_live_campaigns_status"
+        );
+        const allPerf = Array.isArray(res.allCampaignsPerformance)
+          ? res.allCampaignsPerformance
+          : res.topCampaignsBySpend || [];
+
+        // Merge with statusStep campaigns if available so ₹0-spend campaigns from previous/current list are accounted for
+        const perfMap = new Map();
+        for (const p of allPerf) {
+          perfMap.set(String(p.campaignId || p.campaignName), p);
+        }
+        if (statusStep?.toolResult?.campaigns) {
+          for (const c of statusStep.toolResult.campaigns) {
+            const keyById = String(c.id);
+            const existingByName = [...perfMap.values()].find(
+              (p) => p.campaignId === c.id || p.campaignName === c.name
+            );
+            if (!existingByName && !perfMap.has(keyById)) {
+              perfMap.set(keyById, {
+                campaignId: c.id,
+                campaignName: c.name,
+                status: c.status,
+                spend: 0,
+                impressions: 0,
+                clicks: 0,
+                ctr: 0,
+                cpc: 0,
+                cpm: 0,
+                conversions: 0,
+                cpa: null,
+                cpr: null,
+                roas: 0,
+              });
+            }
+          }
+        }
+        const mergedCampaigns = [...perfMap.values()].sort((a, b) => (b.spend || 0) - (a.spend || 0));
+
+        // 6a. Best-performing campaign
+        if (tc.purpose === "RANK_BEST_META_CAMPAIGN") {
+          const activeWithSpend = mergedCampaigns.filter((c) => Number(c.spend || 0) > 0);
+          if (activeWithSpend.length === 0) {
+            sections.push(
+              `### Best-Performing Campaign Analysis (\`${res.accountId}\`)\n\n` +
+                `All **${mergedCampaigns.length}** campaign(s) in \`${res.accountId}\` have **${formatCurrency(0, currency)} spend** in the queried period (\`${res.datePreset || "maximum"}\`), so no campaign can be ranked as best-performing yet.`
+            );
+          } else {
+            const rankByRoas = /\broas|revenue|return\b/i.test(lower);
+            const rankByCpa = /\bcpa|cpr|cost\s+per\b/i.test(lower);
+            const rankByCtr = /\bctr|click[- ]through\b/i.test(lower);
+
+            const sorted = [...activeWithSpend].sort((a, b) => {
+              if (rankByRoas) return (b.roas || 0) - (a.roas || 0);
+              if (rankByCpa) {
+                const aCpa = a.cpa ?? Infinity;
+                const bCpa = b.cpa ?? Infinity;
+                return aCpa - bCpa;
+              }
+              if (rankByCtr) return (b.ctr || 0) - (a.ctr || 0);
+              if ((b.conversions || 0) !== (a.conversions || 0)) {
+                return (b.conversions || 0) - (a.conversions || 0);
+              }
+              if ((b.roas || 0) !== (a.roas || 0)) return (b.roas || 0) - (a.roas || 0);
+              return (b.ctr || 0) - (a.ctr || 0);
+            });
+
+            const best = sorted[0];
+            const topRows = sorted
+              .slice(0, 10)
+              .map(
+                (c) =>
+                  `| ${String(c.campaignName).replace(/\|/g, "\\|")} | \`${c.campaignId || "—"}\` | ${formatCurrency(c.spend, currency)} | ${c.conversions || 0} | ${c.cpa !== null && c.cpa !== undefined ? formatCurrency(c.cpa, currency) : "—"} | ${Number(c.ctr || 0).toFixed(2)}% | ${Number(c.roas || 0).toFixed(2)}x |`
+              )
+              .join("\n");
+
+            sections.push(
+              `### Best-Performing Campaign — \`${res.accountId}\`\n\n` +
+                `**Top Campaign:** **${best.campaignName}** (\`${best.campaignId || "N/A"}\`)\n` +
+                `- **Spend:** ${formatCurrency(best.spend, currency)} | **Conversions:** ${best.conversions || 0} | **CPA/CPR:** ${best.cpa !== null && best.cpa !== undefined ? formatCurrency(best.cpa, currency) : "N/A"} | **CTR:** ${Number(best.ctr || 0).toFixed(2)}% | **ROAS:** ${Number(best.roas || 0).toFixed(2)}x\n\n` +
+                `| Campaign Name | Campaign ID | Spend | Conversions | CPA / CPR | CTR | ROAS |\n` +
+                `|---|---|---|---|---|---|---|\n` +
+                `${topRows}`
+            );
+          }
+          continue;
+        }
+
+        // 6b. Campaign comparison
+        if (tc.purpose === "COMPARE_META_CAMPAIGNS") {
+          // Check if user named two specific campaigns in prompt
+          const namedMatches = mergedCampaigns.filter(
+            (c) =>
+              c.campaignName &&
+              (lower.includes(c.campaignName.toLowerCase()) ||
+                (c.campaignId && lower.includes(String(c.campaignId))))
+          );
+          const subset = namedMatches.length >= 2 ? namedMatches : mergedCampaigns;
+
+          if (subset.length === 0) {
+            sections.push(
+              `### Campaign Comparison (\`${res.accountId}\`)\n\nNo campaigns were found in \`${res.accountId}\` to compare.`
+            );
+          } else {
+            const rowsMd = subset
+              .map(
+                (c) =>
+                  `| ${String(c.campaignName).replace(/\|/g, "\\|")} | \`${c.campaignId || "—"}\` | ${c.status || "—"} | ${formatCurrency(c.spend, currency)} | ${Number(c.impressions || 0).toLocaleString("en-IN")} | ${Number(c.clicks || 0).toLocaleString("en-IN")} | ${Number(c.ctr || 0).toFixed(2)}% | ${formatCurrency(c.cpm || 0, currency)} | ${c.conversions || 0} | ${c.cpa !== null && c.cpa !== undefined ? formatCurrency(c.cpa, currency) : "—"} | ${Number(c.roas || 0).toFixed(2)}x |`
+              )
+              .join("\n");
+
+            sections.push(
+              `### Campaign Performance Comparison — \`${res.accountId}\` (${res.datePreset || "Custom Range"})\n\n` +
+                `| Campaign Name | Campaign ID | Status | Spend | Impressions | Clicks | CTR | CPM | Conversions | CPA / CPR | ROAS |\n` +
+                `|---|---|---|---|---|---|---|---|---|---|---|\n` +
+                `${rowsMd}\n\n` +
+                `**Account Total Spend:** ${formatCurrency(res.totalAccountSpend || 0, currency)} across ${mergedCampaigns.length} campaign(s).`
+            );
+          }
+          continue;
+        }
+
+        // 6c. Standard Spend / Metrics Report (e.g. "Now fetch their spend", "Fetch CPR, CPA, ROAS, CTR, CPM, and spend")
+        const spendOnly =
+          /\bspend|spent\b/i.test(lower) &&
+          !/\b(cpr|cpa|roas|ctr|cpm|cpc|impressions|clicks|conversions|full\s+performance)\b/i.test(lower);
+
+        if (mergedCampaigns.length === 0) {
+          sections.push(
+            `### Meta Ads Performance — \`${res.accountId}\`\n\n` +
+              `No campaign spend or insights records were returned for \`${res.accountId}\` (${res.datePreset || "maximum"}).\n` +
+              `- **Total Account Spend:** ${formatCurrency(res.totalAccountSpend || 0, currency)}`
+          );
+        } else if (spendOnly) {
+          const rowsMd = mergedCampaigns
+            .map(
+              (c) =>
+                `| ${String(c.campaignName).replace(/\|/g, "\\|")} | \`${c.campaignId || "—"}\` | ${c.status || "—"} | ${formatCurrency(c.spend || 0, currency)} |`
+            )
+            .join("\n");
+          sections.push(
+            `### Campaign Spend — \`${res.accountId}\`${res.accountName ? ` (${res.accountName})` : ""}\n` +
+              `- **Date Window:** \`${res.datePreset || (res.timeRange ? `${res.timeRange.since} to ${res.timeRange.until}` : "maximum")}\`\n` +
+              `- **Total Account Spend:** **${formatCurrency(res.totalAccountSpend || 0, currency)}** (${res.campaignsWithSpendCount ?? mergedCampaigns.filter((c) => c.spend > 0).length} of ${mergedCampaigns.length} campaigns with spend > 0)\n\n` +
+              `| Campaign Name | Campaign ID | Status | Spend (${currency}) |\n` +
+              `|---|---|---|---|\n` +
+              `${rowsMd}`
+          );
+        } else {
+          const rowsMd = mergedCampaigns
+            .map(
+              (c) =>
+                `| ${String(c.campaignName).replace(/\|/g, "\\|")} | \`${c.campaignId || "—"}\` | ${formatCurrency(c.spend || 0, currency)} | ${Number(c.impressions || 0).toLocaleString("en-IN")} | ${Number(c.clicks || 0).toLocaleString("en-IN")} | ${Number(c.ctr || 0).toFixed(2)}% | ${formatCurrency(c.cpm || 0, currency)} | ${c.conversions || 0} | ${c.cpa !== null && c.cpa !== undefined ? formatCurrency(c.cpa, currency) : "—"} | ${Number(c.roas || 0).toFixed(2)}x |`
+            )
+            .join("\n");
+          sections.push(
+            `### Meta Ads Campaign Performance — \`${res.accountId}\`${res.accountName ? ` (${res.accountName})` : ""}\n` +
+              `- **Date Window:** \`${res.datePreset || (res.timeRange ? `${res.timeRange.since} to ${res.timeRange.until}` : "maximum")}\`\n` +
+              `- **Totals:** Spend **${formatCurrency(res.totalAccountSpend || 0, currency)}** | Impressions **${Number(res.totalImpressions || 0).toLocaleString("en-IN")}** | Clicks **${Number(res.totalClicks || 0).toLocaleString("en-IN")}** | CTR **${Number(res.accountCtr || 0).toFixed(2)}%** | CPM **${formatCurrency(res.accountCpm || 0, currency)}** | Conversions **${res.totalConversions || 0}** | CPA/CPR **${res.accountCpa !== null && res.accountCpa !== undefined ? formatCurrency(res.accountCpa, currency) : "N/A"}** | ROAS **${Number(res.overallRoas || 0).toFixed(2)}x**\n\n` +
+              `| Campaign Name | Campaign ID | Spend | Impressions | Clicks | CTR | CPM | Conversions | CPA / CPR | ROAS |\n` +
+              `|---|---|---|---|---|---|---|---|---|---|\n` +
+              `${rowsMd}`
+          );
+        }
+        continue;
+      }
+
+      // --- 7. META AD SETS ---
+      if (tc.toolName === "get_live_adsets") {
+        const adSets = res.adSets || [];
+        if (adSets.length === 0) {
+          sections.push(`### Meta Ad Sets (\`${res.accountId}\`)\n\nNo ad sets were returned for this account.`);
+        } else {
+          const rowsMd = adSets
+            .map(
+              (as) =>
+                `| ${String(as.name || "—").replace(/\|/g, "\\|")} | \`${as.id}\` | \`${as.campaignId || "—"}\` | ${as.status || "—"} | ${as.optimizationGoal || "—"} |`
+            )
+            .join("\n");
+          sections.push(
+            `### Meta Ad Sets Retrieved (\`${res.accountId}\`)\n\n` +
+              `| Ad Set Name | Ad Set ID | Campaign ID | Status | Optimization Goal |\n` +
+              `|---|---|---|---|---|\n` +
+              `${rowsMd}\n\n` +
+              `**Total Ad Sets Returned:** ${adSets.length}`
+          );
+        }
+        continue;
+      }
+
+      // --- 8. META AD CREATIVES & CREATIVE PERFORMANCE ---
+      if (tc.toolName === "get_live_ad_creatives") {
+        const ads = res.ads || [];
+        const currency = res.currency || "INR";
+        if (ads.length === 0) {
+          sections.push(`### Meta Ad Creatives (\`${res.accountId}\`)\n\nNo ad creatives were returned for \`${res.accountId}\`.`);
+        } else {
+          const hasPerf = ads.some((a) => a.performance);
+          if (hasPerf) {
+            const rowsMd = ads
+              .slice(0, 40)
+              .map((a) => {
+                const p = a.performance || {};
+                return `| ${String(a.adName || "—").replace(/\|/g, "\\|")} | \`${a.adId}\` | ${a.status || "—"} | ${a.creative?.videoId ? "Video" : a.creative?.imageUrl ? "Image" : "Creative"} | ${formatCurrency(p.spend || 0, currency)} | ${Number(p.ctr || 0).toFixed(2)}% | ${p.conversions || 0} | ${p.cpa !== null && p.cpa !== undefined ? formatCurrency(p.cpa, currency) : "—"} | ${Number(p.roas || 0).toFixed(2)}x |`;
+              })
+              .join("\n");
+            sections.push(
+              `### Meta Ad Creatives & Performance (\`${res.accountId}\`)\n\n` +
+                `| Ad Name | Ad ID | Status | Format | Spend | CTR | Conversions | CPA | ROAS |\n` +
+                `|---|---|---|---|---|---|---|---|---|\n` +
+                `${rowsMd}\n\n` +
+                `**Total Ads / Creatives Returned:** ${ads.length}`
+            );
+          } else {
+            const rowsMd = ads
+              .slice(0, 40)
+              .map(
+                (a) =>
+                  `| ${String(a.adName || "—").replace(/\|/g, "\\|")} | \`${a.adId}\` | \`${a.creative?.creativeId || "—"}\` | ${a.status || "—"} | ${a.creative?.videoId ? `Video (\`${a.creative.videoId}\`)` : a.creative?.imageUrl ? "Image" : "Standard"} | ${String(a.creative?.title || "—").slice(0, 60).replace(/\|/g, "\\|")} |`
+              )
+              .join("\n");
+            sections.push(
+              `### Meta Ad Creatives Retrieved (\`${res.accountId}\`)\n\n` +
+                `| Ad Name | Ad ID | Creative ID | Status | Asset Type | Headline / Title |\n` +
+                `|---|---|---|---|---|---|\n` +
+                `${rowsMd}\n\n` +
+                `**Total Ad Creatives Returned:** ${ads.length}`
+            );
+          }
+        }
+        continue;
+      }
+
+      // --- 9. DAILY META -> SHEET SYNC ---
+      if (tc.toolName === "sync_meta_ads_to_sheet") {
+        sections.push(
+          `### Meta Ads → Google Sheet Sync Result\n` +
+            `- **Worksheet Tab:** \`${res.targetTab || "—"}\`\n` +
+            `- **Date Synced:** \`${res.reportDate || "—"}\`\n` +
+            `- **Rows Appended:** ${res.rowsAppended ?? 0}\n` +
+            (res.message ? `\n${res.message}` : "")
+        );
+        continue;
+      }
+
+      // --- 10. VALIDATE GOOGLE DRIVE ASSET ---
+      if (tc.toolName === "validate_google_drive_asset") {
+        sections.push(
+          `### Google Drive Asset Inspection\n` +
+            `- **File ID:** \`${res.fileId || "—"}\`\n` +
+            `- **Valid / Accessible:** ${res.valid ? "Yes" : "No"}\n` +
+            (res.fileName ? `- **File Name:** \`${res.fileName}\`\n` : "") +
+            (res.mimeType ? `- **MIME Type:** \`${res.mimeType}\`\n` : "") +
+            (res.reason ? `- **Details:** ${res.reason}` : "")
+        );
+        continue;
+      }
+
+      // --- 11. WORKSPACE / CONNECTED ACCOUNTS / AI CONTEXT / OTHER TOOLS ---
+      if (tc.toolName === "get_user_connected_accounts") {
+        const sheetsStep = executedTools.find((s) => s.purpose === "WORKSPACE_SHEETS_OVERVIEW" && s.status === "SUCCESS");
+        const metaList = (res.metaAccounts || [])
+          .map((m) => `- **Meta Ads:** \`act_${String(m.accountId).replace(/^act_/, "")}\` (${m.accountName || "Unnamed"}, ${m.currency || "INR"})`)
+          .join("\n");
+        const googleList = (res.googleAccounts || [])
+          .map((g) => `- **Google Ads:** \`${g.selectedCustomerId || g.accountId}\` (${g.accountName || "Google Ads"})`)
+          .join("\n");
+        const sheetList = (sheetsStep?.toolResult?.sheets || [])
+          .map(
+            (s) =>
+              `- **Sheet #${s.sheetIndex}:** ${s.sheetName} (\`${s.spreadsheetId}\`) — Tabs: ${(s.availableTabs || []).join(", ") || "Default"}`
+          )
+          .join("\n");
+
+        sections.push(
+          `### Connected Workspace Context\n\n` +
+            `**Ad Accounts:**\n${metaList || "- No Meta Ads accounts connected"}\n${googleList ? `${googleList}\n` : ""}\n` +
+            (sheetList ? `**Connected Google Spreadsheets:**\n${sheetList}\n\n` : "") +
+            `Specify a spreadsheet (e.g., _"Use Sheet #2 and fetch video link data"_) or an ad account (e.g., _"In account act_..., fetch all campaign names"_) to run a targeted query.`
+        );
+        continue;
+      }
+
+      if (tc.purpose === "WORKSPACE_SHEETS_OVERVIEW") {
+        continue;
+      }
+
+      if (tc.toolName === "get_user_ai_context") {
+        const bUnits = (res.businessUnits || []).map((b) => b.name || b.title).filter(Boolean);
+        const channels = (res.adChannels || []).map((c) => `${c.channelName || c.channel}: \`${c.accountId}\``);
+        const briefs = (res.briefs || []).map((b) => b.title || b.summary).filter(Boolean);
+        const warehouses = (res.warehouses || []).length;
+        sections.push(
+          `### AI Context Configuration\n` +
+            `- **Business Units (${bUnits.length}):** ${bUnits.join(", ") || "None"}\n` +
+            `- **Ad Channels (${channels.length}):** ${channels.join(", ") || "None"}\n` +
+            `- **Marketing Briefs (${briefs.length}):** ${briefs.join(", ") || "None"}\n` +
+            `- **Data Warehouse Nodes:** ${warehouses}`
+        );
+        continue;
+      }
+
+      // Generic JSON-backed fallback for any other specialized tool (Google Ads, Token Usage, DB Metrics)
+      sections.push(
+        `### Result from \`${tc.toolName}\`\n\n\`\`\`json\n${JSON.stringify(res, null, 2).slice(0, 4000)}\n\`\`\``
+      );
     }
 
-    // 5. Try calling Claude LLM for rich dynamic task execution
-    const claudeResult = await this.callClaudeDirect({
-      instruction,
-      context,
-      previousNodeOutput,
-      executedTools,
-      intentObj,
-    });
-
-    if (claudeResult) {
-      return claudeResult;
-    }
-
-    // 6. Fallback to Cognitive Autonomous Synthesis Engine
-    return this.synthesizeCognitiveResponse({
-      intentObj,
-      instruction,
-      context,
-      executedTools,
-      previousNodeOutput,
-    });
-
-    // 6. Campaign Creation Response
-    if (intentObj.intent === "CAMPAIGN_CREATION") {
-      const createTool = executedTools.find((t) => t.toolName === "create_meta_campaign");
-      const cId = createTool?.toolResult?.campaignId;
-      return `### 🚀 Meta Ads Campaign Successfully Created
-
-> **Account:** **\`act_${context.targetMetaAccountId}\`**  
-> **Campaign ID:** **\`${cId}\`**  
-> **Verification Status:** **✅ VERIFIED (Live on Meta Graph API)**
-
----
-
-#### 📋 Created Hierarchy Checklist
-- [x] **Campaign Created:** ID \`${cId}\` (Status: \`PAUSED\`)
-- [x] **Verification Tool:** \`verify_meta_campaign\` confirmed existence on Meta Graph API.
-- [ ] **Ad Set:** Ready for configuration.
-- [ ] **Ads / Creatives:** Ready for configuration.
-
-Review campaign details in your Meta Ads Manager.`;
-    }
-
-    return `Task completed successfully based on verified workspace context.`;
+    return sections.join("\n\n---\n\n") || "No data was returned by the executed tools.";
   }
 
   /**
-   * 6. CHAT CONTROLLER EXECUTION ENTRYPOINT
+   * 7. STANDARD CHAT EXECUTION ENTRYPOINT
+   * Note: Does NOT emit text_delta directly unless streamDirect === true;
+   * chat.controller.js streams the returned content once to prevent duplicate outputs.
    */
   static async executeChat({
-    userId,
+    res,
+    onEvent,
     conversationId,
     userMessage,
-    accountId = null,
-    metaAccountId = null,
-    googleAccountId = null,
-    onEvent = null,
-    res = null,
+    accountId,
+    userId,
+    sessionMemory = null,
+    streamDirect = false,
   }) {
     const context = await this.retrieveContext({
       userId,
       accountId,
-      metaAccountId,
-      googleAccountId,
+      metaAccountId: accountId,
+      conversationId,
       userMessage,
+      sessionMemory,
     });
-    context.conversationId = conversationId;
-    context.isAutomation = Boolean(conversationId?.startsWith("automation_"));
 
     const intentObj = this.classifyIntent(userMessage, context);
 
-    // If intent is CAMPAIGN_CREATION in chat, route directly through CampaignPreparationService
-    // to dynamically detect missing fields, prompt user in chat, and inject answers.
-    if (intentObj.intent === "CAMPAIGN_CREATION") {
+    // Delegate explicit interactive ad creation requests to CampaignPreparationService
+    if (intentObj.intent === "CAMPAIGN_CREATION_FLOW" && !context.isAutomation) {
       try {
-        const CampaignPreparationService = (await import("../campaignPreparation/campaignPreparationService.js")).default;
+        if (typeof onEvent === "function") {
+          onEvent({
+            type: "tool_status",
+            toolName: "campaign_preparation",
+            status: "Preparing campaign validation & preview...",
+          });
+        }
         const prepResult = await CampaignPreparationService.handleWorkflow({
           userId,
           conversationId,
           userMessage,
-          metaAccountId: context.targetMetaAccountId || metaAccountId || accountId,
-          onProgress: (st) => {
-            if (typeof onEvent === "function") {
-              onEvent({ type: "tool_status", toolName: st.toolName || "campaign_preparation", status: st.status || st.message });
-            }
-            if (res) {
-              AgentStreamHandler.sendToolStatus(res, st.toolName || "campaign_preparation", st.status || st.message);
-            }
-          },
+          metaAccountId: context.activeMetaAccountId,
         });
 
-        if (prepResult?.preparationSession) {
-          if (typeof onEvent === "function") {
-            onEvent({ type: "preparation_update", session: prepResult.preparationSession });
+        if (prepResult && prepResult.content) {
+          const replyContent = prepResult.content;
+          if (streamDirect) {
+            if (typeof onEvent === "function") onEvent({ type: "text_delta", content: replyContent });
+            if (res) AgentStreamHandler.sendChunk(res, replyContent);
           }
-          if (res) {
-            AgentStreamHandler.sendPreparationUpdate(res, prepResult.preparationSession);
-          }
+          return {
+            content: replyContent,
+            result: replyContent,
+            toolCalls: prepResult.toolCalls || [],
+            status: "completed",
+            preparationData: prepResult.preparationSession || null,
+            contextMetadata: this.extractContextMetadata(prepResult.toolCalls || [], context.sessionMemory),
+            tokenUsage: {
+              totalTokens: Math.round(((userMessage?.length || 50) + (replyContent?.length || 200)) / 3.8),
+              model: "claude-sonnet-4-5",
+            },
+          };
         }
-
-        const replyContent = prepResult.content || "Campaign preparation preview is ready.";
-        if (typeof onEvent === "function") {
-          onEvent({ type: "text_delta", content: replyContent });
-        }
-        if (res) {
-          AgentStreamHandler.sendChunk(res, replyContent);
-        }
-
-        return {
-          content: replyContent,
-          result: replyContent,
-          toolCalls: prepResult.toolCalls || [],
-          status: "completed",
-          preparationData: prepResult.preparationSession,
-          tokenUsage: {
-            totalTokens: Math.round(((userMessage?.length || 50) + (replyContent?.length || 200)) / 3.8),
-            model: "claude-sonnet-4-5 (Campaign Preparation Engine)",
-          },
-        };
       } catch (prepErr) {
-        console.warn("[executeChat CampaignCreation delegation fallback]:", prepErr.message);
+        console.warn("[AiAgentOrchestrator CampaignPreparation delegation warning]:", prepErr.message);
       }
     }
 
@@ -1672,30 +1701,34 @@ Review campaign details in your Meta Ads Manager.`;
       validation,
     });
 
-    // Stream out chunks
-    if (typeof onEvent === "function") {
-      onEvent({ type: "text_delta", content: finalMarkdown });
+    if (streamDirect) {
+      if (typeof onEvent === "function") {
+        onEvent({ type: "text_delta", content: finalMarkdown });
+      }
+      if (res) {
+        AgentStreamHandler.sendChunk(res, finalMarkdown);
+      }
     }
-    if (res) {
-      AgentStreamHandler.sendChunk(res, finalMarkdown);
-    }
+
+    const contextMetadata = this.extractContextMetadata(executedTools, context.sessionMemory);
 
     return {
       content: finalMarkdown,
       result: finalMarkdown,
       toolCalls: executedTools,
-      status: validation.verified ? "completed" : "failed",
+      status: validation.verified ? "completed" : validation.partial ? "partial" : "failed",
       validation,
+      contextMetadata,
       tokenUsage: {
-        totalTokens: Math.round((userMessage.length + finalMarkdown.length) / 3.8),
-        model: "newton-ai-agent-v1",
+        totalTokens: Math.round(((userMessage?.length || 0) + (finalMarkdown?.length || 0)) / 3.8),
+        model: "claude-sonnet-4-5",
       },
     };
   }
 
   /**
-   * 7. AI AUTOMATION NODE EXECUTION ENTRYPOINT
-   * Strictly enforces the lifecycle: PENDING -> RUNNING -> VERIFYING -> COMPLETED / FAILED / BLOCKED.
+   * 8. AI AUTOMATION WORKFLOW NODE EXECUTION ENTRYPOINT
+   * Preserves contract with workflowExecutionEngine.js
    */
   static async executeNodeTask({
     instruction,
@@ -1707,8 +1740,8 @@ Review campaign details in your Meta Ads Manager.`;
   }) {
     const context = await this.retrieveContext({
       userId,
-      accountId: node.data?.adAccountId || node.adAccountId,
-      metaAccountId: node.data?.adAccountId || node.adAccountId,
+      accountId: node?.data?.adAccountId || node?.adAccountId,
+      metaAccountId: node?.data?.adAccountId || node?.adAccountId,
       userMessage: instruction,
     });
     context.isAutomation = true;
@@ -1716,7 +1749,9 @@ Review campaign details in your Meta Ads Manager.`;
     const intentObj = this.classifyIntent(instruction, context);
 
     if (typeof onProgress === "function") {
-      await Promise.resolve(onProgress({ state: "running", message: `Executing node task "${node.label || node.type}"...` })).catch(() => {});
+      await Promise.resolve(
+        onProgress({ state: "running", message: `Executing node task "${node?.label || node?.type || "step"}"...` })
+      ).catch(() => {});
     }
 
     const executedTools = await this.executeTools({
@@ -1726,14 +1761,17 @@ Review campaign details in your Meta Ads Manager.`;
       previousNodeOutput,
       onStatus: (st) => {
         if (typeof onProgress === "function") {
-          Promise.resolve(onProgress({ state: "running", toolName: st.toolName, message: st.status })).catch(() => {});
+          Promise.resolve(
+            onProgress({ state: "running", toolName: st.toolName, message: st.status })
+          ).catch(() => {});
         }
       },
     });
 
-    // Enter VERIFYING state
     if (typeof onProgress === "function") {
-      await Promise.resolve(onProgress({ state: "verifying", message: `Verifying task outcomes and data validation...` })).catch(() => {});
+      await Promise.resolve(
+        onProgress({ state: "verifying", message: "Checking tool execution results..." })
+      ).catch(() => {});
     }
 
     const validation = this.verifyTaskCompletion({
@@ -1752,7 +1790,7 @@ Review campaign details in your Meta Ads Manager.`;
       previousNodeOutput,
     });
 
-    if (!validation.verified) {
+    if (!validation.verified && !validation.partial) {
       const err = new Error(validation.reason);
       err.validation = validation;
       err.toolCalls = executedTools;
@@ -1762,13 +1800,12 @@ Review campaign details in your Meta Ads Manager.`;
     }
 
     return {
-      status: "completed",
+      status: validation.partial ? "partial" : "completed",
       result: finalMarkdown,
       content: finalMarkdown,
       toolCalls: executedTools,
       output: validation.outputData || { status: "success" },
       validation,
-      taskName: instruction,
     };
   }
 }

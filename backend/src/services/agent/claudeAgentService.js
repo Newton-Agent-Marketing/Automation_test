@@ -5,6 +5,7 @@ import MetaAccount from "../../models/metaAccount.js";
 import AiAutomation from "../../models/aiAutomationModel.js";
 import { AgentStreamHandler } from "./agentStream.js";
 import { ADS_ALLOWED_TOOLS, createAdsMcpServer } from "./claudeAgentTools.js";
+import ConversationMemoryService from "./conversationMemoryService.js";
 
 const getLastClaudeSessionId = async (conversationId) => {
   if (!conversationId || conversationId.startsWith("automation_")) return null;
@@ -78,7 +79,7 @@ export const loadWorkspaceSkills = async () => {
   }
 };
 
-export const buildSystemPrompt = async ({ accountId, userId }) => {
+export const buildSystemPrompt = async ({ accountId, userId, sessionMemory = null }) => {
   let googleContextText = "No Google Ads account connected";
   let metaContextText = "No Meta Ads account connected";
   let aiContextText = "No custom AI context workflow configured yet.";
@@ -326,7 +327,7 @@ Capabilities & Exact Execution Guidelines:
             - "CONFLICTING" or "UNKNOWN": Ask user for clarification before creating anything. Never fallback to website workflow.
          4. Read exact row fields: campaign_name, adset_name, ad_name, headline, primary_text, daily_budget, landing_page_url, drive_url, app_id, object_store_url, etc.
        * Dynamic Hierarchy Naming Rules (CRITICAL):
-         - Extract both Campaign Name and Ad Set Name dynamically from the user's latest chat instruction (e.g. Campaign name: `<name>`, Ad set name: `<name>`).
+         - Extract both Campaign Name and Ad Set Name dynamically from the user's latest chat instruction (e.g. Campaign name: \`<name>\`, Ad set name: \`<name>\`).
          - Never hardcode or invent default campaign names or ad set names.
          - Never search the spreadsheet for these names unless the user explicitly requests that they come from the sheet.
          - If either required name is missing or ambiguous, ask the user for clarification rather than creating campaigns with placeholder or default names.
@@ -489,7 +490,17 @@ ${skillsText}
        - Under each dimension, cite the exact numbers (CPA, CTR, ROAS, Spend, Conversions) as the supporting evidence.
        - Reaffirm compliance: pure advisory recommendations, zero campaigns edited or paused.
      * For creative performance analysis & winner/loser recommendations: Evaluate the actual ad creatives from upstream data, identify top winners (high ROAS, high conversions) and underperforming losers (high spend, low ROAS/zero conversions), and provide actionable scaling and fatigue mitigation advice.
-     * Strictly obey constraints such as "Do not edit any campaign", "Return actual source data only".`;
+     * Strictly obey constraints such as "Do not edit any campaign", "Return actual source data only".
+     * GOOGLE SHEETS & VIDEO LINK RULES:
+       - Use "list_connected_sheets", "inspect_sheet_schema", and "extract_sheet_video_links" to inspect connected spreadsheets dynamically.
+       - Never confuse "2nd sheet" (sheetIndex: 2) with "2nd tab".
+       - When asked for video links, call "extract_sheet_video_links" and output a concise Markdown table showing ONLY existing fields (e.g. | Row | Creative Code | Media Type | Creative Name | Video URL | Validation |) with complete untruncated URLs. Never dump all 50 columns unless asked.
+       - If a user requests a column/field that does not exist in the worksheet headers, state clearly that the field was not found and list actual available headers — never invent values.
+     * META ADS EXECUTION RULES:
+       - When the user specifies an account ID (e.g. act_1416124059911929), pass that exact accountId to "fetch_live_meta_ads_mcp".
+       - Never invent campaign names, spend, or metrics, and never claim "Verified" or "Completed" unless backed by actual tool output.
+
+${sessionMemory ? ConversationMemoryService.formatPromptMemoryBlock(sessionMemory) : ""}`;
 };
 
 export class ClaudeAgentService {
@@ -500,6 +511,7 @@ export class ClaudeAgentService {
     userMessage,
     accountId,
     userId,
+    sessionMemory = null,
   }) {
     const startTime = Date.now();
     const emit = (event) => {
@@ -522,11 +534,14 @@ export class ClaudeAgentService {
     let inTool = false;
     let rawUsage = null;
 
-    const systemPromptText = await buildSystemPrompt({ accountId, userId });
-    let rawModel = process.env.CLAUDE_AGENT_MODEL || "claude-3-5-sonnet-20241022";
-    const modelName = (rawModel.includes("4-5") || rawModel.includes("sonnet-4"))
-      ? "claude-3-5-sonnet-20241022"
-      : rawModel;
+    const effectiveMemory =
+      sessionMemory || (conversationId ? await ConversationMemoryService.loadSessionMemory(conversationId) : null);
+    const systemPromptText = await buildSystemPrompt({
+      accountId,
+      userId,
+      sessionMemory: effectiveMemory,
+    });
+    const modelName = (process.env.CLAUDE_AGENT_MODEL || "claude-sonnet-4-5").trim();
     const rawApiKey = (process.env.ANTHROPIC_API_KEY || "").trim().replace(/^["']|["']$/g, "");
     const cleanApiKey = rawApiKey;
 

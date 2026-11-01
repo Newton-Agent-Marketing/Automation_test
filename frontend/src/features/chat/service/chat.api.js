@@ -14,9 +14,11 @@ export const chatApi = {
   stream: async ({
     conversationId,
     userMessage,
+    executionId,
     accountId,
     metaAccountId,
     googleAccountId,
+    aiContextMetaAccountId,
     startRow,
     endRow,
     rowRange,
@@ -36,9 +38,11 @@ export const chatApi = {
       body: JSON.stringify({
         conversationId,
         userMessage,
+        executionId,
         accountId,
         metaAccountId,
         googleAccountId,
+        aiContextMetaAccountId,
         startRow,
         endRow,
         rowRange,

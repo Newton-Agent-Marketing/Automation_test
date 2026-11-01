@@ -6,6 +6,8 @@ const initialState = {
   conversations: [],
   messages: [],
   activeId: null,
+  activeExecutionId: null,
+  completedExecutionIds: [],
   streaming: false,
   streamText: "",
   toolStatus: "",
@@ -79,10 +81,12 @@ const chatSlice = createSlice({
     addLocalUserMessage: (state, action) => {
       const msg = action.payload;
       state.messages.push(msg);
+      state.activeExecutionId = msg?.executionId || null;
       state.streaming = true;
       state.streamText = "";
       state.toolStatus = "";
       state.jobProgress = null;
+      state.error = null;
 
       // Instantly show the new conversation in the sidebar with the first message as title
       if (msg?.conversationId) {
@@ -100,8 +104,30 @@ const chatSlice = createSlice({
         }
       }
     },
+    startExecution: (state, action) => {
+      const execId = action.payload;
+      if (execId && !state.completedExecutionIds.includes(execId)) {
+        state.activeExecutionId = execId;
+      }
+    },
+    resetStreamText: (state, action) => {
+      const execId = action.payload;
+      if (!execId || !state.activeExecutionId || execId === state.activeExecutionId) {
+        state.streamText = "";
+      }
+    },
     appendStreamText: (state, action) => {
-      state.streamText += action.payload;
+      const payload = action.payload;
+      const chunk = typeof payload === "object" && payload !== null ? payload.content || "" : String(payload || "");
+      const execId = typeof payload === "object" && payload !== null ? payload.executionId || null : null;
+
+      if (execId && state.completedExecutionIds.includes(execId)) {
+        return;
+      }
+      if (execId && state.activeExecutionId && execId !== state.activeExecutionId) {
+        return;
+      }
+      state.streamText += chunk;
     },
     setToolStatus: (state, action) => {
       state.toolStatus = action.payload;
@@ -186,16 +212,34 @@ const chatSlice = createSlice({
         jp.rowsList.sort((a, b) => (a.rowIndex || 0) - (b.rowIndex || 0));
       }
     },
-    finishStream: (state) => {
-      if (state.streamText || state.preparationData) {
-        state.messages.push({
-          _id: `assistant-${Date.now()}`,
-          role: "assistant",
-          content: state.streamText || "Campaign details updated:",
-          jobProgress: state.jobProgress ? JSON.parse(JSON.stringify(state.jobProgress)) : null,
-          preparationData: state.preparationData ? JSON.parse(JSON.stringify(state.preparationData)) : null,
-        });
+    finishStream: (state, action) => {
+      const execId = action.payload || state.activeExecutionId || null;
+      if (execId && state.completedExecutionIds.includes(execId)) {
+        state.streaming = false;
+        state.streamText = "";
+        state.toolStatus = "";
+        return;
       }
+
+      if (state.streamText || state.preparationData) {
+        const alreadyExists =
+          execId && state.messages.some((m) => m.role === "assistant" && m.executionId === execId);
+        if (!alreadyExists) {
+          state.messages.push({
+            _id: execId ? `assistant-${execId}` : `assistant-${Date.now()}`,
+            executionId: execId,
+            role: "assistant",
+            content: state.streamText || "Campaign details updated:",
+            jobProgress: state.jobProgress ? JSON.parse(JSON.stringify(state.jobProgress)) : null,
+            preparationData: state.preparationData ? JSON.parse(JSON.stringify(state.preparationData)) : null,
+          });
+        }
+      }
+
+      if (execId) {
+        state.completedExecutionIds = [...state.completedExecutionIds.slice(-99), execId];
+      }
+      state.activeExecutionId = null;
       state.streaming = false;
       state.streamText = "";
       state.toolStatus = "";
@@ -229,8 +273,17 @@ const chatSlice = createSlice({
       })
       .addCase(fetchHistory.fulfilled, (state, action) => {
         state.activeId = action.payload.conversationId;
-        state.messages = action.payload.messages;
-        const lastWithPrep = [...(action.payload.messages || [])].reverse().find((m) => m.preparationData);
+        const seenExecIds = new Set();
+        const dedupedMessages = [];
+        for (const m of action.payload.messages || []) {
+          if (m.role === "assistant" && m.executionId) {
+            if (seenExecIds.has(m.executionId)) continue;
+            seenExecIds.add(m.executionId);
+          }
+          dedupedMessages.push(m);
+        }
+        state.messages = dedupedMessages;
+        const lastWithPrep = [...dedupedMessages].reverse().find((m) => m.preparationData);
         state.preparationData = lastWithPrep?.preparationData || null;
       })
       .addCase(renameConversationThunk.fulfilled, (state, action) => {
@@ -260,6 +313,8 @@ export const {
   setSocketConnected,
   setActiveConversation,
   addLocalUserMessage,
+  startExecution,
+  resetStreamText,
   appendStreamText,
   setToolStatus,
   updateJobProgress,

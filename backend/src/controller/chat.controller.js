@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import mongoose from "mongoose";
 import ChatMessage from "../models/chatMessage.js";
 import MetaAccount from "../models/metaAccount.js";
@@ -6,6 +7,7 @@ import { AgentStreamHandler } from "../services/agent/agentStream.js";
 import { ClaudeAgentService } from "../services/agent/claudeAgentService.js";
 
 import { AiAgentOrchestrator } from "../services/agent/aiAgentOrchestrator.js";
+import ConversationMemoryService from "../services/agent/conversationMemoryService.js";
 import { executeAgentTool } from "../services/agent/queryDbMetrics.js";
 import DynamicSheetFilter from "../services/data/dynamicSheetFilter.js";
 import FieldMapper from "../services/data/fieldMapper.js";
@@ -15,6 +17,21 @@ import SpreadsheetSyncService from "../services/data/spreadsheetSyncService.js";
 import { NotificationService } from "../services/notificationService.js";
 import CampaignPreparationSession from "../models/campaignPreparationSession.js";
 import CampaignPreparationService from "../services/campaignPreparation/campaignPreparationService.js";
+
+// In-flight execution lifecycle registries (prevents unintended duplicate concurrent runs)
+const activeExecutionsById = new Map();
+const activeInFlightPayloads = new Map();
+
+function extractExplicitMetaIdFromPrompt(text = "") {
+  if (!text || typeof text !== "string") return null;
+  const actMatch = text.match(/\bact_(\d{5,25})\b/i);
+  if (actMatch) return `act_${actMatch[1]}`;
+  const contextualMatch = text.match(
+    /\b(?:meta\s+ad\s+account|ad\s+account|meta\s+account|account\s+id|in\s+account|from\s+account|for\s+account)\s*[:#-]?\s*(\d{8,25})\b/i
+  );
+  if (contextualMatch) return `act_${contextualMatch[1]}`;
+  return null;
+}
 
 /**
  * StageTimingTracker for high-resolution per-row processing metrics.
@@ -95,6 +112,7 @@ export const generateFallbackMarketingResponse = async ({
   metaAccountId = null,
   googleAccountId = null,
   conversationId = "chat_default",
+  sessionMemory = null,
   onEvent = null,
   res = null,
 }) => {
@@ -103,14 +121,124 @@ export const generateFallbackMarketingResponse = async ({
     conversationId,
     userMessage,
     accountId: accountId || metaAccountId,
-    metaAccountId,
-    googleAccountId,
+    sessionMemory,
     onEvent,
     res,
+    streamDirect: false,
   });
 };
 
 export const runAgentChat = async ({
+  userId,
+  conversationId,
+  userMessage,
+  executionId: clientExecutionId = null,
+  accountId,
+  metaAccountId = null,
+  googleAccountId = null,
+  aiContextMetaAccountId = null,
+  onEvent,
+  res,
+  req = null,
+  userToken = null,
+  userEmail = null,
+  startRow = null,
+  endRow = null,
+  rowRange = null,
+  rangeSelector = null,
+}) => {
+  const executionId =
+    (clientExecutionId && String(clientExecutionId).trim()) ||
+    `exec_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+
+  const isAutomationTask = Boolean(conversationId?.startsWith("automation_"));
+  const normalizedPayloadKey = !isAutomationTask
+    ? `${conversationId}::${String(userMessage || "").trim()}`
+    : null;
+
+  // 1. Idempotency check: If this exact executionId was already persisted, return it without re-executing
+  if (clientExecutionId && !isAutomationTask) {
+    const existingByExecId = await ChatMessage.findOne({
+      conversationId,
+      role: "assistant",
+      executionId,
+    }).lean();
+    if (existingByExecId) {
+      if (typeof onEvent === "function") {
+        onEvent({ type: "execution_start", executionId });
+        onEvent({ type: "text_delta", content: existingByExecId.content, executionId });
+      }
+      if (res) {
+        AgentStreamHandler.sendExecutionStart(res, executionId);
+        AgentStreamHandler.sendChunk(res, existingByExecId.content);
+      }
+      return {
+        content: existingByExecId.content,
+        toolCalls: existingByExecId.toolCalls || [],
+        tokenUsage: existingByExecId.tokenUsage || null,
+        preparationData: existingByExecId.preparationData || null,
+        messageId: existingByExecId._id,
+        executionId,
+        deduplicated: true,
+      };
+    }
+  }
+
+  // 2. Concurrent in-flight deduplication (prevents accidental double socket/API fire for identical active request)
+  if (activeExecutionsById.has(executionId)) {
+    return await activeExecutionsById.get(executionId);
+  }
+  if (normalizedPayloadKey && activeInFlightPayloads.has(normalizedPayloadKey)) {
+    const inFlight = activeInFlightPayloads.get(normalizedPayloadKey);
+    if (Date.now() - inFlight.startedAt < 15000) {
+      return await inFlight.promise;
+    }
+  }
+
+  const executionPromise = _executeSingleChatRun({
+    executionId,
+    userId,
+    conversationId,
+    userMessage,
+    accountId,
+    metaAccountId,
+    googleAccountId,
+    aiContextMetaAccountId,
+    onEvent,
+    res,
+    req,
+    userToken,
+    userEmail,
+    startRow,
+    endRow,
+    rowRange,
+    rangeSelector,
+  });
+
+  activeExecutionsById.set(executionId, executionPromise);
+  if (normalizedPayloadKey) {
+    activeInFlightPayloads.set(normalizedPayloadKey, {
+      startedAt: Date.now(),
+      executionId,
+      promise: executionPromise,
+    });
+  }
+
+  try {
+    return await executionPromise;
+  } finally {
+    activeExecutionsById.delete(executionId);
+    if (
+      normalizedPayloadKey &&
+      activeInFlightPayloads.get(normalizedPayloadKey)?.executionId === executionId
+    ) {
+      activeInFlightPayloads.delete(normalizedPayloadKey);
+    }
+  }
+};
+
+const _executeSingleChatRun = async ({
+  executionId,
   userId,
   conversationId,
   userMessage,
@@ -130,16 +258,20 @@ export const runAgentChat = async ({
 }) => {
   const chatStartTime = Date.now();
 
+  if (typeof onEvent === "function") {
+    onEvent({ type: "execution_start", executionId });
+  }
+  if (res) {
+    AgentStreamHandler.sendExecutionStart(res, executionId);
+  }
+
   let validUserId = userId;
   if (userId && typeof userId === "string") {
     try {
-      const mongoose = (await import("mongoose")).default;
       if (mongoose.Types.ObjectId.isValid(userId)) {
         validUserId = new mongoose.Types.ObjectId(userId);
       }
-    } catch (e) {
-      // ignore
-    }
+    } catch (_) {}
   }
 
   let resolvedUserEmail = userEmail || req?.user?.email;
@@ -156,6 +288,11 @@ export const runAgentChat = async ({
   const isAutomationTask = Boolean(conversationId?.startsWith("automation_"));
   const contextSplitRegex = /\[Context from (?:previous )?(?:step|node)(?:s)?(?:\s*#?\d*)?(?:\s*\([^)]*\))?\]:/i;
   const hasUpstreamContext = contextSplitRegex.test(userMessage || "");
+
+  // Load multi-turn conversation memory BEFORE persisting the new user message
+  const sessionMemory = !isAutomationTask
+    ? await ConversationMemoryService.loadSessionMemory(conversationId)
+    : null;
 
   // 1. Resolve selected Meta Ads account from AI Context Channel Node (Strict Source of Truth)
   let contextMetaAccountId = aiContextMetaAccountId ? String(aiContextMetaAccountId).trim() : null;
@@ -206,15 +343,7 @@ export const runAgentChat = async ({
       isCreationAction &&
       /\b(?:campaigns?|adsets?|ad\s+sets?|ads?|sheets?)\b/i.test(msgLower));
 
-  const isMetaIntent =
-    !mentionsGoogleAds &&
-    (msgLower.includes("meta") ||
-      msgLower.includes("facebook") ||
-      msgLower.includes("instagram") ||
-      msgLower.includes("fb") ||
-      Boolean(metaAccountId) ||
-      Boolean(contextMetaAccountId) ||
-      isCreationOrCampaignCmd);
+  const explicitMetaPromptId = extractExplicitMetaIdFromPrompt(userMessage);
   const isGoogleIntent = mentionsGoogleAds || msgLower.includes("adwords");
 
   let effectiveAccountId = accountId;
@@ -246,29 +375,15 @@ export const runAgentChat = async ({
 
       // =========================================================================
       // META ADS ACCOUNT RESOLUTION & ISOLATION
+      // - For Campaign/Ad Creation in Standard Chat: strictly enforce AI Context Channel Node lock.
+      // - For Read/Fetch/Inspect/Automation queries: honor explicit account IDs (e.g. act_1416124059911929),
+      //   follow-up session memory, or connected active Meta account; MetaMcpClient validates ownership & permissions!
       // =========================================================================
-      if (isAutomationTask) {
-        // In AI Automation: Directly target the account specified in the node instruction or node settings
-        const promptOnly = (userMessage || "").split(/\[Context from/i)[0];
-        const explicitMeta = (userMessage || "").match(/\bact_(\d{10,22})\b/i) || promptOnly.match(/^\s*(\d{10,22})\s*[,:]/);
-        let matchedMetaAcc = null;
-
-        if (explicitMeta) {
-          const cleanAutoId = explicitMeta[1];
-          matchedMetaAcc = (userMetaAccounts || []).find((m) => {
-            const rawId = String(m.accountId || "").replace(/^act_/, "");
-            return rawId === cleanAutoId;
-          });
-          if (!matchedMetaAcc) {
-            matchedMetaAcc = await MetaAccount.findOne({
-              userId: validUserId || userId,
-              $or: [{ accountId: cleanAutoId }, { accountId: `act_${cleanAutoId}` }],
-            });
-          }
-          effectiveAccountId = matchedMetaAcc ? matchedMetaAcc.accountId : `act_${cleanAutoId}`;
-          metaAccountId = effectiveAccountId;
+      if (isAutomationTask || !isCreationOrCampaignCmd) {
+        if (explicitMetaPromptId) {
+          effectiveAccountId = explicitMetaPromptId;
+          metaAccountId = explicitMetaPromptId;
         } else {
-          // Check by account name in prompt or fallback to node config
           const mentionedByName = (userMetaAccounts || []).find((m) => {
             const name = (m.accountName || "").toLowerCase().trim();
             return name.length > 2 && msgLower.includes(name);
@@ -276,37 +391,38 @@ export const runAgentChat = async ({
           if (mentionedByName) {
             effectiveAccountId = mentionedByName.accountId;
             metaAccountId = mentionedByName.accountId;
+          } else if (sessionMemory?.lastMetaContext?.accountId && /\b(their|these|those|them|its|same\s+account|now\s+fetch|now\s+get|compare)\b/i.test(msgLower)) {
+            effectiveAccountId = sessionMemory.lastMetaContext.accountId;
+            metaAccountId = effectiveAccountId;
           } else {
-            const autoTargetId = metaAccountId || accountId || contextMetaAccountId;
-            if (autoTargetId) {
-              const cleanAutoId = String(autoTargetId).replace(/^act_/, "");
-              matchedMetaAcc = (userMetaAccounts || []).find((m) => {
-                const rawId = String(m.accountId || "").replace(/^act_/, "");
-                return rawId === cleanAutoId;
-              });
-              effectiveAccountId = matchedMetaAcc ? matchedMetaAcc.accountId : `act_${cleanAutoId}`;
-              metaAccountId = effectiveAccountId;
+            const fallbackTarget =
+              contextMetaAccountId ||
+              metaAccountId ||
+              accountId ||
+              sessionMemory?.lastMetaContext?.accountId ||
+              userMetaAccounts?.[0]?.accountId ||
+              null;
+            if (fallbackTarget && !isGoogleIntent) {
+              effectiveAccountId = fallbackTarget;
+              metaAccountId = fallbackTarget;
             }
           }
         }
-      } else if (isMetaIntent) {
-        // Standard Chat: Selected Meta Ads account ID MUST come from AI Context Channel Node
+      } else if (isCreationOrCampaignCmd && !mentionsGoogleAds) {
+        // Strict Account Lock for Campaign / Ad Creation in Standard Chat
         const targetMetaAccountId = contextMetaAccountId || metaAccountId;
 
         if (!targetMetaAccountId) {
-          const errorContent = `### ⚠️ Meta Ads Account Selection Missing\n\nNo Meta Ads account is selected in the **AI Context → Channel Node**.\n\nTo create or manage campaigns, ad sets, and ads, you must first select an authorized Meta Ads account in **AI Context → Channel Node** and save your workflow.\n\n> 🔒 **Strict Account Lock Active**: Newton AI strictly forbids falling back to default, cached, or unselected accounts. Creating campaigns under unselected accounts is prohibited.`;
+          const errorContent = `### ⚠️ Meta Ads Account Selection Missing\n\nNo Meta Ads account is selected in the **AI Context → Channel Node**.\n\nTo create or launch campaigns, ad sets, and ads, please select an authorized Meta Ads account in **AI Context → Channel Node** and save your workflow.`;
           if (typeof onEvent === "function") {
-            onEvent({ type: "text_delta", content: errorContent });
-            onEvent({ type: "done" });
+            onEvent({ type: "text_delta", content: errorContent, executionId });
           }
           if (res) {
             AgentStreamHandler.sendChunk(res, errorContent);
-            AgentStreamHandler.endStream(res);
           }
-          return { content: errorContent, toolCalls: [] };
+          return { content: errorContent, toolCalls: [], executionId };
         }
 
-        // Requirement 4: Validate that selected account exists, is accessible, and has valid credentials
         const cleanContextId = String(targetMetaAccountId).trim();
         const numContextId = cleanContextId.replace(/^act_/, "");
         const selectedMetaAccount = await MetaAccount.findOne({
@@ -314,78 +430,40 @@ export const runAgentChat = async ({
           $or: [{ accountId: cleanContextId }, { accountId: numContextId }, { accountId: `act_${numContextId}` }],
         });
 
-        if (!selectedMetaAccount) {
-          const errorContent = `### ⚠️ Meta Ads Account Not Found or Inaccessible\n\nThe selected Meta Ads account **\`${targetMetaAccountId}\`** from your **AI Context → Channel Node** was not found among your authorized connected accounts.\n\nPlease connect and authorize this exact account in **Marketing Channels**, or choose an active connected account in the Channel Node.\n\n> 🔒 **Strict Account Lock Active**: Falling back to other accounts or creating entities under another account is strictly forbidden.`;
+        if (!selectedMetaAccount || selectedMetaAccount.isActive === false || !selectedMetaAccount.accessToken?.trim()) {
+          const errorContent = `### ⚠️ Meta Ads Account Inaccessible\n\nThe selected Meta Ads account **\`${targetMetaAccountId}\`** from **AI Context → Channel Node** is missing, inactive, or lacks a valid access token. Please reconnect it in **Marketing Channels**.`;
           if (typeof onEvent === "function") {
-            onEvent({ type: "text_delta", content: errorContent });
-            onEvent({ type: "done" });
+            onEvent({ type: "text_delta", content: errorContent, executionId });
           }
           if (res) {
             AgentStreamHandler.sendChunk(res, errorContent);
-            AgentStreamHandler.endStream(res);
           }
-          return { content: errorContent, toolCalls: [] };
+          return { content: errorContent, toolCalls: [], executionId };
         }
 
-        if (selectedMetaAccount.isActive === false) {
-          const errorContent = `### ⚠️ Meta Ads Account Inactive\n\nThe selected Meta Ads account **\`${targetMetaAccountId}\`** (${selectedMetaAccount.accountName || "Meta Account"}) from your **AI Context → Channel Node** is currently marked as **inactive** or disconnected.\n\nPlease re-authenticate this account in **Marketing Channels**.\n\n> 🔒 **Strict Account Lock Active**: Falling back to other accounts is strictly prohibited.`;
-          if (typeof onEvent === "function") {
-            onEvent({ type: "text_delta", content: errorContent });
-            onEvent({ type: "done" });
-          }
-          if (res) {
-            AgentStreamHandler.sendChunk(res, errorContent);
-            AgentStreamHandler.endStream(res);
-          }
-          return { content: errorContent, toolCalls: [] };
-        }
-
-        if (!selectedMetaAccount.accessToken || selectedMetaAccount.accessToken.trim() === "") {
-          const errorContent = `### ⚠️ Meta Ads Account Missing Authorization Token\n\nThe selected Meta Ads account **\`${targetMetaAccountId}\`** has no valid access token credentials.\n\nPlease reconnect this account in **Marketing Channels**.\n\n> 🔒 **Strict Account Lock Active**: Falling back to other accounts is strictly prohibited.`;
-          if (typeof onEvent === "function") {
-            onEvent({ type: "text_delta", content: errorContent });
-            onEvent({ type: "done" });
-          }
-          if (res) {
-            AgentStreamHandler.sendChunk(res, errorContent);
-            AgentStreamHandler.endStream(res);
-          }
-          return { content: errorContent, toolCalls: [] };
-        }
-
-        // Requirement 3: Check if user attempted to specify a different Meta account in prompt (Chat only)
         const rawTargetId = String(selectedMetaAccount.accountId).replace(/^act_/, "");
-        if (!isAutomationTask && userMetaAccounts?.length > 1) {
-          const mentionedOtherAccount = userMetaAccounts.find((m) => {
-            const otherRaw = String(m.accountId || "").replace(/^act_/, "");
-            const otherName = (m.accountName || "").toLowerCase();
-            if (otherRaw === rawTargetId) return false;
-            return (otherRaw && msgLower.includes(otherRaw)) || (otherName && otherName.length > 2 && msgLower.includes(otherName));
-          });
-          if (mentionedOtherAccount) {
-            const errorContent = `### ⚠️ Account Lock Violation\n\nYour **AI Context → Channel Node** is strictly locked to Meta Account **\`${selectedMetaAccount.accountId}\`** (${selectedMetaAccount.accountName || "Locked Account"}).\n\nCreating campaigns or ads under a different account (**\`${mentionedOtherAccount.accountId}\`**) is strictly forbidden. To target **\`${mentionedOtherAccount.accountId}\`**, please select it in **AI Context → Channel Node** and save your workflow.`;
-            if (typeof onEvent === "function") {
-              onEvent({ type: "text_delta", content: errorContent });
-              onEvent({ type: "done" });
-            }
-            if (res) {
-              AgentStreamHandler.sendChunk(res, errorContent);
-              AgentStreamHandler.endStream(res);
-            }
-            return { content: errorContent, toolCalls: [] };
+        if (explicitMetaPromptId && explicitMetaPromptId.replace(/^act_/, "") !== rawTargetId) {
+          const errorContent = `### ⚠️ Account Lock Violation\n\nYour **AI Context → Channel Node** is locked to Meta Account **\`${selectedMetaAccount.accountId}\`** (${selectedMetaAccount.accountName || "Locked Account"}). Creating campaigns under **\`${explicitMetaPromptId}\`** requires selecting it in **AI Context → Channel Node** first.`;
+          if (typeof onEvent === "function") {
+            onEvent({ type: "text_delta", content: errorContent, executionId });
           }
+          if (res) {
+            AgentStreamHandler.sendChunk(res, errorContent);
+          }
+          return { content: errorContent, toolCalls: [], executionId };
         }
 
-        // Lock effective IDs to selected account ONLY
         effectiveAccountId = selectedMetaAccount.accountId;
         metaAccountId = selectedMetaAccount.accountId;
-      } else if (isGoogleIntent && googleAccountId) {
+      }
+
+      if (isGoogleIntent && googleAccountId) {
         effectiveAccountId = googleAccountId;
       } else if (!effectiveAccountId && isGoogleIntent && googleAcc) {
         effectiveAccountId = googleAcc.selectedCustomerId || (googleAcc.accounts?.find((a) => !a.isManager)?.customerId) || googleAcc.accountId;
       }
     } catch (e) {
-      console.warn("[Account Lock Resolution Warning]:", e.message);
+      console.warn("[Account Resolution Warning]:", e.message);
     }
   }
 
@@ -455,6 +533,7 @@ export const runAgentChat = async ({
         metaAccountId,
         googleAccountId,
         conversationId,
+        sessionMemory,
         onEvent,
         res,
         req,
@@ -468,20 +547,13 @@ export const runAgentChat = async ({
 
       if (autoRes) {
         const autoText = typeof autoRes === "object" ? autoRes.content : autoRes;
-        const autoToolCalls = typeof autoRes === "object" && autoRes.toolCalls?.length
+        const autoToolCalls = typeof autoRes === "object" && Array.isArray(autoRes.toolCalls)
           ? autoRes.toolCalls
-          : [
-              {
-                toolName: "execute_automation_node_task",
-                toolArgs: { instruction: (userMessage || "").split(/\[Context from/i)[0].trim() },
-                toolResult: { status: "SUCCESS" },
-                status: "SUCCESS",
-              },
-            ];
+          : [];
 
-        // Stream immediately for automation node without artificial delay
+        // Stream once for automation node
         if (typeof onEvent === "function") {
-          onEvent({ type: "text_delta", content: autoText });
+          onEvent({ type: "text_delta", content: autoText, executionId });
         }
         if (res) {
           AgentStreamHandler.sendChunk(res, autoText);
@@ -490,22 +562,21 @@ export const runAgentChat = async ({
         result = {
           content: autoText,
           toolCalls: autoToolCalls,
+          contextMetadata: typeof autoRes === "object" ? autoRes.contextMetadata : null,
           tokenUsage: {
             inputTokens: Math.round(((userMessage?.length || 50) + 1200) / 3.8),
             outputTokens: Math.round(((autoText?.length || 200) + 200) / 3.8),
             totalTokens: Math.round(((userMessage?.length || 50) + (autoText?.length || 200) + 1400) / 3.8),
-            model: "claude-sonnet-4-5 (Newton AI Engine)",
+            model: "claude-sonnet-4-5",
             costUsd: 0.0035,
             costInr: 0.31,
             executionTimeMs: Date.now() - chatStartTime,
-            actionsPerformed: [
-              {
-                action: autoToolCalls[0]?.toolName || "execute_automation_node_task",
-                description: "Executed deterministic automation canvas node task pipeline",
-                tokensBurned: 400,
-                status: "SUCCESS",
-              },
-            ],
+            actionsPerformed: autoToolCalls.map((tc) => ({
+              action: tc.toolName,
+              description: `Executed ${tc.toolName}`,
+              tokensBurned: 200,
+              status: tc.status || "SUCCESS",
+            })),
           },
           preparationData: typeof autoRes === "object" ? autoRes.preparationData : null,
         };
@@ -521,7 +592,10 @@ export const runAgentChat = async ({
   const isAnsweringMissingFields = Boolean(
     activePrepSession &&
     activePrepSession.status === "NEEDS_USER_INPUT" &&
-    !mentionsGoogleAds
+    !mentionsGoogleAds &&
+    !isPureFetchOrQueryCmd &&
+    !isAnalyticalTask &&
+    !explicitMetaPromptId
   );
 
   const isMetaPrepWorkflow =
@@ -530,8 +604,7 @@ export const runAgentChat = async ({
       !isPureFetchOrQueryCmd &&
       !isAnalyticalTask &&
       (!isAutomationRun || isExplicitCampaignDeployCmd) &&
-      (Boolean(activePrepSession) ||
-        CampaignPreparationService.isApprovalCommand(userMessage, activePrepSession) ||
+      (CampaignPreparationService.isApprovalCommand(userMessage, activePrepSession) ||
         CampaignPreparationService.isEditCommand(userMessage, activePrepSession) ||
         isCreationOrCampaignCmd));
 
@@ -555,18 +628,16 @@ export const runAgentChat = async ({
           inputTokens: Math.round(((userMessage?.length || 50) + 800) / 3.8),
           outputTokens: Math.round(((prepResult.content?.length || 200) + 150) / 3.8),
           totalTokens: Math.round(((userMessage?.length || 50) + (prepResult.content?.length || 200) + 950) / 3.8),
-          model: "claude-sonnet-4-5 (Campaign Preparation Engine)",
+          model: "claude-sonnet-4-5",
           costUsd: 0.0025,
           costInr: 0.22,
           executionTimeMs: Date.now() - chatStartTime,
-          actionsPerformed: [
-            {
-              action: prepResult.toolCalls?.[0]?.toolName || "campaign_preparation_workflow",
-              description: "Executed deterministic campaign preparation validation & preview",
-              tokensBurned: 350,
-              status: "SUCCESS",
-            },
-          ],
+          actionsPerformed: (prepResult.toolCalls || []).map((tc) => ({
+            action: tc.toolName,
+            description: `Executed ${tc.toolName}`,
+            tokensBurned: 200,
+            status: tc.status || "SUCCESS",
+          })),
         },
       };
 
@@ -575,6 +646,7 @@ export const runAgentChat = async ({
           onEvent({
             type: "preparation_update",
             session: prepResult.preparationSession,
+            executionId,
           });
         }
         if (res) {
@@ -582,28 +654,29 @@ export const runAgentChat = async ({
         }
       }
 
-      // Stream prepResult.content chunk-by-chunk to UI immediately
-      const prepContent = prepResult.content || "Campaign preparation preview is ready. Please review the configuration below:";
-      const prepWords = prepContent.split(" ");
-      for (let i = 0; i < prepWords.length; i++) {
-        const chunk = prepWords[i] + (i === prepWords.length - 1 ? "" : " ");
-        if (typeof onEvent === "function") {
-          onEvent({ type: "text_delta", content: chunk });
+      const prepContent = prepResult.content || "";
+      if (prepContent) {
+        const prepWords = prepContent.split(" ");
+        for (let i = 0; i < prepWords.length; i++) {
+          const chunk = prepWords[i] + (i === prepWords.length - 1 ? "" : " ");
+          if (typeof onEvent === "function") {
+            onEvent({ type: "text_delta", content: chunk, executionId });
+          }
+          if (res) {
+            AgentStreamHandler.sendChunk(res, chunk);
+          }
+          await new Promise((r) => setTimeout(r, 4));
         }
-        if (res) {
-          AgentStreamHandler.sendChunk(res, chunk);
-        }
-        await new Promise((r) => setTimeout(r, 6));
       }
     } catch (prepErr) {
       console.error("[CampaignPreparationService Error]:", prepErr);
-      const errMsg = `### ⚠️ Campaign Preparation Notice\n\n${prepErr.message}\n\nPlease check your spreadsheet data or configuration and try again.`;
+      const errMsg = `### ⚠️ Campaign Preparation Error\n\n${prepErr.message}`;
       result = {
         content: errMsg,
         toolCalls: [],
       };
       if (typeof onEvent === "function") {
-        onEvent({ type: "text_delta", content: errMsg });
+        onEvent({ type: "text_delta", content: errMsg, executionId });
       }
       if (res) {
         AgentStreamHandler.sendChunk(res, errMsg);
@@ -613,6 +686,16 @@ export const runAgentChat = async ({
 
   // 2. Try Claude Agent SDK if ANTHROPIC_API_KEY is configured and not a Meta preparation request
   if (!result && process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_API_KEY.includes("your_anthropic")) {
+    let sdkEmittedChunks = false;
+    const sdkEventProxy = (ev) => {
+      if (ev?.type === "text_delta" && ev.content) {
+        sdkEmittedChunks = true;
+      }
+      if (typeof onEvent === "function") {
+        onEvent({ ...ev, executionId });
+      }
+    };
+
     try {
       const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error("Claude Agent SDK timed out")), isAutomationTask ? 180000 : 90000)
@@ -621,11 +704,12 @@ export const runAgentChat = async ({
       result = await Promise.race([
         ClaudeAgentService.streamChat({
           res,
-          onEvent,
-        conversationId,
-        userMessage,
+          onEvent: sdkEventProxy,
+          conversationId,
+          userMessage,
           accountId: effectiveAccountId,
           userId: validUserId || userId,
+          sessionMemory,
         }),
         timeoutPromise,
       ]);
@@ -633,22 +717,31 @@ export const runAgentChat = async ({
       if (
         result?.content &&
         (result.content.toLowerCase().includes("credit balance") ||
-         result.content.toLowerCase().includes("credit is too low") ||
-         result.content.toLowerCase().includes("invalid_request_error") ||
-         result.content.toLowerCase().includes("api key is invalid") ||
-         result.content.toLowerCase().includes("failed to authenticate") ||
-         result.content.toLowerCase().includes("401"))
+          result.content.toLowerCase().includes("credit is too low") ||
+          result.content.toLowerCase().includes("invalid_request_error") ||
+          result.content.toLowerCase().includes("api key is invalid") ||
+          result.content.toLowerCase().includes("failed to authenticate"))
       ) {
-        console.warn("[Claude API Credit/Auth Error detected in result content, discarding and triggering clean fallback]");
+        console.warn("[Claude API Credit/Auth Error detected in SDK response; resetting stream for clean dynamic tool execution]");
+        if (sdkEmittedChunks) {
+          if (typeof onEvent === "function") onEvent({ type: "stream_reset", executionId });
+          if (res) AgentStreamHandler.sendStreamReset(res, executionId);
+        }
         result = null;
+      } else if (result?.toolCalls) {
+        result.contextMetadata = AiAgentOrchestrator.extractContextMetadata(result.toolCalls, sessionMemory);
       }
     } catch (sdkError) {
-      console.warn("[Claude Agent SDK warning, falling back to Newton AI stream]:", sdkError.message);
+      console.warn("[Claude Agent SDK warning, executing dynamic tool orchestrator]:", sdkError.message);
+      if (sdkEmittedChunks) {
+        if (typeof onEvent === "function") onEvent({ type: "stream_reset", executionId });
+        if (res) AgentStreamHandler.sendStreamReset(res, executionId);
+      }
       result = null;
     }
   }
 
-  // 3. Fallback to Newton AI streaming strategy generator if SDK is offline, unkeyed, or timed out
+  // 3. Dynamic Multi-Step Tool Orchestrator (executes real Sheets / Meta MCP / Workspace tools, streams once)
   if (!result || !result.content) {
     const fallbackRes = await generateFallbackMarketingResponse({
       userMessage,
@@ -658,7 +751,10 @@ export const runAgentChat = async ({
       metaAccountId,
       googleAccountId,
       conversationId,
-      onEvent,
+      sessionMemory,
+      onEvent: (ev) => {
+        if (typeof onEvent === "function") onEvent({ ...ev, executionId });
+      },
       res,
       req,
       userToken: userToken || req?.user?.token || (typeof req?.headers?.authorization === "string" ? req.headers.authorization.replace(/^Bearer\s+/i, "") : null),
@@ -669,24 +765,18 @@ export const runAgentChat = async ({
       rangeSelector: rangeSelector ?? req?.body?.rangeSelector,
     });
 
-    const fallbackText = typeof fallbackRes === "object" ? fallbackRes.content : fallbackRes;
+    const fallbackText = typeof fallbackRes === "object" ? fallbackRes.content : String(fallbackRes || "");
     const fallbackPrepData = typeof fallbackRes === "object" ? (fallbackRes.preparationData || fallbackRes.preparationSession) : null;
-    const fallbackToolCalls = typeof fallbackRes === "object" && fallbackRes.toolCalls?.length
+    const fallbackToolCalls = typeof fallbackRes === "object" && Array.isArray(fallbackRes.toolCalls)
       ? fallbackRes.toolCalls
-      : [
-          {
-            toolName: "marketing_strategy_engine",
-            toolArgs: { context: "workspace_analysis" },
-            toolResult: { status: "PROCESSED", context: "workspace_analysis" },
-            status: "SUCCESS",
-          },
-        ];
+      : [];
 
     if (fallbackPrepData) {
       if (typeof onEvent === "function") {
         onEvent({
           type: "preparation_update",
           session: fallbackPrepData,
+          executionId,
         });
       }
       if (res) {
@@ -694,50 +784,38 @@ export const runAgentChat = async ({
       }
     }
 
-    // Stream tokens
-    if (typeof onEvent === "function") {
-      onEvent({
-        type: "tool_status",
-        toolName: fallbackToolCalls[0]?.toolName || "marketing_strategy_engine",
-        status: "Executing marketing strategy...",
-      });
-    }
-
+    // Stream final response ONCE (never duplicated!)
     if (isAutomationTask) {
-      // AI Automation executes backend tasks in real-time — stream immediately without artificial typing delays
       if (typeof onEvent === "function") {
-        onEvent({ type: "text_delta", content: fallbackText });
+        onEvent({ type: "text_delta", content: fallbackText, executionId });
       }
       if (res) {
         AgentStreamHandler.sendChunk(res, fallbackText);
       }
     } else {
-      // Chat interface: realistic micro-typing cadence
-      const words = fallbackText.split(" ");
-      let accumulated = "";
-      for (let i = 0; i < words.length; i++) {
-        const chunk = words[i] + (i === words.length - 1 ? "" : " ");
-        accumulated += chunk;
-
+      const chunks = fallbackText.match(/\S+\s*|\n+/g) || [fallbackText];
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
         if (typeof onEvent === "function") {
-          onEvent({ type: "text_delta", content: chunk });
+          onEvent({ type: "text_delta", content: chunk, executionId });
         }
         if (res) {
           AgentStreamHandler.sendChunk(res, chunk);
         }
-        await new Promise((resolve) => setTimeout(resolve, 15));
+        if (chunks.length < 180) {
+          await new Promise((resolve) => setTimeout(resolve, 6));
+        }
       }
     }
 
-    // Build fallback token usage metrics
     const executionTimeMs = Date.now() - chatStartTime;
-    const inputTokens = Math.round(((userMessage?.length || 50) + 1250) / 3.8);
-    const outputTokens = Math.round(((fallbackText?.length || 200) + (fallbackToolCalls.length * 180)) / 3.8);
+    const inputTokens = Math.round(((userMessage?.length || 50) + 900) / 3.8);
+    const outputTokens = Math.round(((fallbackText?.length || 100) + fallbackToolCalls.length * 150) / 3.8);
     const totalTokens = inputTokens + outputTokens;
-    const costUsd = Number(((inputTokens * 0.000003) + (outputTokens * 0.000015)).toFixed(6));
+    const costUsd = Number((inputTokens * 0.000003 + outputTokens * 0.000015).toFixed(6));
     const costInr = Number((costUsd * 87.0).toFixed(4));
 
-    const actionsPerformed = fallbackToolCalls.map(t => ({
+    const actionsPerformed = fallbackToolCalls.map((t) => ({
       action: t.toolName,
       description: `Executed ${t.toolName}`,
       tokensBurned: Math.round(outputTokens / (fallbackToolCalls.length || 1)),
@@ -747,13 +825,14 @@ export const runAgentChat = async ({
     result = {
       content: fallbackText,
       toolCalls: fallbackToolCalls,
+      contextMetadata: typeof fallbackRes === "object" ? fallbackRes.contextMetadata : null,
       tokenUsage: {
         inputTokens,
         outputTokens,
         totalTokens,
         cacheCreationInputTokens: 0,
         cacheReadInputTokens: 0,
-        model: "claude-sonnet-4-5 (Newton AI Engine)",
+        model: "claude-sonnet-4-5",
         costUsd,
         costInr,
         executionTimeMs,
@@ -763,20 +842,22 @@ export const runAgentChat = async ({
     };
   }
 
-  // 4. Store AI Assistant Message in MongoDB Database (Only for Chat, skip for AI Automation)
+  // 4. Persist ONE final assistant message per executionId in MongoDB (Chat only)
   let savedAssistantMessage = null;
   if (!isAutomationTask) {
     try {
-      savedAssistantMessage = await ChatMessage.create({
+      const assistantDocPayload = {
         conversationId,
         conversationTitle,
         userId: validUserId || null,
         role: "assistant",
-        content: result.content || "Response processed successfully.",
-        metaAccountId: effectiveAccountId || accountId || null,
+        executionId,
+        content: result.content || "No data returned.",
+        metaAccountId: result.contextMetadata?.metaContext?.accountId || effectiveAccountId || accountId || null,
         claudeSessionId: result.claudeSessionId || null,
         jobProgress: result.jobProgress || null,
         preparationData: result.preparationData || null,
+        contextMetadata: result.contextMetadata || null,
         toolCalls: result.toolCalls || [],
         tokenUsage: result.tokenUsage || {
           inputTokens: 350,
@@ -785,11 +866,19 @@ export const runAgentChat = async ({
           model: "claude-sonnet-4-5",
           costUsd: 0.00405,
           costInr: 0.35,
-          executionTimeMs: 120,
-          actionsPerformed: [{ action: "general_inquiry", description: "Answered user inquiry", tokensBurned: 550, status: "SUCCESS" }],
+          executionTimeMs: Date.now() - chatStartTime,
+          actionsPerformed: [],
         },
-      });
-      console.log(`✅ [ChatMessage Stored] Stored assistant message in MongoDB (Conv: ${conversationId}, Tools: ${result.toolCalls?.length || 0})`);
+      };
+
+      savedAssistantMessage = await ChatMessage.findOneAndUpdate(
+        { conversationId, role: "assistant", executionId },
+        { $setOnInsert: assistantDocPayload },
+        { upsert: true, returnDocument: "after" }
+      );
+      console.log(
+        `✅ [ChatMessage Stored] Stored assistant message in MongoDB (Conv: ${conversationId}, Exec: ${executionId}, Tools: ${result.toolCalls?.length || 0})`
+      );
     } catch (saveErr) {
       console.error("❌ [ChatMessage Store Error]:", saveErr.message);
     }
@@ -797,6 +886,7 @@ export const runAgentChat = async ({
 
   return {
     ...result,
+    executionId,
     messageId: savedAssistantMessage?._id,
     conversationTitle,
   };
@@ -804,7 +894,19 @@ export const runAgentChat = async ({
 
 export class ChatAgentController {
   static async handleChatStream(req, res) {
-    const { conversationId, userMessage, accountId, metaAccountId, googleAccountId, aiContextMetaAccountId, startRow, endRow, rowRange, rangeSelector } = req.body;
+    const {
+      conversationId,
+      userMessage,
+      executionId,
+      accountId,
+      metaAccountId,
+      googleAccountId,
+      aiContextMetaAccountId,
+      startRow,
+      endRow,
+      rowRange,
+      rangeSelector,
+    } = req.body;
     const userId = req.user?._id;
 
     if (!conversationId || !userMessage) {
@@ -817,10 +919,11 @@ export class ChatAgentController {
     AgentStreamHandler.initSSE(res);
 
     try {
-      await runAgentChat({
+      const chatRes = await runAgentChat({
         userId,
         conversationId,
         userMessage,
+        executionId,
         accountId,
         metaAccountId,
         googleAccountId,
@@ -834,11 +937,11 @@ export class ChatAgentController {
         rowRange,
         rangeSelector,
       });
-      AgentStreamHandler.endStream(res);
+      AgentStreamHandler.endStream(res, chatRes?.executionId || executionId || null);
     } catch (error) {
       console.error("[Claude Agent Chat Error]:", error?.message || error);
-      AgentStreamHandler.sendChunk(res, "I couldn't process your request right now. Please try again.");
-      AgentStreamHandler.endStream(res);
+      AgentStreamHandler.sendChunk(res, `Request failed: ${error?.message || "Unexpected error"}`);
+      AgentStreamHandler.endStream(res, executionId || null);
     }
   }
 

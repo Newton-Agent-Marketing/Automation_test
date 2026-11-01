@@ -56,6 +56,17 @@ const chatMessageSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    // Unique execution lifecycle identifier (one user message -> one executionId -> one assistant response)
+    executionId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    // Structured context memory (active spreadsheet/worksheet, Meta account, campaign IDs, extracted video rows)
+    contextMetadata: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
     // Job progress details for Meta Ads and campaign automation execution runs
     jobProgress: {
       type: mongoose.Schema.Types.Mixed,

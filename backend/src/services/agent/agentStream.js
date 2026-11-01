@@ -34,9 +34,23 @@ export class AgentStreamHandler {
     }
   }
 
+  static sendExecutionStart(res, executionId) {
+    if (res && typeof res.write === "function") {
+      res.write(`data: ${JSON.stringify({ type: "execution_start", executionId })}\n\n`);
+    }
+  }
+
+  static sendStreamReset(res, executionId) {
+    if (res && typeof res.write === "function") {
+      res.write(`data: ${JSON.stringify({ type: "stream_reset", executionId })}\n\n`);
+    }
+  }
+
   // Stream finish
-  static endStream(res) {
-    res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
-    res.end();
+  static endStream(res, executionId = null) {
+    if (res && typeof res.write === "function") {
+      res.write(`data: ${JSON.stringify({ type: "done", ...(executionId ? { executionId } : {}) })}\n\n`);
+      res.end();
+    }
   }
 }

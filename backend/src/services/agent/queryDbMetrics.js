@@ -11,9 +11,76 @@ import { GoogleMcpClient } from "../mcp/googleMcpClient.js";
 import { GoogleSyncPipeline } from "../google/googleSyncPipe.js";
 import { googleDriveService } from "../google/googleDriveService.js";
 import CampaignRouter from "../data/campaignRouter.js";
+import SheetInspectorService from "./sheetInspectorService.js";
 
 // 1. LLM Tool Schema (OpenAI / Anthropic standard format)
 export const AGENT_TOOLS_DEFINITIONS = [
+  {
+    type: "function",
+    function: {
+      name: "list_connected_sheets",
+      description: "List all connected Google Spreadsheets / Data Warehouse sheets for the user with their exact sheetIndex (#1, #2, etc.), spreadsheetId, sheetName, sheetUrl, available worksheet tabs, and selected tabs.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "inspect_sheet_schema",
+      description: "Dynamically inspect a connected Google Spreadsheet's actual worksheet tabs, header columns, semantic field mappings, and row data. Supports selecting Sheet #1, Sheet #2, etc., and specific worksheet tabs.",
+      parameters: {
+        type: "object",
+        properties: {
+          sheetIndex: { type: "number", description: "1-based connected spreadsheet index (e.g. 1 for Sheet #1, 2 for Sheet #2)" },
+          sheetUrl: { type: "string", description: "Optional explicit Google Sheet URL or spreadsheetId" },
+          tabName: { type: "string", description: "Optional specific worksheet tab name to read" },
+          requestedFields: {
+            type: "array",
+            items: { type: "string" },
+            description: "Optional list of column/field names requested by the user to match against actual headers",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "extract_sheet_video_links",
+      description: "Read a connected Google Spreadsheet (e.g. Sheet #2), dynamically detect video-related columns (Creative Smart Chips, Video Link, Creative Code, Media Type, etc.), extract complete untruncated Google Drive / video URLs (including multiple URLs per cell), and validate format & accessibility.",
+      parameters: {
+        type: "object",
+        properties: {
+          sheetIndex: { type: "number", description: "1-based connected spreadsheet index (e.g. 2 for 2nd sheet)" },
+          sheetUrl: { type: "string", description: "Optional explicit Google Sheet URL or spreadsheetId" },
+          tabName: { type: "string", description: "Optional specific worksheet tab name" },
+          validateUrls: { type: "boolean", description: "Whether to validate URL accessibility (default true)" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_connected_sheet_cells",
+      description: "Update specific cell(s) or row+column values in a connected Google Spreadsheet and verify the written values via Google Sheets API.",
+      parameters: {
+        type: "object",
+        properties: {
+          sheetIndex: { type: "number", description: "1-based connected spreadsheet index" },
+          sheetUrl: { type: "string", description: "Optional explicit Google Sheet URL" },
+          tabName: { type: "string", description: "Optional worksheet tab name" },
+          rowNumber: { type: "number", description: "1-based spreadsheet row number (row 1 is header, data starts at row 2)" },
+          columnName: { type: "string", description: "Exact or semantic column header name to update" },
+          cellRange: { type: "string", description: "Optional A1 cell range (e.g. C2)" },
+          newValue: { type: "string", description: "New value to write into the cell" },
+        },
+      },
+    },
+  },
   {
     type: "function",
     function: {
@@ -1750,18 +1817,10 @@ export async function executeAgentTool(toolName, args) {
     let requestedTabName = args.tabName || args.worksheetName || args.sheetTitle || null;
     const msg = `${args.userMessage || ""} ${args.userInstruction || ""}`.trim();
     if (!requestedTabName && msg) {
-      // Check for ordinal references (e.g. second worksheet, 2nd sheet, dusri sheet, second tab)
-      const isSecond = /\b(second|2nd|sheet\s*#?\s*2|sheet2|two\s*sheet|2\s*sheet|dusra|dusri|doosra|doosri|second\s*tab|2nd\s*tab)\b/i.test(msg) &&
-        !/\b(first|1st|sheet\s*#?\s*1|sheet1)\b/i.test(msg);
-      const isThird = /\b(third|3rd|sheet\s*#?\s*3|sheet3|three\s*sheet|3\s*sheet|teesra|teesri|third\s*tab|3rd\s*tab)\b/i.test(msg);
-      const isFirst = /\b(first|1st|sheet\s*#?\s*1|sheet1|one\s*sheet|1\s*sheet|pehla|pehli|first\s*tab|1st\s*tab)\b/i.test(msg) && !isSecond && !isThird;
-
-      if (isSecond && availableTabs.length >= 2) {
-        requestedTabName = availableTabs[1].title || availableTabs[1].name;
-      } else if (isThird && availableTabs.length >= 3) {
-        requestedTabName = availableTabs[2].title || availableTabs[2].name;
-      } else if (isFirst && availableTabs.length >= 1) {
-        requestedTabName = availableTabs[0].title || availableTabs[0].name;
+      // Strictly distinguish worksheet TAB ordinals ("2nd tab", "second worksheet") from SPREADSHEET ordinals ("2nd sheet", "Sheet #2")!
+      const tabOrdinal = SheetInspectorService.parseRequestedTabOrdinal(msg);
+      if (tabOrdinal && availableTabs.length >= tabOrdinal) {
+        requestedTabName = availableTabs[tabOrdinal - 1].title || availableTabs[tabOrdinal - 1].name;
       }
 
       if (!requestedTabName) {
@@ -2285,6 +2344,97 @@ export async function executeAgentTool(toolName, args) {
       userId: args.userId,
       accountId: args.accountId,
     });
+  }
+
+  if (toolName === "list_connected_sheets") {
+    const sheets = await SheetInspectorService.listConnectedSpreadsheets(args.userId);
+    return {
+      success: true,
+      totalConnectedSheets: sheets.length,
+      sheets: sheets.map((s) => ({
+        sheetIndex: s.sheetIndex,
+        sheetId: s.sheetId,
+        spreadsheetId: s.spreadsheetId,
+        sheetName: s.sheetName,
+        sheetUrl: s.sheetUrl,
+        provider: s.provider,
+        availableTabs: (s.availableTabs || []).map((t) => t.title || t.name || String(t)),
+        selectedTabIds: s.selectedTabIds || [],
+        selectedTabNames: (s.selectedTabsData || []).map((t) => t.tabName).filter(Boolean),
+        lastSyncedAt: s.lastSyncedAt || null,
+      })),
+    };
+  }
+
+  if (toolName === "inspect_sheet_schema") {
+    const sheetRes = await SheetInspectorService.resolveAndReadSheet({
+      userId: args.userId,
+      sheetIndex: args.sheetIndex || null,
+      sheetUrl: args.sheetUrl || null,
+      tabName: args.tabName || args.worksheetName || null,
+      userMessage: args.userMessage || args.userInstruction || "",
+      sessionSheetContext: args.sessionSheetContext || null,
+    });
+    if (!sheetRes.success) return sheetRes;
+
+    const fieldMatch =
+      Array.isArray(args.requestedFields) && args.requestedFields.length > 0
+        ? SheetInspectorService.matchRequestedFields(sheetRes.headers, args.requestedFields)
+        : null;
+
+    // Strip internal _cellLabels/_cellUrls only if caller doesn't want raw internal keys; keep clean rows
+    const cleanRows = (sheetRes.rows || []).map((r, idx) => {
+      const copy = { _rowNumber: r._originalRowNumber || idx + 2 };
+      for (const h of sheetRes.headers || []) {
+        copy[h] = r[h] ?? "";
+      }
+      return copy;
+    });
+
+    return {
+      ...sheetRes,
+      rows: cleanRows,
+      fieldMatch,
+    };
+  }
+
+  if (toolName === "extract_sheet_video_links") {
+    const sheetRes = await SheetInspectorService.resolveAndReadSheet({
+      userId: args.userId,
+      sheetIndex: args.sheetIndex || null,
+      sheetUrl: args.sheetUrl || null,
+      tabName: args.tabName || args.worksheetName || null,
+      userMessage: args.userMessage || args.userInstruction || "",
+      sessionSheetContext: args.sessionSheetContext || null,
+    });
+    if (!sheetRes.success) return sheetRes;
+    return await SheetInspectorService.extractVideoLinks(sheetRes, {
+      validateUrls: args.validateUrls !== false,
+    });
+  }
+
+  if (toolName === "update_connected_sheet_cells") {
+    return await SheetInspectorService.updateSheetCells({
+      userId: args.userId,
+      sheetIndex: args.sheetIndex || null,
+      sheetUrl: args.sheetUrl || null,
+      tabName: args.tabName || args.worksheetName || null,
+      rowNumber: args.rowNumber || null,
+      columnName: args.columnName || null,
+      cellRange: args.cellRange || null,
+      newValue: args.newValue,
+      updates: args.updates || null,
+      userMessage: args.userMessage || args.userInstruction || "",
+      sessionSheetContext: args.sessionSheetContext || null,
+    });
+  }
+
+  if (toolName === "get_live_adsets") {
+    return await MetaMcpClient.executeLiveTool("get_live_adsets", args);
+  }
+
+  if (toolName === "get_live_ad_creatives") {
+    return await MetaMcpClient.executeLiveTool("get_live_ad_creatives", args);
   }
 
   throw new Error(`Tool ${toolName} not supported`);
