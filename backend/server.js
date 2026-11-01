@@ -15,7 +15,11 @@ dbLoggerService.init();
 
 dbConnect();
 MetaSyncScheduler.startCronJob();
-AiAutomationScheduler.startScheduler();
+if (typeof AiAutomationScheduler.startScheduler === "function") {
+  AiAutomationScheduler.startScheduler();
+} else if (typeof AiAutomationScheduler.start === "function") {
+  AiAutomationScheduler.start();
+}
 SpreadsheetSyncService.startPolling(60);
 
 const server = http.createServer(app);

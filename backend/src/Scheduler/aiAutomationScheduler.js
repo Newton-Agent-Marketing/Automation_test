@@ -228,6 +228,10 @@ export class AiAutomationScheduler {
     }, 3000);
   }
 
+  static startScheduler() {
+    return this.start();
+  }
+
   static stop() {
     if (this.cronTask) {
       this.cronTask.stop();
