@@ -583,7 +583,7 @@ export class CampaignPreparationService {
     // =========================================================================
     // CASE C: USER PROVIDING ANSWERS TO MISSING FIELDS
     // =========================================================================
-    if (session && session.status === "NEEDS_USER_INPUT") {
+    if (session && (session.status === "NEEDS_USER_INPUT" || session.status === "FAILED" || session.status === "READY_FOR_REVIEW")) {
       const parsedAnswers = MissingFieldCollector.parseAnswersFromMessage(msg, session.missingFields || []);
       const hasAnswers = Object.keys(parsedAnswers).length > 0;
 
@@ -860,7 +860,12 @@ export class CampaignPreparationService {
 
     const sourceData = filteredSource;
     const adNamePattern = DynamicSheetFilter.parseAdNamePattern(msg) || session?.adNamePattern || null;
-    const initialChatAnswers = MissingFieldCollector.parseAnswersFromMessage(msg, []);
+    const initialChatAnswers = MissingFieldCollector.parseAnswersFromMessage(msg, session?.missingFields || []);
+    const combinedChatAnswers = {
+      ...(session?.userAnswers || {}),
+      ...(session?.chatInjectedValues || {}),
+      ...initialChatAnswers,
+    };
 
     // 3. Validate filtered sheet data across all levels
     emit("Validating fields at Campaign, Ad Set, Ad, and Media levels...");
@@ -870,7 +875,7 @@ export class CampaignPreparationService {
       metaAccountId: effectiveMetaAccountId,
       accountDoc: effectiveAccountDoc,
       sourceData,
-      userAnswers: initialChatAnswers,
+      userAnswers: combinedChatAnswers,
       contextNodeData,
       adNamePattern,
     });
@@ -892,8 +897,8 @@ export class CampaignPreparationService {
           adNamePattern: adNamePattern || null,
           existingCampaignId,
           existingAdSetId,
-          userAnswers: initialChatAnswers,
-          chatInjectedValues: initialChatAnswers,
+          userAnswers: combinedChatAnswers,
+          chatInjectedValues: combinedChatAnswers,
           mergedPayload: null,
           ...(existingCampaignId ? { "creationJob.metaCampaignId": existingCampaignId } : {}),
           ...(existingAdSetId ? { "creationJob.metaAdSetId": existingAdSetId } : {}),

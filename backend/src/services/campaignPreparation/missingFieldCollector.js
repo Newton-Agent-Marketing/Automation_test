@@ -72,6 +72,7 @@ export class MissingFieldCollector {
       msg.match(/(?:display\s*link|display_link)[\s:=]+([^\s,;]+)/i);
     if (displayLinkMatch) {
       let dl = displayLinkMatch[1].trim().replace(/[.,;'"<>]+$/, "");
+      dl = dl.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
       answers.displayLink = dl;
       answers.display_link = dl;
     }
@@ -114,6 +115,20 @@ export class MissingFieldCollector {
       answers.landingPageUrl = u;
       answers.landing_page_url = u;
       answers.website_url = u;
+    }
+
+    // 7b. Creative Media URL / Drive URL
+    const driveMatch =
+      msg.match(/(?:creative\s*(?:url|link)|drive\s*(?:url|link)|video\s*(?:url|link)|media\s*(?:url|link))\s*(?:is|:|=|-|\s)\s*(https?:\/\/[^\s"',;]+)/i) ||
+      msg.match(/https?:\/\/(?:drive|docs)\.google\.com\/[^\s"',;]+/i);
+    if (driveMatch) {
+      const dUrl = (driveMatch[1] || driveMatch[0]).trim();
+      answers.creativeUrl = dUrl;
+      answers.creative_url = dUrl;
+      answers.driveUrl = dUrl;
+      answers.drive_url = dUrl;
+      answers.videoUrl = dUrl;
+      answers.video_url = dUrl;
     }
 
     // 8. Campaign Type / Intent

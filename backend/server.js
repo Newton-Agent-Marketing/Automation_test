@@ -29,6 +29,14 @@ initSocket(server);
 server.keepAliveTimeout = 65000; // 65 seconds (must be higher than Nginx keepalive_timeout 60s)
 server.headersTimeout = 66000;   // 66 seconds (must be higher than keepAliveTimeout)
 
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("[CRITICAL: Unhandled Promise Rejection Caught]:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[CRITICAL: Uncaught Exception Caught]:", err);
+});
+
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });

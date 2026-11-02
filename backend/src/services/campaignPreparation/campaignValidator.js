@@ -305,7 +305,7 @@ export class CampaignValidator {
       // Website Campaign Specific Checks
       pixelId = userAnswers.pixelId || userAnswers.pixel_id || userAnswers.dataset_id || this.getFieldValue(firstRowValues, "pixelId");
       const requiresPixel = objective === "OUTCOME_SALES" || objective === "OUTCOME_LEADS";
-      if (requiresPixel && (!pixelId || !/^\d{10,20}$/.test(String(pixelId).trim()))) {
+      if (requiresPixel && (!pixelId || !/^\d{5,25}$/.test(String(pixelId).trim()))) {
         adSetIssues.push({
           field: "pixel_id",
           message: "Meta Pixel or Dataset ID is required for conversion optimization.",

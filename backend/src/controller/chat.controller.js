@@ -591,11 +591,12 @@ const _executeSingleChatRun = async ({
   const activePrepSession = await CampaignPreparationService.getActiveSession(conversationId, validUserId || userId).catch(() => null);
   const isAnsweringMissingFields = Boolean(
     activePrepSession &&
-    activePrepSession.status === "NEEDS_USER_INPUT" &&
+    (activePrepSession.status === "NEEDS_USER_INPUT" || activePrepSession.status === "FAILED") &&
     !mentionsGoogleAds &&
     !isPureFetchOrQueryCmd &&
     !isAnalyticalTask &&
-    !explicitMetaPromptId
+    !explicitMetaPromptId &&
+    MissingFieldCollector.hasFieldAnswers(userMessage, activePrepSession?.missingFields || [])
   );
 
   const isMetaPrepWorkflow =

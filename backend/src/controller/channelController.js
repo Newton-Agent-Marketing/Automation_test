@@ -1286,8 +1286,10 @@ export class ChannelController {
         const cleanMetaId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
         const isMeta = await MetaAccount.findOne({ userId, accountId: cleanMetaId, isActive: true });
         if (isMeta) {
-          const syncPromise = MetaSyncPipeline.syncAccount(cleanMetaId);
-          const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 8000));
+          const syncPromise = MetaSyncPipeline.syncAccount(cleanMetaId).catch((err) => {
+            console.warn(`[Sync Error for ${cleanMetaId}]:`, err.message);
+          });
+          const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 4000));
           const raced = await Promise.race([syncPromise, timeoutPromise]);
           return res.status(200).json({
             success: true,
@@ -1343,8 +1345,8 @@ export class ChannelController {
         };
 
         const syncPromise = runBackgroundSync();
-        const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 8000));
-        const raced = await Promise.race([syncPromise.then(() => "COMPLETED"), timeoutPromise]);
+        const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 4000));
+        const raced = await Promise.race([syncPromise.then(() => "COMPLETED").catch(() => "COMPLETED"), timeoutPromise]);
 
         return res.status(200).json({
           success: true,
