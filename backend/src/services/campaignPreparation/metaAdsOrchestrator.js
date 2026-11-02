@@ -741,18 +741,18 @@ export class MetaAdsOrchestrator {
           const adTrackingType = (adPixelId && adAppId) ? "BOTH" : (isAppCamp ? "APP" : (adPixelId ? "WEBSITE" : (adAppId ? "APP" : "WEBSITE")));
           const adStoreUrl = isAppCamp ? (objectStoreUrl || session.objectStoreUrl || session.userAnswers?.objectStoreUrl || session.userAnswers?.object_store_url || session.chatInjectedValues?.objectStoreUrl || session.chatInjectedValues?.object_store_url || adConfig.destination) : null;
           const adPageId = cleanPageId(
-            adConfig.pageId ||
-            session.preview?.adDetails?.[i]?.pageId ||
-            session.preview?.adDetails?.[0]?.pageId ||
-            session.pageId ||
             session.userAnswers?.pageId ||
             session.userAnswers?.page_id ||
             session.chatInjectedValues?.pageId ||
             session.chatInjectedValues?.page_id ||
+            session.pageId ||
+            adConfig.pageId ||
+            session.preview?.adDetails?.[i]?.pageId ||
+            session.preview?.adDetails?.[0]?.pageId ||
             session.contextNodeData?.pageId
           );
-          const adInstagramId = adConfig.instagramId || adConfig.instagram_user_id || adConfig.instagramUserId || session.userAnswers?.instagramId || session.userAnswers?.instagram_id || session.chatInjectedValues?.instagramId || null;
-          let adUrlTags = adConfig.urlTags || adConfig.url_tags || adConfig.urlParameter || null;
+          const adInstagramId = session.userAnswers?.instagramId || session.userAnswers?.instagram_id || session.userAnswers?.instagram_account_id || session.chatInjectedValues?.instagramId || adConfig.instagramId || adConfig.instagram_user_id || adConfig.instagramUserId || null;
+          let adUrlTags = session.userAnswers?.urlTags || session.userAnswers?.url_tags || session.chatInjectedValues?.urlTags || session.chatInjectedValues?.url_tags || adConfig.urlTags || adConfig.url_tags || adConfig.urlParameter || null;
           if (!adUrlTags && adConfig.tracking) {
             const trackingStr = String(adConfig.tracking).trim();
             if (trackingStr.startsWith("UTM:")) {
@@ -762,19 +762,19 @@ export class MetaAdsOrchestrator {
             }
           }
 
-          const adDisplayLink = adConfig.displayLink || adConfig.display_link || session.preview?.adDetails?.[i]?.displayLink || session.preview?.adDetails?.[0]?.displayLink || session.userAnswers?.displayLink || session.userAnswers?.display_link || session.chatInjectedValues?.displayLink || session.chatInjectedValues?.display_link || null;
+          const adDisplayLink = session.userAnswers?.displayLink || session.userAnswers?.display_link || session.chatInjectedValues?.displayLink || session.chatInjectedValues?.display_link || session.displayLink || adConfig.displayLink || adConfig.display_link || session.preview?.adDetails?.[i]?.displayLink || session.preview?.adDetails?.[0]?.displayLink || null;
 
           const candidateDest =
-            adConfig.destination ||
-            adConfig.landingPageUrl ||
-            adConfig.linkUrl ||
-            session.preview?.adDetails?.[i]?.destination ||
             session.userAnswers?.landingPageUrl ||
             session.userAnswers?.landing_page_url ||
             session.userAnswers?.website_url ||
             session.chatInjectedValues?.landingPageUrl ||
             session.chatInjectedValues?.landing_page_url ||
             session.chatInjectedValues?.website_url ||
+            adConfig.destination ||
+            adConfig.landingPageUrl ||
+            adConfig.linkUrl ||
+            session.preview?.adDetails?.[i]?.destination ||
             session.contextNodeData?.productUrl ||
             session.contextNodeData?.products?.[0]?.url ||
             null;
@@ -783,19 +783,19 @@ export class MetaAdsOrchestrator {
             : candidateDest;
 
           const adHeadline =
-            adConfig.headline ||
-            session.preview?.adDetails?.[i]?.headline ||
             session.userAnswers?.headline ||
             session.chatInjectedValues?.headline ||
+            adConfig.headline ||
+            session.preview?.adDetails?.[i]?.headline ||
             (session.contextNodeData?.productName ? `${session.contextNodeData.productName} - Special Offer` : null);
 
           const adPrimaryText =
-            adConfig.primaryText ||
-            session.preview?.adDetails?.[i]?.primaryText ||
             session.userAnswers?.primaryText ||
             session.userAnswers?.primary_text ||
             session.chatInjectedValues?.primaryText ||
             session.chatInjectedValues?.primary_text ||
+            adConfig.primaryText ||
+            session.preview?.adDetails?.[i]?.primaryText ||
             session.contextNodeData?.briefName ||
             session.contextNodeData?.productName ||
             null;
@@ -1107,6 +1107,101 @@ export class MetaAdsOrchestrator {
     }
 
     return md;
+  }
+
+  /**
+   * Detect if an API error from Meta is due to a missing required parameter
+   */
+  static detectMissingFieldFromApiError(err) {
+    if (!err) return null;
+    const msg = String(err.message || "").toLowerCase();
+    const metaErr = err.response?.data?.error || {};
+    const metaMsg = String(metaErr.message || "").toLowerCase();
+    const full = `${msg} ${metaMsg}`;
+
+    if (full.includes("pixel") || full.includes("dataset")) {
+      return {
+        id: "pixel_id",
+        level: "adset",
+        field: "pixel_id",
+        label: "Pixel ID",
+        description: "Meta Ads API requires a valid Pixel ID or Dataset ID for conversion tracking.",
+        affectedRows: [],
+        currentValue: null,
+        options: [],
+        resolved: false,
+      };
+    }
+    if (full.includes("page_id") || full.includes("page id") || (full.includes("page") && full.includes("required"))) {
+      return {
+        id: "page_id",
+        level: "ad",
+        field: "page_id",
+        label: "Facebook Page ID",
+        description: "Meta Ads API requires an authorized Facebook Page ID to represent the ads.",
+        affectedRows: [],
+        currentValue: null,
+        options: [],
+        resolved: false,
+      };
+    }
+    if (full.includes("application_id") || full.includes("app_id") || full.includes("meta app id")) {
+      return {
+        id: "app_id",
+        level: "adset",
+        field: "app_id",
+        label: "Meta Application ID",
+        description: "Meta Ads API requires an Application ID for app promotion campaigns.",
+        affectedRows: [],
+        currentValue: null,
+        options: [],
+        resolved: false,
+      };
+    }
+    if (full.includes("object_store_url") || full.includes("store url") || full.includes("app store url")) {
+      return {
+        id: "object_store_url",
+        level: "adset",
+        field: "object_store_url",
+        label: "App Store Destination URL",
+        description: "Meta Ads API requires a valid Google Play Store or Apple App Store URL.",
+        affectedRows: [],
+        currentValue: null,
+        options: [],
+        resolved: false,
+      };
+    }
+    if (full.includes("display_link") || full.includes("display link")) {
+      return {
+        id: "display_link",
+        level: "ad",
+        field: "display_link",
+        label: "Display Link",
+        description: "Meta Ads API requires a valid display link (vanity URL) for this ad format.",
+        affectedRows: [],
+        currentValue: null,
+        options: [],
+        resolved: false,
+      };
+    }
+
+    const paramMatch = full.match(/missing required parameter:\s*([a-z0-9_]+)/i);
+    if (paramMatch && paramMatch[1]) {
+      const p = paramMatch[1];
+      return {
+        id: p,
+        level: "ad",
+        field: p,
+        label: p.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+        description: `Meta Marketing API requires parameter "${p}".`,
+        affectedRows: [],
+        currentValue: null,
+        options: [],
+        resolved: false,
+      };
+    }
+
+    return null;
   }
 }
 

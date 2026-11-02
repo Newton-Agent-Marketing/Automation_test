@@ -83,6 +83,14 @@ const campaignPreparationSessionSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    pageId: {
+      type: String,
+      default: null,
+    },
+    displayLink: {
+      type: String,
+      default: null,
+    },
     source: {
       type: {
         type: String,

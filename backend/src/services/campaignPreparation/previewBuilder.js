@@ -25,6 +25,14 @@ export class PreviewBuilder {
 
     const firstRowValues = sourceData.rows?.[0]?.values || {};
 
+    const effectiveBudget =
+      userAnswers.campaignBudget ||
+      userAnswers.adSetBudget ||
+      userAnswers.dailyBudget ||
+      userAnswers.daily_budget ||
+      userAnswers.budget ||
+      budget;
+
     // Determine field sources
     const getSource = (key, userVal, sheetVal, defaultVal) => {
       if (userVal !== undefined && userVal !== null && String(userVal).trim() !== "") return "User";
@@ -56,8 +64,8 @@ export class PreviewBuilder {
       },
       {
         field: "Budget Configuration",
-        value: isCBO ? `Advantage Campaign Budget (CBO): ₹${Number(budget).toLocaleString("en-IN")} / day` : "Ad Set Level Budgeting (ABO)",
-        source: getSource("budget", userAnswers.campaignBudget, firstRowValues.campaign_budget, "Default"),
+        value: isCBO ? `Advantage Campaign Budget (CBO): ₹${Number(effectiveBudget).toLocaleString("en-IN")} / day` : "Ad Set Level Budgeting (ABO)",
+        source: getSource("budget", userAnswers.campaignBudget || userAnswers.budget || userAnswers.daily_budget, firstRowValues.campaign_budget, "Default"),
       },
       {
         field: "Special Ad Categories",
@@ -109,8 +117,8 @@ export class PreviewBuilder {
       },
       {
         field: "Budget Configuration",
-        value: !isCBO ? `Ad Set Daily Budget: ₹${Number(budget).toLocaleString("en-IN")} / day` : "Inherited from Campaign (CBO)",
-        source: !isCBO ? getSource("budget", userAnswers.adSetBudget, firstRowValues.adset_daily_budget, "Default") : "Campaign CBO",
+        value: !isCBO ? `Ad Set Daily Budget: ₹${Number(effectiveBudget).toLocaleString("en-IN")} / day` : "Inherited from Campaign (CBO)",
+        source: !isCBO ? getSource("budget", userAnswers.adSetBudget || userAnswers.budget || userAnswers.daily_budget || userAnswers.dailyBudget, firstRowValues.adset_daily_budget, "Default") : "Campaign CBO",
       },
       {
         field: "Performance Goal",
@@ -172,7 +180,7 @@ export class PreviewBuilder {
         description: ad.description || "",
         destination: userAnswers.landingPageUrl || userAnswers.landing_page_url || userAnswers.website_url || userAnswers.objectStoreUrl || userAnswers.object_store_url || ad.destination || "",
         displayLink: userAnswers.displayLink || userAnswers.display_link || ad.displayLink || "",
-        urlTags: ad.urlTags || null,
+        urlTags: userAnswers.urlTags || userAnswers.url_tags || ad.urlTags || null,
         cta: ad.cta || (campaignType === "APP_PROMOTION" ? "DOWNLOAD" : "BOOK_NOW"),
         pageId: cleanPageId(userAnswers.pageId || userAnswers.page_id || ad.pageId || ""),
         instagramId: userAnswers.instagramId || userAnswers.instagram_id || userAnswers.instagram_account_id || ad.instagramId || "",

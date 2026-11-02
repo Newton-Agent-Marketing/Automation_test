@@ -28,6 +28,12 @@ export class CampaignValidator {
       if (aNorm.length < 3) continue;
       for (const k of keys) {
         const kNorm = FieldMapper.normalizeHeader(k);
+        // Prevent ID fields matching URL/link columns (e.g. landing_page_url should never match pageId or pixelId)
+        if (fieldKey.toLowerCase().includes("id") && !aNorm.includes("url") && !aNorm.includes("link")) {
+          if (kNorm.includes("url") || kNorm.includes("link") || kNorm.includes("uri")) {
+            continue;
+          }
+        }
         if (kNorm.includes(aNorm) && FieldMapper.isValueValid(rowValues[k])) {
           return rowValues[k];
         }
@@ -100,7 +106,7 @@ export class CampaignValidator {
     const campaignType = isAppPromotion ? "APP_PROMOTION" : "WEBSITE";
 
     // 2. CAMPAIGN LEVEL VALIDATION
-    const effectiveCampName = (campaignName || userAnswers.campaignName || this.getFieldValue(firstRowValues, "campaignName") || "").trim();
+    const effectiveCampName = (userAnswers.campaignName || userAnswers.campaign_name || campaignName || this.getFieldValue(firstRowValues, "campaignName") || "").trim();
     if (!effectiveCampName || effectiveCampName.length < 2) {
       campaignIssues.push({
         field: "campaign_name",
@@ -170,7 +176,7 @@ export class CampaignValidator {
     const specialAdCategory = userAnswers.specialAdCategory || firstRowValues.special_ad_category || "NONE";
 
     // 3. AD SET LEVEL VALIDATION
-    const effectiveAdSetName = (adSetName || userAnswers.adSetName || userAnswers.adset_name || this.getFieldValue(firstRowValues, "adSetName") || "").trim();
+    const effectiveAdSetName = (userAnswers.adSetName || userAnswers.adset_name || adSetName || this.getFieldValue(firstRowValues, "adSetName") || "").trim();
     if (!effectiveAdSetName || effectiveAdSetName.length < 2) {
       adSetIssues.push({
         field: "adset_name",
@@ -306,16 +312,19 @@ export class CampaignValidator {
       pixelId = userAnswers.pixelId || userAnswers.pixel_id || userAnswers.dataset_id || this.getFieldValue(firstRowValues, "pixelId");
       const requiresPixel = objective === "OUTCOME_SALES" || objective === "OUTCOME_LEADS";
       if (requiresPixel && (!pixelId || !/^\d{5,25}$/.test(String(pixelId).trim()))) {
+        const isInvalid = pixelId && !/^\d{5,25}$/.test(String(pixelId).trim());
         adSetIssues.push({
           field: "pixel_id",
-          message: "Meta Pixel or Dataset ID is required for conversion optimization.",
+          message: isInvalid
+            ? `Provided Pixel ID "${pixelId}" is invalid. Meta Pixel IDs must be numeric (5-25 digits).`
+            : "Meta Pixel or Dataset ID is required for conversion optimization.",
           blocking: true,
         });
         missingFieldsMap.set("adset.pixel_id", {
           id: "pixel_id",
           level: "adset",
           field: "pixel_id",
-          label: "Meta Pixel / Dataset ID",
+          label: "Pixel ID",
           description: "Enter the Meta Pixel ID or Dataset ID for conversion tracking.",
           affectedRows: [],
           currentValue: pixelId || null,
@@ -379,8 +388,15 @@ export class CampaignValidator {
     const missingDisplayLinkRows = [];
 
     const hasDisplayLinkHeader =
-      headers.some((h) => /display\s*link|displaylink/i.test(String(h).trim())) ||
-      Object.keys(firstRowValues).some((k) => /display\s*link|displaylink/i.test(String(k).trim()));
+      headers.some((h) => {
+        const norm = FieldMapper.normalizeHeader(h);
+        return (FieldMapper.ALIASES.displayLink || ["display_link"]).some((a) => norm.includes(FieldMapper.normalizeHeader(a)));
+      }) ||
+      Object.keys(firstRowValues).some((k) => {
+        const norm = FieldMapper.normalizeHeader(k);
+        return (FieldMapper.ALIASES.displayLink || ["display_link"]).some((a) => norm.includes(FieldMapper.normalizeHeader(a)));
+      }) ||
+      Boolean(userAnswers?.displayLink || userAnswers?.display_link);
 
     console.log("\n📋 [CAMPAIGN PREFLIGHT VALIDATOR ➔ AI CONTEXT NODE FUSION]");
     console.log(`   Ad Account Target  : ${targetAccId || "(None)"} (Source: ${metaAccountId ? "Parameter" : (contextNodeData?.adAccountId ? "AI Context Ad Channel Node" : "Default")})`);
@@ -434,22 +450,31 @@ export class CampaignValidator {
         }
       }
 
-      const rawPageId =
+      let rawPageId =
         userAnswers.pageId ||
-        userAnswers.page_id ||
-        this.getFieldValue(vals, "pageId") ||
-        contextNodeData?.pageId ||
-        accountDoc?.pageId;
+        userAnswers.page_id;
+
+      if (!rawPageId) {
+        const sheetPageVal = this.getFieldValue(vals, "pageId");
+        if (sheetPageVal && /^\d{5,25}$/.test(cleanPageId(sheetPageVal))) {
+          rawPageId = sheetPageVal;
+        } else {
+          rawPageId = contextNodeData?.pageId || accountDoc?.pageId || sheetPageVal;
+        }
+      }
 
       const pageId = cleanPageId(rawPageId);
 
       if (!pageId || !/^\d{5,25}$/.test(pageId)) {
         missingPageRows.push(rowNo);
+        const isInvalid = rawPageId && !/^\d{5,25}$/.test(String(rawPageId).trim());
         adIssues.push({
           rowNumber: rowNo,
           adName,
           field: "page_id",
-          message: "Facebook Page ID is missing or invalid.",
+          message: isInvalid
+            ? `Provided Facebook Page ID "${rawPageId}" is invalid. Meta Page IDs must be numeric (5-25 digits).`
+            : "Facebook Page ID is missing or invalid.",
           blocking: true,
         });
       }

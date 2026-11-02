@@ -6,6 +6,7 @@ import ConnectedChannel from "../../models/connectedChannelModel.js";
 import { executeAgentTool, getUserAiContext, AGENT_TOOLS_DEFINITIONS } from "./queryDbMetrics.js";
 import { AgentStreamHandler } from "./agentStream.js";
 import CampaignPreparationService from "../campaignPreparation/campaignPreparationService.js";
+import MissingFieldCollector from "../campaignPreparation/missingFieldCollector.js";
 import SheetInspectorService from "./sheetInspectorService.js";
 import ConversationMemoryService from "./conversationMemoryService.js";
 import NodeTaskAgentService from "./nodeTaskAgentService.js";
@@ -192,6 +193,10 @@ export class AiAgentOrchestrator {
     const activeGoogleAccountId =
       googleAccounts[0]?.selectedCustomerId || googleAccounts[0]?.accountId || null;
 
+    const pendingPrepSession = conversationId
+      ? await CampaignPreparationService.getActiveSession(conversationId, userId).catch(() => null)
+      : null;
+
     return {
       userId,
       conversationId,
@@ -204,6 +209,7 @@ export class AiAgentOrchestrator {
       activeMetaAccountId: resolvedMetaAccountId,
       activeGoogleAccountId,
       sessionMemory: memory,
+      pendingPrepSession,
     };
   }
 
@@ -227,7 +233,15 @@ export class AiAgentOrchestrator {
       /\b(create|launch|publish|deploy|set\s*up)\b.*\b(ad|ads|campaign|ad\s*set|adset)\b/i.test(lower) &&
       !/\b(do\s+not|don't|never)\s+(?:create|edit|publish|launch)\b/i.test(lower);
 
-    if (isCampaignCreation && !context.isAutomation) {
+    const isAnsweringPendingPrep =
+      Boolean(
+        context.pendingPrepSession &&
+        (context.pendingPrepSession.status === "NEEDS_USER_INPUT" || context.pendingPrepSession.status === "FAILED") &&
+        !isReadOrInspectOnly &&
+        MissingFieldCollector.hasFieldAnswers(text, context.pendingPrepSession.missingFields || [])
+      );
+
+    if ((isCampaignCreation || isAnsweringPendingPrep) && !context.isAutomation) {
       return {
         intent: "CAMPAIGN_CREATION_FLOW",
         steps: [{ type: "CAMPAIGN_PREPARATION" }],

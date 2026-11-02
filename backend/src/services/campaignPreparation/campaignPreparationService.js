@@ -604,6 +604,12 @@ export class CampaignPreparationService {
         if (combinedAnswers.pixel_id || combinedAnswers.pixelId) {
           session.pixelId = combinedAnswers.pixel_id || combinedAnswers.pixelId;
         }
+        if (combinedAnswers.page_id || combinedAnswers.pageId) {
+          session.pageId = cleanPageId(combinedAnswers.page_id || combinedAnswers.pageId);
+        }
+        if (combinedAnswers.display_link || combinedAnswers.displayLink) {
+          session.displayLink = combinedAnswers.display_link || combinedAnswers.displayLink;
+        }
         if (combinedAnswers.app_id || combinedAnswers.appId) {
           session.appId = combinedAnswers.app_id || combinedAnswers.appId;
         }
@@ -615,6 +621,24 @@ export class CampaignPreparationService {
         }
         if (combinedAnswers.campaignType) {
           session.campaignType = combinedAnswers.campaignType;
+        }
+        if (combinedAnswers.instagram_id || combinedAnswers.instagramId || combinedAnswers.instagram_account_id) {
+          session.instagramId = combinedAnswers.instagram_id || combinedAnswers.instagramId || combinedAnswers.instagram_account_id;
+        }
+        if (combinedAnswers.conversion_event || combinedAnswers.conversionEvent || combinedAnswers.customEventType) {
+          session.customEventType = combinedAnswers.conversion_event || combinedAnswers.conversionEvent || combinedAnswers.customEventType;
+        }
+        if (combinedAnswers.url_tags || combinedAnswers.urlTags) {
+          session.urlTags = combinedAnswers.url_tags || combinedAnswers.urlTags;
+        }
+        if (combinedAnswers.campaign_name || combinedAnswers.campaignName) {
+          session.campaignName = combinedAnswers.campaign_name || combinedAnswers.campaignName;
+        }
+        if (combinedAnswers.adset_name || combinedAnswers.adSetName) {
+          session.adSetName = combinedAnswers.adset_name || combinedAnswers.adSetName;
+        }
+        if (combinedAnswers.budget || combinedAnswers.daily_budget || combinedAnswers.dailyBudget) {
+          session.budget = combinedAnswers.budget || combinedAnswers.daily_budget || combinedAnswers.dailyBudget;
         }
         await session.save();
 
@@ -710,9 +734,9 @@ export class CampaignPreparationService {
             startedAt: new Date(),
             completedAt: null,
             campaignName: session.campaignName,
-            metaCampaignId: null,
-            metaAdSetId: null,
-            adResults: [],
+            metaCampaignId: session.creationJob?.metaCampaignId || session.existingCampaignId || null,
+            metaAdSetId: session.creationJob?.metaAdSetId || session.existingAdSetId || null,
+            adResults: session.creationJob?.adResults || [],
             totalAds: preview.adDetails?.length || 0,
           };
           session.auditHistory.push({
@@ -724,15 +748,33 @@ export class CampaignPreparationService {
           await session.save();
 
           emit("Executing Meta Ads creation on selected Meta Ad Account...");
-          const creationResult = await MetaAdsOrchestrator.executeApprovalCreation({
-            session,
-            userId,
-            userEmail,
-            onProgress,
-          });
+          let creationResult;
+          try {
+            creationResult = await MetaAdsOrchestrator.executeApprovalCreation({
+              session,
+              userId,
+              userEmail,
+              onProgress,
+            });
+          } catch (execErr) {
+            const apiMissingField = MetaAdsOrchestrator.detectMissingFieldFromApiError(execErr);
+            if (apiMissingField) {
+              session.status = "NEEDS_USER_INPUT";
+              session.missingFields = [apiMissingField];
+              await session.save();
+              return {
+                content: `### ❓ Additional Information Required by Meta Ads API\n\nDuring ad creation, Meta Marketing API returned a missing field requirement:\n\n- **${apiMissingField.label}**: ${apiMissingField.description}\n\nPlease provide this value here in the chat so I can resume ad creation.`,
+                preparationSession: typeof session?.toObject === "function" ? session.toObject() : session,
+                toolCalls: [],
+              };
+            }
+            throw execErr;
+          }
 
           let replyMd = `### ✅ Missing Fields Received & Ad Creation Resumed\n\n`;
-          replyMd += `> 📥 **Injected Values**: ` + Object.entries(parsedAnswers).map(([k, v]) => `\`${k}\`: \`${v}\``).join(", ") + `\n\n`;
+          const injectedEntries = Object.entries(parsedAnswers).filter(([k]) => !k.includes("Id") && !k.includes("Link") && !k.includes("Url") && !k.includes("Budget") && !k.includes("Text"));
+          const displayEntries = injectedEntries.length > 0 ? injectedEntries : Object.entries(parsedAnswers);
+          replyMd += `> 📥 **Injected Values**: ` + displayEntries.map(([k, v]) => `\`${k}\`: \`${v}\``).join(", ") + `\n\n`;
           replyMd += MetaAdsOrchestrator.formatCreationResultMarkdown(
             creationResult,
             session.campaignName,
@@ -907,6 +949,8 @@ export class CampaignPreparationService {
           appId: valResult.appId || null,
           objectStoreUrl: valResult.objectStoreUrl || null,
           pixelId: valResult.pixelId || null,
+          pageId: valResult.adLevelRows?.[0]?.pageId || combinedChatAnswers.pageId || combinedChatAnswers.page_id || null,
+          displayLink: valResult.adLevelRows?.[0]?.displayLink || combinedChatAnswers.displayLink || combinedChatAnswers.display_link || null,
           filterCriteria: filterCriteria || null,
           source: {
             type: sourceData.sourceType,

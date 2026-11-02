@@ -17,6 +17,7 @@ import SpreadsheetSyncService from "../services/data/spreadsheetSyncService.js";
 import { NotificationService } from "../services/notificationService.js";
 import CampaignPreparationSession from "../models/campaignPreparationSession.js";
 import CampaignPreparationService from "../services/campaignPreparation/campaignPreparationService.js";
+import MissingFieldCollector from "../services/campaignPreparation/missingFieldCollector.js";
 
 // In-flight execution lifecycle registries (prevents unintended duplicate concurrent runs)
 const activeExecutionsById = new Map();
