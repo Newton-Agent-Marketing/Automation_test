@@ -420,6 +420,16 @@ Capabilities & Exact Execution Guidelines:
        - **Level 5 — Complete Hierarchy Verification**:
          Call \`verify_meta_campaign\` (\`campaignId\`, \`adSetId\`, \`adId\`, \`accountId\`) to confirm all resources are properly linked and active in Meta Ads and MongoDB.
        - **Output**: Return a comprehensive, clean, verified markdown summary detailing all created entities (Campaign ID, Ad Set ID, Ad ID, Headline, Primary Text, Destination URL, CTA, Budget, Target Account).
+     * **Step 2b: META LEAD GENERATION CAMPAIGNS (OUTCOME_LEADS & Instant Forms)**:
+        - When user asks to create a Meta Lead Generation campaign, Instant Form, or Facebook/Instagram Lead Ad:
+          * Call \`create_meta_lead_campaign\` with objective \`OUTCOME_LEADS\` and status \`PAUSED\`.
+          * Call \`create_meta_lead_adset\` with \`promoted_object: { page_id: pageId }\` and \`optimization_goal: "LEAD_GENERATION"\`.
+          * Call \`create_meta_lead_form\` on the connected Facebook Page with requested questions (Full Name, Email, Phone).
+          * Upload media via \`upload_meta_ad_image\` or \`upload_meta_ad_video\`.
+          * Call \`create_meta_lead_ad_creative\` linking the form via \`call_to_action: { type: "SIGN_UP", value: { lead_gen_form_id } }\`.
+          * Call \`create_meta_lead_ad\` in \`PAUSED\` status.
+          * Call \`verify_meta_campaign\` to confirm all created entities.
+        - When user asks to retrieve or view leads ("Show my Meta leads", "Fetch leads from my campaign"), call \`get_meta_leads\` or \`get_meta_lead_details\`.
      * **Step 3: GOOGLE ADS Multi-Level Creation Hierarchy**:
        - Level 1: Call \`create_google_campaign_budget\` (dailyBudget, accountId) ➔ \`budgetResourceName\`
        - Level 2: Call \`create_google_campaign\` (name, channelType: "SEARCH", budgetResourceName, accountId) ➔ \`campaignResourceName\`, \`campaignId\`

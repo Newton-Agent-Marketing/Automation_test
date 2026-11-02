@@ -1116,6 +1116,363 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
     }
   );
 
+  // =========================================================================
+  // META LEAD GENERATION MCP TOOLS
+  // =========================================================================
+
+  const createMetaLeadCampaign = tool(
+    "create_meta_lead_campaign",
+    "Create a Meta Lead Generation campaign with OUTCOME_LEADS objective in PAUSED status.",
+    {
+      name: z.string().describe("Descriptive name for the lead generation campaign"),
+      dailyBudget: z.number().optional().default(500).describe("Daily budget in INR or account currency"),
+      specialAdCategories: z.array(z.string()).optional().default([]).describe("Special ad categories"),
+      accountId: z.string().optional().describe("Meta Ad Account ID"),
+    },
+    async (args) => {
+      try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const result = await executeAgentTool("create_meta_lead_campaign", {
+          ...args,
+          accountId: effectiveMetaAccountId,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const getMetaCampaignDetails = tool(
+    "get_meta_campaign_details",
+    "Get details, status, and budget for a specific Meta campaign.",
+    {
+      campaignId: z.string().describe("Meta Campaign ID"),
+      accountId: z.string().optional().describe("Meta Ad Account ID"),
+    },
+    async (args) => {
+      try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const result = await executeAgentTool("get_meta_campaign_details", {
+          ...args,
+          accountId: effectiveMetaAccountId,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const createMetaLeadAdSet = tool(
+    "create_meta_lead_adset",
+    "Create a Lead Generation Ad Set with INSTANT_FORMS conversion location and promoted_object page_id.",
+    {
+      campaignId: z.string().describe("Parent Campaign ID"),
+      name: z.string().describe("Ad Set Name"),
+      pageId: z.string().describe("Connected Facebook Page ID"),
+      dailyBudget: z.number().optional().default(500).describe("Daily budget"),
+      targeting: z.object({
+        countries: z.array(z.string()).optional(),
+        ageMin: z.number().optional(),
+        ageMax: z.number().optional(),
+        genders: z.array(z.number()).optional(),
+      }).optional().describe("Targeting parameters"),
+      status: z.enum(["ACTIVE", "PAUSED"]).optional().default("PAUSED"),
+      accountId: z.string().optional().describe("Meta Ad Account ID"),
+    },
+    async (args) => {
+      try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const result = await executeAgentTool("create_meta_lead_adset", {
+          ...args,
+          accountId: effectiveMetaAccountId,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const getMetaAdSetDetails = tool(
+    "get_meta_adset_details",
+    "Get details and targeting configuration for an existing Meta Ad Set.",
+    {
+      adSetId: z.string().describe("Meta Ad Set ID"),
+      accountId: z.string().optional().describe("Meta Ad Account ID"),
+    },
+    async (args) => {
+      try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const result = await executeAgentTool("get_meta_adset_details", {
+          ...args,
+          accountId: effectiveMetaAccountId,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const createMetaLeadForm = tool(
+    "create_meta_lead_form",
+    "Create a new Meta Instant Form (leadgen_forms) on a connected Facebook Page.",
+    {
+      pageId: z.string().describe("Facebook Page ID"),
+      name: z.string().describe("Instant Form Name"),
+      questions: z.array(z.object({
+        type: z.string().describe("Question type e.g. FULL_NAME, EMAIL, PHONE"),
+        key: z.string().optional(),
+        label: z.string().optional(),
+      })).optional().describe("Form questions"),
+      privacyPolicyUrl: z.string().optional().describe("Privacy policy URL"),
+      followUpActionUrl: z.string().optional().describe("Thank you / redirect URL"),
+      locale: z.string().optional().default("EN_US"),
+      accountId: z.string().optional().describe("Meta Ad Account ID"),
+    },
+    async (args) => {
+      try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const result = await executeAgentTool("create_meta_lead_form", {
+          ...args,
+          accountId: effectiveMetaAccountId,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const getMetaLeadForms = tool(
+    "get_meta_lead_forms",
+    "Retrieve existing Instant Lead Forms created on a Facebook Page.",
+    {
+      pageId: z.string().describe("Facebook Page ID"),
+      limit: z.number().optional().default(25),
+      accountId: z.string().optional().describe("Meta Ad Account ID"),
+    },
+    async (args) => {
+      try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const result = await executeAgentTool("get_meta_lead_forms", {
+          ...args,
+          accountId: effectiveMetaAccountId,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const uploadMetaAdImage = tool(
+    "upload_meta_ad_image",
+    "Upload an image asset to Meta Ads library to obtain an image_hash.",
+    {
+      fileUrl: z.string().optional().describe("Image URL"),
+      filePath: z.string().optional().describe("Local image file path"),
+      adName: z.string().optional().default("Lead Ad"),
+      accountId: z.string().optional().describe("Meta Ad Account ID"),
+    },
+    async (args) => {
+      try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const result = await executeAgentTool("upload_meta_ad_image", {
+          ...args,
+          accountId: effectiveMetaAccountId,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const uploadMetaAdVideo = tool(
+    "upload_meta_ad_video",
+    "Upload a video file to Meta Ads library to obtain a video_id.",
+    {
+      filePath: z.string().optional().describe("Local video file path"),
+      fileUrl: z.string().optional().describe("Remote video URL"),
+      title: z.string().optional().default("Lead Ad Video"),
+      description: z.string().optional().default(""),
+      accountId: z.string().optional().describe("Meta Ad Account ID"),
+    },
+    async (args) => {
+      try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const result = await executeAgentTool("upload_meta_ad_video", {
+          ...args,
+          accountId: effectiveMetaAccountId,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const createMetaLeadAdCreative = tool(
+    "create_meta_lead_ad_creative",
+    "Create an Ad Creative linked to an Instant Lead Form.",
+    {
+      name: z.string().describe("Ad Creative Name"),
+      pageId: z.string().describe("Facebook Page ID"),
+      leadGenFormId: z.string().describe("Meta Instant Form ID"),
+      headline: z.string().optional().describe("Ad Headline"),
+      message: z.string().optional().describe("Primary Text / Copy"),
+      description: z.string().optional().describe("Link description"),
+      callToAction: z.string().optional().default("SIGN_UP").describe("CTA button"),
+      imageHash: z.string().optional().describe("Uploaded image hash"),
+      imageUrl: z.string().optional().describe("Image URL if not uploaded yet"),
+      videoId: z.string().optional().describe("Uploaded video ID"),
+      instagramActorId: z.string().optional().describe("Instagram Professional Account ID"),
+      accountId: z.string().optional().describe("Meta Ad Account ID"),
+    },
+    async (args) => {
+      try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const result = await executeAgentTool("create_meta_lead_ad_creative", {
+          ...args,
+          accountId: effectiveMetaAccountId,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const createMetaLeadAd = tool(
+    "create_meta_lead_ad",
+    "Create a Meta Ad connecting an Ad Set and a Lead Ad Creative in PAUSED status.",
+    {
+      name: z.string().describe("Ad Name"),
+      adSetId: z.string().describe("Ad Set ID"),
+      creativeId: z.string().describe("Ad Creative ID"),
+      status: z.enum(["ACTIVE", "PAUSED"]).optional().default("PAUSED"),
+      accountId: z.string().optional().describe("Meta Ad Account ID"),
+    },
+    async (args) => {
+      try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const result = await executeAgentTool("create_meta_lead_ad", {
+          ...args,
+          accountId: effectiveMetaAccountId,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const publishMetaLeadCampaign = tool(
+    "publish_meta_lead_campaign",
+    "Activate and publish a created Meta Lead Generation Campaign, Ad Set, and Ad to ACTIVE status.",
+    {
+      campaignId: z.string().describe("Campaign ID"),
+      adSetId: z.string().optional().describe("Ad Set ID"),
+      adId: z.string().optional().describe("Ad ID"),
+      accountId: z.string().optional().describe("Meta Ad Account ID"),
+    },
+    async (args) => {
+      try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const result = await executeAgentTool("publish_meta_lead_campaign", {
+          ...args,
+          accountId: effectiveMetaAccountId,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const getMetaLeads = tool(
+    "get_meta_leads",
+    "Fetch leads captured through Meta Instant Forms and Lead Campaigns.",
+    {
+      formId: z.string().optional().describe("Instant Form ID filter"),
+      campaignId: z.string().optional().describe("Campaign ID filter"),
+      pageId: z.string().optional().describe("Facebook Page ID filter"),
+      limit: z.number().optional().default(25),
+      accountId: z.string().optional().describe("Meta Ad Account ID"),
+    },
+    async (args) => {
+      try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const result = await executeAgentTool("get_meta_leads", {
+          ...args,
+          accountId: effectiveMetaAccountId,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const getMetaLeadDetails = tool(
+    "get_meta_lead_details",
+    "Fetch detailed information and form responses for a single lead ID.",
+    {
+      leadId: z.string().describe("Meta Lead ID"),
+      accountId: z.string().optional().describe("Meta Ad Account ID"),
+    },
+    async (args) => {
+      try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const result = await executeAgentTool("get_meta_lead_details", {
+          ...args,
+          accountId: effectiveMetaAccountId,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const subscribeMetaLeadWebhook = tool(
+    "subscribe_meta_lead_webhook",
+    "Subscribe a Facebook Page to receive real-time leadgen webhook notifications.",
+    {
+      pageId: z.string().describe("Facebook Page ID"),
+      accountId: z.string().optional().describe("Meta Ad Account ID"),
+    },
+    async (args) => {
+      try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const result = await executeAgentTool("subscribe_meta_lead_webhook", {
+          ...args,
+          accountId: effectiveMetaAccountId,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
   return createSdkMcpServer({
     name: "ads",
     version: "1.0.0",
@@ -1157,6 +1514,20 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
       downloadGoogleDriveAsset,
       listWorkspaceSkills,
       getSkillDetails,
+      createMetaLeadCampaign,
+      getMetaCampaignDetails,
+      createMetaLeadAdSet,
+      getMetaAdSetDetails,
+      createMetaLeadForm,
+      getMetaLeadForms,
+      uploadMetaAdImage,
+      uploadMetaAdVideo,
+      createMetaLeadAdCreative,
+      createMetaLeadAd,
+      publishMetaLeadCampaign,
+      getMetaLeads,
+      getMetaLeadDetails,
+      subscribeMetaLeadWebhook,
     ],
   });
 };
@@ -1179,6 +1550,20 @@ export const ADS_ALLOWED_TOOLS = [
   "mcp__ads__create_meta_ad",
   "mcp__ads__create_meta_video_ad",
   "mcp__ads__verify_meta_campaign",
+  "mcp__ads__create_meta_lead_campaign",
+  "mcp__ads__get_meta_campaign_details",
+  "mcp__ads__create_meta_lead_adset",
+  "mcp__ads__get_meta_adset_details",
+  "mcp__ads__create_meta_lead_form",
+  "mcp__ads__get_meta_lead_forms",
+  "mcp__ads__upload_meta_ad_image",
+  "mcp__ads__upload_meta_ad_video",
+  "mcp__ads__create_meta_lead_ad_creative",
+  "mcp__ads__create_meta_lead_ad",
+  "mcp__ads__publish_meta_lead_campaign",
+  "mcp__ads__get_meta_leads",
+  "mcp__ads__get_meta_lead_details",
+  "mcp__ads__subscribe_meta_lead_webhook",
   "mcp__ads__switch_google_account",
   "mcp__ads__create_google_child_account",
   "mcp__ads__create_google_campaign_budget",

@@ -332,6 +332,34 @@ export class AiAgentOrchestrator {
       };
     }
 
+    // 1.8. Meta Lead Generation Campaign Creation (Intent priority over standard campaign and retrieval)
+    const isMetaLeadCreation =
+      /(lead\s*generation|lead\s*gen|lead\s*campaign|lead\s*ad|lead\s*ads|leadform|lead\s*form|instant\s*form|instant\s*lead\s*form|outcome_leads|collect\s*leads)/i.test(text);
+
+    if (isMetaLeadCreation) {
+      return {
+        intent: "META_LEAD_CAMPAIGN",
+        requiresTools: true,
+        tools: ["create_meta_lead_campaign", "create_meta_lead_adset", "create_meta_lead_form", "create_meta_lead_ad", "verify_meta_campaign"],
+        description: "Create and orchestrate Meta Lead Generation campaign and Instant Lead Form",
+      };
+    }
+
+    // 1.9. Meta Lead Retrieval Inquiry
+    const isMetaLeadRetrieval =
+      !isMetaLeadCreation &&
+      (/\b(show|fetch|get|list|display|export|view|count|download|kitne|batao)\b.*(?:meta\s*)?leads?\b/i.test(text) ||
+       /(how\s*many\s*leads|latest\s*leads|leads\s*from|leads\s*generated)/i.test(text));
+
+    if (isMetaLeadRetrieval) {
+      return {
+        intent: "META_LEAD_RETRIEVAL",
+        requiresTools: true,
+        tools: ["get_meta_leads"],
+        description: "Fetch and summarize Meta Instant Form leads from campaign or Facebook Page",
+      };
+    }
+
     // 2. Meta Ads Campaign / Ad Set / Creative Creation (Takes priority over pure sheet fetching)
     const isMetaCreation =
       /(create|launch|draft|build|setup|publish|make|banao|deploy)\s*(?:a\s*)?(?:new\s*)?(?:meta\s*|facebook\s*)?(?:draft\s*)?(campaign|adset|ad\s*set|ad\b|ads\b|creative)/i.test(text) ||
@@ -1590,6 +1618,48 @@ Review campaign details in your Meta Ads Manager.`;
     context.isAutomation = Boolean(conversationId?.startsWith("automation_"));
 
     const intentObj = this.classifyIntent(userMessage, context);
+
+    // If intent is META_LEAD_CAMPAIGN or META_LEAD_RETRIEVAL in chat, route directly through MetaLeadCampaignService
+    if (intentObj.intent === "META_LEAD_CAMPAIGN" || intentObj.intent === "META_LEAD_RETRIEVAL") {
+      try {
+        const { MetaLeadCampaignService } = await import("../meta/metaLeadCampaignService.js");
+        const leadResult = await MetaLeadCampaignService.handleWorkflow({
+          userId,
+          conversationId,
+          userMessage,
+          metaAccountId: context.targetMetaAccountId || metaAccountId || accountId,
+          onProgress: (st) => {
+            if (typeof onEvent === "function") {
+              onEvent({ type: "tool_status", toolName: "meta_lead_campaign_pipeline", status: `${st.label || st.stepName}: ${st.status}` });
+            }
+            if (res) {
+              AgentStreamHandler.sendToolStatus(res, "meta_lead_campaign_pipeline", `${st.label || st.stepName}: ${st.status}`);
+            }
+          },
+        });
+
+        const replyContent = leadResult.content || "Meta Lead Generation campaign processing complete.";
+        if (typeof onEvent === "function") {
+          onEvent({ type: "text_delta", content: replyContent });
+        }
+        if (res) {
+          AgentStreamHandler.sendChunk(res, replyContent);
+        }
+
+        return {
+          content: replyContent,
+          result: replyContent,
+          toolCalls: leadResult.toolCalls || [],
+          status: "completed",
+          tokenUsage: {
+            totalTokens: Math.round(((userMessage?.length || 50) + (replyContent?.length || 200)) / 3.8),
+            model: "claude-sonnet-4-5 (Meta Lead Engine)",
+          },
+        };
+      } catch (leadErr) {
+        console.warn("[executeChat MetaLeadCampaign delegation fallback]:", leadErr.message);
+      }
+    }
 
     // If intent is CAMPAIGN_CREATION in chat, route directly through CampaignPreparationService
     // to dynamically detect missing fields, prompt user in chat, and inject answers.

@@ -1,5 +1,6 @@
 // src/services/mcp/metaMcpClient.js
 import { MetaApiService } from "../meta/metaApiService.js";
+import { MetaLeadCampaignService } from "../meta/metaLeadCampaignService.js";
 import MetaAccount from "../../models/metaAccount.js";
 import MetaCampaign from "../../models/metaCampaign.js";
 import driveService from "../../google/driveService.js";
@@ -1022,6 +1023,181 @@ export class MetaMcpClient {
           },
           message: `Meta Campaign ${campaignId || ""} verification complete. All configured layers are ready.`,
         };
+      }
+
+      // =========================================================================
+      // META LEAD GENERATION MCP TOOLS
+      // =========================================================================
+
+      case "create_meta_lead_campaign": {
+        const { name, dailyBudget, specialAdCategories } = args;
+        return await MetaLeadCampaignService.createLeadCampaignTool({
+          accountId: effectiveAccountId,
+          accessToken: effectiveToken,
+          name,
+          dailyBudget,
+          specialAdCategories,
+          userId: effectiveUserId,
+        });
+      }
+
+      case "get_meta_campaign_details": {
+        const { campaignId } = args;
+        return await MetaLeadCampaignService.getCampaignDetailsTool({
+          campaignId: campaignId || args.id,
+          accessToken: effectiveToken,
+        });
+      }
+
+      case "create_meta_lead_adset": {
+        const { campaignId, name, pageId, dailyBudget, targeting, status } = args;
+        return await MetaLeadCampaignService.createLeadAdSetTool({
+          accountId: effectiveAccountId,
+          accessToken: effectiveToken,
+          campaignId,
+          name,
+          pageId,
+          dailyBudget,
+          targeting,
+          status,
+        });
+      }
+
+      case "get_meta_adset_details": {
+        const { adSetId } = args;
+        return await MetaLeadCampaignService.getAdSetDetailsTool({
+          adSetId: adSetId || args.id,
+          accessToken: effectiveToken,
+        });
+      }
+
+      case "create_meta_lead_form": {
+        const { pageId, name, questions, privacyPolicyUrl, followUpActionUrl, locale } = args;
+        return await MetaLeadCampaignService.createLeadFormTool({
+          pageId,
+          accessToken: effectiveToken,
+          name,
+          questions,
+          privacyPolicyUrl,
+          followUpActionUrl,
+          locale,
+        });
+      }
+
+      case "get_meta_lead_forms": {
+        const { pageId, limit } = args;
+        return await MetaLeadCampaignService.getLeadFormsTool({
+          pageId,
+          accessToken: effectiveToken,
+          limit,
+        });
+      }
+
+      case "upload_meta_ad_image": {
+        const { fileUrl, filePath, imageBuffer, adName } = args;
+        return await MetaLeadCampaignService.uploadAdImageTool({
+          accountId: effectiveAccountId,
+          accessToken: effectiveToken,
+          fileUrl,
+          filePath,
+          imageBuffer,
+          userId: effectiveUserId,
+          adName,
+        });
+      }
+
+      case "upload_meta_ad_video": {
+        const { filePath, fileUrl, title, description } = args;
+        return await MetaLeadCampaignService.uploadAdVideoTool({
+          accountId: effectiveAccountId,
+          accessToken: effectiveToken,
+          filePath,
+          fileUrl,
+          title,
+          description,
+          userId: effectiveUserId,
+        });
+      }
+
+      case "create_meta_lead_ad_creative": {
+        const {
+          name,
+          pageId,
+          instagramActorId,
+          headline,
+          message,
+          description,
+          callToAction,
+          imageHash,
+          videoId,
+          imageUrl,
+          leadGenFormId,
+        } = args;
+        return await MetaLeadCampaignService.createLeadAdCreativeTool({
+          accountId: effectiveAccountId,
+          accessToken: effectiveToken,
+          name,
+          pageId,
+          instagramActorId,
+          headline,
+          message,
+          description,
+          callToAction,
+          imageHash,
+          videoId,
+          imageUrl,
+          leadGenFormId,
+        });
+      }
+
+      case "create_meta_lead_ad": {
+        const { name, adSetId, creativeId, status } = args;
+        return await MetaLeadCampaignService.createLeadAdTool({
+          accountId: effectiveAccountId,
+          accessToken: effectiveToken,
+          name,
+          adSetId,
+          creativeId,
+          status,
+        });
+      }
+
+      case "publish_meta_lead_campaign": {
+        const { campaignId, adSetId, adId } = args;
+        return await MetaLeadCampaignService.publishLeadCampaignTool({
+          campaignId,
+          adSetId,
+          adId,
+          accessToken: effectiveToken,
+        });
+      }
+
+      case "get_meta_leads": {
+        const { formId, campaignId, pageId, limit } = args;
+        return await MetaLeadCampaignService.getLeadsTool({
+          formId,
+          campaignId,
+          pageId,
+          userId: effectiveUserId,
+          limit,
+          accessToken: effectiveToken,
+        });
+      }
+
+      case "get_meta_lead_details": {
+        const { leadId } = args;
+        return await MetaLeadCampaignService.getLeadDetailsTool({
+          leadId,
+          accessToken: effectiveToken,
+        });
+      }
+
+      case "subscribe_meta_lead_webhook": {
+        const { pageId } = args;
+        return await MetaLeadCampaignService.subscribeMetaLeadWebhookTool({
+          pageId,
+          accessToken: effectiveToken,
+        });
       }
 
       default:

@@ -39,8 +39,11 @@ import aiAutomationRoutes from "./routes/aiAutomation.route.js";
 import driveRoutes from "./routes/drive.route.js";
 import { DriveController } from "./controller/driveController.js";
 import dbLoggerService from "./services/logger/dbLoggerService.js";
+import MetaLeadCampaignService from "./services/meta/metaLeadCampaignService.js";
 
 // Routes
+app.get(["/webhook", "/api/meta/webhook", "/api/webhook"], (req, res) => MetaLeadCampaignService.verifyWebhook(req, res));
+app.post(["/webhook", "/api/meta/webhook", "/api/webhook"], (req, res) => MetaLeadCampaignService.handleWebhookEvent(req, res));
 app.use("/api/auth", authRoutes);
 app.use("/api/channel", channelRoutes);
 app.use("/api/google", channelRoutes);

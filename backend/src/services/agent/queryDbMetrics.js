@@ -2081,6 +2081,28 @@ export async function executeAgentTool(toolName, args) {
     return await MetaMcpClient.executeLiveTool("create_meta_campaign", args);
   }
 
+  // Meta Lead Generation Tools
+  if (
+    [
+      "create_meta_lead_campaign",
+      "get_meta_campaign_details",
+      "create_meta_lead_adset",
+      "get_meta_adset_details",
+      "create_meta_lead_form",
+      "get_meta_lead_forms",
+      "upload_meta_ad_image",
+      "upload_meta_ad_video",
+      "create_meta_lead_ad_creative",
+      "create_meta_lead_ad",
+      "publish_meta_lead_campaign",
+      "get_meta_leads",
+      "get_meta_lead_details",
+      "subscribe_meta_lead_webhook",
+    ].includes(toolName)
+  ) {
+    return await MetaMcpClient.executeLiveTool(toolName, args);
+  }
+
   if (toolName === "update_meta_campaign") {
     return await MetaMcpClient.executeLiveTool("update_meta_campaign", args);
   }

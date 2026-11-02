@@ -1,8 +1,15 @@
 import express from "express";
 import { ChannelController } from "../controller/channelController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import MetaLeadCampaignService from "../services/meta/metaLeadCampaignService.js";
 
 const router = express.Router();
+
+// Meta Webhook Endpoints (Unauthenticated - Verified via hub.verify_token & X-Hub-Signature-256)
+router.get("/meta/webhook", (req, res) => MetaLeadCampaignService.verifyWebhook(req, res));
+router.post("/meta/webhook", (req, res) => MetaLeadCampaignService.handleWebhookEvent(req, res));
+router.get("/webhook", (req, res) => MetaLeadCampaignService.verifyWebhook(req, res));
+router.post("/webhook", (req, res) => MetaLeadCampaignService.handleWebhookEvent(req, res));
 
 router.use(protect);
 
