@@ -967,31 +967,26 @@ export class AiContextController {
         lastSyncedAt: new Date(),
       };
 
-      let selectedTabsData = [primaryTabData];
+      const selectedTabsData = [primaryTabData];
 
-      // If multiple tabs exist, fetch fast lightweight previews for the other tabs (skipping heavy grid data)
+      // If multiple tabs exist, build lightweight tab stubs directly from discoveredTabs without expensive API requests
       if (discoveredTabs.length > 1) {
-        const otherTabs = discoveredTabs.filter((t) => {
+        discoveredTabs.slice(1).forEach((t) => {
           const tId = t.sheetId !== undefined ? t.sheetId : t.title;
-          const tTitle = t.title || t.tabName;
-          return String(tId) !== String(primaryTabId) && tTitle !== primaryTabTitle;
-        });
-
-        if (otherTabs.length > 0) {
-          try {
-            const extraTabsData = await sheetsService.fetchMultipleWorksheetsData({
-              spreadsheetIdOrUrl: cleanUrl,
-              selectedTabs: otherTabs,
-              maxRowsPerTab: 50,
-              skipGridData: true,
+          const tTitle = t.title || `Tab_${t.sheetId}`;
+          if (String(tId) !== String(primaryTabId) && tTitle !== primaryTabTitle) {
+            selectedTabsData.push({
+              sheetId: tId,
+              tabName: tTitle,
+              columns: [],
+              rows: [],
+              totalRows: t.rowCount || 0,
+              totalDataRows: t.rowCount || 0,
+              detectedHeaderRowIndex: 0,
+              lastSyncedAt: new Date(),
             });
-            if (Array.isArray(extraTabsData) && extraTabsData.length > 0) {
-              selectedTabsData.push(...extraTabsData);
-            }
-          } catch (multiErr) {
-            console.warn("[connectSheet] fetchMultipleWorksheetsData notice:", multiErr.message);
           }
-        }
+        });
       }
 
       // Update MongoDB AiContext if userId exists
@@ -1051,6 +1046,17 @@ export class AiContextController {
             targetWarehouseNode.id = nodeId;
           }
 
+          const sanitizeMongoKeys = (obj) => {
+            if (!obj || typeof obj !== "object") return obj;
+            if (Array.isArray(obj)) return obj.map(sanitizeMongoKeys);
+            const clean = {};
+            for (const [k, v] of Object.entries(obj)) {
+              const cleanKey = String(k).replace(/\./g, "_").replace(/^\$/, "_");
+              clean[cleanKey] = (v && typeof v === "object") ? sanitizeMongoKeys(v) : v;
+            }
+            return clean;
+          };
+
           const previousTracked = (targetWarehouseNode.data?.sheetUrl === cleanUrl && targetWarehouseNode.data?.sheetMetadata?.trackedRows) ? targetWarehouseNode.data.sheetMetadata.trackedRows : [];
           const rawRowObjects = rows.map((r) => ({
             ...(r.values || {}),
@@ -1059,8 +1065,7 @@ export class AiContextController {
             _isBlank: r._isBlank,
           }));
           const diffInit = SpreadsheetSyncService.diffSpreadsheetRows(previousTracked, rawRowObjects, headers);
-          // For memory & BSON limit safety, only attach cachedValues for smaller sheets (sheetRows already retains full row records)
-          if (rows.length <= 500) {
+          if (rows.length <= 300) {
             diffInit.trackedRows.forEach((tr, i) => {
               if (rows[i]) tr.cachedValues = { ...(rows[i].values || rows[i]) };
             });
@@ -1070,6 +1075,9 @@ export class AiContextController {
           const totalSheetRows = ingestionResult.totalSheetRows || diffInit.totalSheetRows || (rows.length + 1);
           const totalDataRows = ingestionResult.totalDataRows || diffInit.totalDataRows || rows.filter((r) => r.isPopulated).length;
           const headerRowNumber = ingestionResult.headerRowNumber || diffInit.headerRowNumber || 1;
+
+          // Cap stored rows to prevent exceeding MongoDB 16MB document size limit
+          const safeStoredRows = rows.slice(0, 300).map((r) => sanitizeMongoKeys(r.values || r));
 
           // Synchronize sheet into multi-sheets array
           const sheetCardId = req.body.sheetCardId || req.body.sheetId;
@@ -1091,7 +1099,7 @@ export class AiContextController {
             totalDataRows: selectedTabsData.reduce((sum, t) => sum + (t.totalDataRows || 0), 0) || totalDataRows,
             totalSheetRows,
             sheetColumns: headers,
-            sheetRows: rows.map((r) => r.values),
+            sheetRows: safeStoredRows,
             dataLabels: sIdx >= 0 ? (sheetsArr[sIdx].dataLabels || "") : (targetWarehouseNode.data?.dataLabels || ""),
             dataLevel: sIdx >= 0 ? (sheetsArr[sIdx].dataLevel || "") : (targetWarehouseNode.data?.dataLevel || ""),
           };
@@ -1101,6 +1109,15 @@ export class AiContextController {
           } else {
             sheetsArr.push(updatedSheetObj);
           }
+
+          // Sample groupedCampaigns to prevent massive BSON bloat
+          const sampleGroupedCampaigns = (mapped.groupedCampaigns || []).slice(0, 30).map((cg) => ({
+            ...cg,
+            adsets: (cg.adsets || []).slice(0, 20).map((ag) => ({
+              ...ag,
+              ads: (ag.ads || []).slice(0, 20),
+            })),
+          }));
 
           targetWarehouseNode.data = {
             ...targetWarehouseNode.data,
@@ -1126,12 +1143,12 @@ export class AiContextController {
             readyRowsCount: diffInit.eligibleAdRowsCount,
             correctionRequiredRowsCount: diffInit.validationErrorRowsCount,
             sheetColumns: headers,
-            sheetRows: rows.map((r) => r.values),
-            mappedHierarchy: mapped.groupedCampaigns,
+            sheetRows: safeStoredRows,
+            mappedHierarchy: sampleGroupedCampaigns,
             warnings: ingestionResult.warnings,
             sheetMetadata: {
               ...(targetWarehouseNode.data?.sheetMetadata || {}),
-              trackedRows: diffInit.trackedRows,
+              trackedRows: (diffInit.trackedRows || []).slice(0, 100),
               lastSyncDiff: {
                 totalSheetRows,
                 totalDataRows,
@@ -1143,11 +1160,11 @@ export class AiContextController {
                 updatedRowsCount: diffInit.updatedRowsCount,
                 unchangedRowsCount: diffInit.unchangedRowsCount,
                 blankRowsCount: diffInit.blankRowsCount,
-                newRowNumbers: diffInit.newRowNumbers,
-                updatedRowNumbers: diffInit.updatedRowNumbers,
-                validationErrorRowNumbers: diffInit.validationErrorRowNumbers,
-                eligibleAdRowNumbers: diffInit.eligibleAdRowNumbers,
-                blankRowNumbers: diffInit.blankRowNumbers,
+                newRowNumbers: (diffInit.newRowNumbers || []).slice(0, 50),
+                updatedRowNumbers: (diffInit.updatedRowNumbers || []).slice(0, 50),
+                validationErrorRowNumbers: (diffInit.validationErrorRowNumbers || []).slice(0, 50),
+                eligibleAdRowNumbers: (diffInit.eligibleAdRowNumbers || []).slice(0, 50),
+                blankRowNumbers: (diffInit.blankRowNumbers || []).slice(0, 50),
                 syncedAt: new Date().toISOString(),
                 trigger: "connect",
               },
@@ -1155,8 +1172,12 @@ export class AiContextController {
           };
           targetWarehouseNode.subtitle = `🔗 ${cleanUrl.slice(0, 36)}... (${discoveredTabs.length} tabs discovered, ${totalDataRows} rows)`;
 
-          context.markModified("nodes");
-          await context.save();
+          try {
+            context.markModified("nodes");
+            await context.save();
+          } catch (mongoSaveErr) {
+            console.warn("[connectSheet] MongoDB context save warning (skipping full node save to preserve 200 response):", mongoSaveErr.message);
+          }
         }
       }
 
@@ -1200,7 +1221,7 @@ export class AiContextController {
           blankRowsCount: ingestionResult.blankRowsCount || 0,
           groupedCampaigns: mapped.groupedCampaigns,
           warnings: ingestionResult.warnings,
-          sampleRows: rows.slice(0, 5).map((r) => r.values),
+          sampleRows: rows.slice(0, 5).map((r) => r.values || r),
           lastSyncedAt: new Date().toISOString(),
         },
       });
@@ -1719,7 +1740,7 @@ export class AiContextController {
           correctionRequiredRowsCount: mapped.correctionRequiredRowsCount,
           groupedCampaigns: mapped.groupedCampaigns,
           warnings: ingestionResult.warnings,
-          sampleRows: rows.slice(0, 5).map((r) => r.values),
+          sampleRows: rows.slice(0, 5).map((r) => r.values || r),
           lastSyncedAt: new Date().toISOString(),
         },
       });
