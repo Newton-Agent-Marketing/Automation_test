@@ -134,11 +134,19 @@ export class DynamicSheetFilter {
   static parseAdNamePattern(msg) {
     if (!msg || typeof msg !== "string") return null;
 
+    // 0. Quoted ad name takes highest precedence: ad name : "..."
+    const quotedPattern = /(?:(?:put|create|make|set|place|launch|with)\s+)?(?:ads?\s*(?:with\s+)?(?:named|called|titled|names?|title|label)?|ad_name)\s*(?:[:=\-–—]|named|called|titled|as)?\s*["'“«`\u201c\u2018]([^"'”»`\u201d\u2019\r\n]+)["'”»`\u201d\u2019]/i;
+    const quotedMatch = msg.match(quotedPattern);
+    if (quotedMatch && quotedMatch[1]) {
+      return quotedMatch[1].trim();
+    }
+
     // 1. Explicit key-value or phrasal declaration: "Put Ads with Name - ...", "- Ad name : ...", "Ad name: ...", "Ad Name = ..."
     const explicitPattern = /(?:(?:put|create|make|set|place|launch|with)\s+)?(?:ads?\s*(?:with\s+)?(?:named|called|titled|names?|title|label)?|ad_name)\s*(?:[:=\-–—]|named|called|titled|as)\s*([^\n\r;]+)/i;
     const explicitMatch = msg.match(explicitPattern);
     if (explicitMatch && explicitMatch[1]) {
-      let rawVal = explicitMatch[1].trim().replace(/^["'\`]+|["'\`]+$/g, "").trim();
+      const boundaryRegex = /\s*(?:;|\n|\r|\s+(?:and|aur|also|with|using|from|for|under|into|in|on|,|\|)\s*(?:process\b|upload\b|where\b|filter\b|only\b|use\s+(?:sheet|data)|sheet\s+data|from\s+rows?|start\s*row|rows?\b|lines?\b|budget\b)|(?=\s+(?:process\b|upload\b|where\b|filter\b|only\b|use\s+(?:sheet|data)|sheet\s+data|from\s+rows?|start\s*row|rows?\b|lines?\b|budget\b)))/i;
+      let rawVal = explicitMatch[1].trim().split(boundaryRegex)[0].trim().replace(/^["'\`]+|["'\`]+$/g, "").trim();
       rawVal = rawVal.replace(/\s+(?:the\s+ad\s+creatives|the\s+creatives|creatives\b|and\s+everything|fetch\s+from|from\s+(?:connected\s+)?(?:google\s+)?sheet).*/i, "").trim();
       if (rawVal) {
         return rawVal;
@@ -361,7 +369,7 @@ export class DynamicSheetFilter {
     text = text
       .replace(/\b(?:(?:(?:make|create|launch|set\s*up|build|banao|with|for|having|use)\s+)?(?:an?|the\s+)?(?:campaign\s*(?:names?|title|titled|label|called|ka\s*name)?|campaign_name|camp\s*(?:names?|title)?)\s*(?:is|will\s*be|as|named|called|titled|[:=\-–—])\s*(?:["'“«][^"'”»\r\n]*["'”»]|[^"'”»\s,;]+))/gi, " ")
       .replace(/\b(?:(?:(?:make|create|launch|set\s*up|build|banao|with|for|having|use)\s+)?(?:an?|the\s+)?(?:(?:adset|ad_set|ad\s*set|adgroup)\s*(?:names?|title|titled|label|called|ka\s*name)?|ad_set_name|adset_name)\s*(?:is|will\s*be|as|named|called|titled|[:=\-–—])\s*(?:["'“«][^"'”»\r\n]*["'”»]|[^"'”»\s,;]+))/gi, " ")
-      .replace(/(?:^|[\n\r;•\-])\s*(?:ad\s*(?:names?|title|titled|label|called)?|ad_name)\s*[:=]\s*(?:["'“«][^"'”»\r\n]*["'”»]|[^\n\r;]+)/gi, " ")
+      .replace(/\b(?:(?:(?:make|create|launch|set\s*up|build|banao|with|for|having|use)\s+)?(?:an?|the\s+)?(?:ad\s*(?:names?|title|titled|label|called|ka\s*name)?|ad_name)\s*(?:is|will\s*be|as|named|called|titled|[:=\-–—])\s*(?:["'“«][^"'”»\r\n]*["'”»]|[^"'”»\s,;]+))/gi, " ")
       .replace(/(?:^|[\n\r;•\-])\s*(?:objective|mode|trigger|configuration|budget|daily\s*budget)\s*[:=]\s*(?:["'“«][^"'”»\r\n]*["'”»]|[^\n\r;]+)/gi, " ")
       .trim();
 
