@@ -367,9 +367,9 @@ export class DynamicSheetFilter {
 
     // 1. Strip explicit campaign / ad set / ad name declarations FIRST so quoted values with spaces are removed before token splitting
     text = text
-      .replace(/\b(?:(?:(?:make|create|launch|set\s*up|build|banao|with|for|having|use)\s+)?(?:an?|the\s+)?(?:campaign\s*(?:names?|title|titled|label|called|ka\s*name)?|campaign_name|camp\s*(?:names?|title)?)\s*(?:is|will\s*be|as|named|called|titled|[:=\-–—])\s*(?:["'“«][^"'”»\r\n]*["'”»]|[^"'”»\s,;]+))/gi, " ")
-      .replace(/\b(?:(?:(?:make|create|launch|set\s*up|build|banao|with|for|having|use)\s+)?(?:an?|the\s+)?(?:(?:adset|ad_set|ad\s*set|adgroup)\s*(?:names?|title|titled|label|called|ka\s*name)?|ad_set_name|adset_name)\s*(?:is|will\s*be|as|named|called|titled|[:=\-–—])\s*(?:["'“«][^"'”»\r\n]*["'”»]|[^"'”»\s,;]+))/gi, " ")
-      .replace(/\b(?:(?:(?:make|create|launch|set\s*up|build|banao|with|for|having|use)\s+)?(?:an?|the\s+)?(?:ad\s*(?:names?|title|titled|label|called|ka\s*name)?|ad_name)\s*(?:is|will\s*be|as|named|called|titled|[:=\-–—])\s*(?:["'“«][^"'”»\r\n]*["'”»]|[^"'”»\s,;]+))/gi, " ")
+      .replace(/\b(?:(?:(?:make|create|launch|set\s*up|build|banao|with|for|having|use)\s+)?(?:an?|the\s+)?(?:campaign\s*(?:names?|title|titled|label|called|ka\s*name)?|campaign_name|camp\s*(?:names?|title)?)\s*(?:is|will\s*be|as|named|called|titled|[:=\-–—])\s*(?:["'“«\u201c\u2018`][^"'”»\u201d\u2019`\r\n]*["'”»\u201d\u2019`]|[^"'”»\s,;]+))/gi, " ")
+      .replace(/\b(?:(?:(?:make|create|launch|set\s*up|build|banao|with|for|having|use)\s+)?(?:an?|the\s+)?(?:(?:adset|ad_set|ad\s*set|adgroup)\s*(?:names?|title|titled|label|called|ka\s*name)?|ad_set_name|adset_name)\s*(?:is|will\s*be|as|named|called|titled|[:=\-–—])\s*(?:["'“«\u201c\u2018`][^"'”»\u201d\u2019`\r\n]*["'”»\u201d\u2019`]|[^"'”»\s,;]+))/gi, " ")
+      .replace(/\b(?:(?:(?:make|create|launch|set\s*up|build|banao|with|for|having|use)\s+)?(?:an?|the\s+)?(?:ad\s*(?:names?|title|titled|label|called|ka\s*name)?|ad_name)\s*(?:is|will\s*be|as|named|called|titled|[:=\-–—])\s*(?:["'“«\u201c\u2018`][^"'”»\u201d\u2019`\r\n]*["'”»\u201d\u2019`]|[^"'”»\s,;]+))/gi, " ")
       .replace(/(?:^|[\n\r;•\-])\s*(?:objective|mode|trigger|configuration|budget|daily\s*budget)\s*[:=]\s*(?:["'“«][^"'”»\r\n]*["'”»]|[^\n\r;]+)/gi, " ")
       .trim();
 
@@ -379,15 +379,15 @@ export class DynamicSheetFilter {
 
     if (extractedCamp) {
       const escCamp = extractedCamp.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&");
-      text = text.replace(new RegExp("(?:\\b(?:campaign\\s*(?:names?|title|titled|label|called|ka\s*name)?|campaign_name|camp\\s*(?:names?|title)?)\\s*(?:is|will\\s*be|as|named|called|titled|[:=\\-–—])?\\s*)?[\"\'\u201c\u201d\u2018\u2019\x60]?\\s*" + escCamp + "\\s*[\"\'\u201c\u201d\u2018\u2019\x60]?", "gi"), " ");
+      text = text.replace(new RegExp("\\b(?:campaign\\s*(?:names?|title|titled|label|called|ka\\s*name)?|campaign_name|camp\\s*(?:names?|title)?)\\s*(?:is|will\\s*be|as|named|called|titled|[:=\\-–—])\\s*[\"\'\u201c\u201d\u2018\u2019\x60]?\\s*" + escCamp + "\\s*[\"\'\u201c\u201d\u2018\u2019\x60]?", "gi"), " ");
     }
     if (extractedAdSet) {
       const escAdSet = extractedAdSet.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&");
-      text = text.replace(new RegExp("(?:\\b(?:(?:adset|ad_set|ad\\s*set|adgroup)\\s*(?:names?|title|titled|label|called|ka\\s*name)?|ad_set_name|adset_name)\\s*(?:is|will\\s*be|as|named|called|titled|[:=\\-–—])?\\s*)?[\"\'\u201c\u201d\u2018\u2019\x60]?\\s*" + escAdSet + "\\s*[\"\'\u201c\u201d\u2018\u2019\x60]?", "gi"), " ");
+      text = text.replace(new RegExp("\\b(?:(?:adset|ad_set|ad\\s*set|adgroup)\\s*(?:names?|title|titled|label|called|ka\\s*name)?|ad_set_name|adset_name)\\s*(?:is|will\\s*be|as|named|called|titled|[:=\\-–—])\\s*[\"\'\u201c\u201d\u2018\u2019\x60]?\\s*" + escAdSet + "\\s*[\"\'\u201c\u201d\u2018\u2019\x60]?", "gi"), " ");
     }
     if (extractedAdName) {
       const escAdName = extractedAdName.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&");
-      text = text.replace(new RegExp("(?:\\b(?:ad\\s*(?:names?|title|titled|label|called)?|ad_name)\\s*(?:is|will\\s*be|as|named|called|titled|[:=\\-–—])?\\s*)?[\"\'\u201c\u201d\u2018\u2019\x60]?\\s*" + escAdName + "\\s*[\"\'\u201c\u201d\u2018\u2019\x60]?", "gi"), " ");
+      text = text.replace(new RegExp("\\b(?:ad\\s*(?:names?|title|titled|label|called)?|ad_name)\\s*(?:is|will\\s*be|as|named|called|titled|[:=\\-–—])\\s*[\"\'\u201c\u201d\u2018\u2019\x60]?\\s*" + escAdName + "\\s*[\"\'\u201c\u201d\u2018\u2019\x60]?", "gi"), " ");
     }
 
     // Strip explicit row ranges and row lists (e.g., "for rows 2 to 9", "rows 2, 4, 5, 8", "from row 5 to 15", "upload row 7 only")
