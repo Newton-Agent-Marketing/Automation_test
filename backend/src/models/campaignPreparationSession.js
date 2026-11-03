@@ -83,6 +83,14 @@ const campaignPreparationSessionSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    customEventType: {
+      type: String,
+      default: null,
+    },
+    conversionError: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
     source: {
       type: {
         type: String,
@@ -253,6 +261,7 @@ const campaignPreparationSessionSchema = new mongoose.Schema(
         },
       ],
       error: { type: String, default: null },
+      conversionError: { type: mongoose.Schema.Types.Mixed, default: null },
       retries: { type: Number, default: 0 },
     },
     auditHistory: [

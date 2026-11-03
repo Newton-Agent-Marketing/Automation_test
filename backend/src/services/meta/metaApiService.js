@@ -1856,12 +1856,20 @@ export class MetaApiService {
       }
 
       if (pixRes.valid && pixRes.pixelId) {
+        const rawCustomEvent = customEventType || (promotedObject && typeof promotedObject === "object" ? promotedObject?.custom_event_type : null);
+        const isLeadsObjective = (objective === "OUTCOME_LEADS" || campaignObjective === "OUTCOME_LEADS" || liveCampaign?.objective === "OUTCOME_LEADS");
+        // Strict preservation: Never silently replace LEAD with PURCHASE or another event.
+        const effectiveCustomEvent = rawCustomEvent || (isLeadsObjective ? "LEAD" : "PURCHASE");
+
         effectivePromotedObject = {
           pixel_id: String(pixRes.pixelId),
-          custom_event_type: customEventType || (promotedObject && typeof promotedObject === "object" ? promotedObject?.custom_event_type : null) || "PURCHASE",
+          custom_event_type: effectiveCustomEvent,
         };
         const rawGoal = String(effectiveGoal || "").toUpperCase();
         if (rawGoal.includes("CONVERSION") && !rawGoal.includes("VALUE")) {
+          effectiveGoal = "OFFSITE_CONVERSIONS";
+        } else if (effectiveCustomEvent === "LEAD" || isLeadsObjective) {
+          // LEAD events are paired with OFFSITE_CONVERSIONS optimization goal on website pixel
           effectiveGoal = "OFFSITE_CONVERSIONS";
         } else {
           effectiveGoal = "VALUE"; // User requested: ALWAYS Maximise number of value for website meta ads!
@@ -2054,6 +2062,27 @@ export class MetaApiService {
               const detailMsg = retryMetaErr.error_user_msg || retryMetaErr.message || "Invalid parameter";
               const errToThrow = new Error(`Meta API AdSet Error [${retryMetaErr.code || "100"}]: ${detailMsg}`);
               errToThrow.response = retryErr.response;
+              errToThrow.metaErrorCode = retryMetaErr.code || "100";
+              errToThrow.metaErrorSubcode = retryMetaErr.error_subcode || null;
+              errToThrow.metaErrorMessage = detailMsg;
+              errToThrow.isConversionEventError =
+                String(retryMetaErr.code) === "100" && (
+                  rMsg.includes("conversion event") ||
+                  rMsg.includes("conversion_event") ||
+                  rMsg.includes("objective") ||
+                  retryMetaErr.error_subcode === 3858084 ||
+                  retryMetaErr.error_subcode === 3858085 ||
+                  detailMsg.toLowerCase().includes("conversion event")
+                );
+              errToThrow.conversionConfig = {
+                campaignObjective: liveCampaign?.objective || objective || campaignObjective || "OUTCOME_SALES",
+                conversionLocation: payload.destination_type || destinationType || "WEBSITE",
+                performanceGoal: payload.optimization_goal,
+                pixelId: requestedPixelId || effectivePromotedObject?.pixel_id || null,
+                conversionEvent: customEventType || effectivePromotedObject?.custom_event_type || null,
+                optimizationGoal: payload.optimization_goal,
+                destinationType: payload.destination_type || destinationType || "WEBSITE",
+              };
               throw errToThrow;
             }
           }
@@ -2095,6 +2124,27 @@ export class MetaApiService {
             `Meta API AdSet Error [${metaErr.code || "unknown"}]: ${detailMsg}`
           );
           errToThrow.response = error.response;
+          errToThrow.metaErrorCode = metaErr.code || "100";
+          errToThrow.metaErrorSubcode = metaErr.error_subcode || null;
+          errToThrow.metaErrorMessage = detailMsg;
+          errToThrow.isConversionEventError =
+            String(metaErr.code) === "100" && (
+              errMsg.includes("conversion event") ||
+              errMsg.includes("conversion_event") ||
+              errMsg.includes("objective") ||
+              metaErr.error_subcode === 3858084 ||
+              metaErr.error_subcode === 3858085 ||
+              detailMsg.toLowerCase().includes("conversion event")
+            );
+          errToThrow.conversionConfig = {
+            campaignObjective: liveCampaign?.objective || objective || campaignObjective || "OUTCOME_SALES",
+            conversionLocation: payload.destination_type || destinationType || "WEBSITE",
+            performanceGoal: payload.optimization_goal,
+            pixelId: requestedPixelId || effectivePromotedObject?.pixel_id || null,
+            conversionEvent: customEventType || effectivePromotedObject?.custom_event_type || null,
+            optimizationGoal: payload.optimization_goal,
+            destinationType: payload.destination_type || destinationType || "WEBSITE",
+          };
           throw errToThrow;
         }
         throw error;

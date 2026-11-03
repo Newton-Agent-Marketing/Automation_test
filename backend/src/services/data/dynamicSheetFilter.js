@@ -231,8 +231,10 @@ export class DynamicSheetFilter {
 
     // Strip leading filler words if present
     s = s.replace(/^(?:is|are|either|values?)\s+/i, "").trim();
+    // Strip trailing action/intent verbs & conversational particles (Hinglish/English)
+    s = s.replace(/\s+(?:for|to|keliye|ke\s*liye)?\s*(?:upload|create|launch|process|start|banao|karo|kar\s*do)\b.*$/i, "").trim();
     // Strip trailing boundary words or punctuation
-    s = s.replace(/(?:[\s,;.]+(?:and|aur|also|with|using|for|under|into|in|on|from|sheet|excel|ad|ads|campaign|adset|rows?|lines?)\b)+$/i, "").trim();
+    s = s.replace(/(?:[\s,;.]+(?:and|aur|also|with|using|for|under|into|in|on|from|sheet|excel|ad|ads|campaign|adset|rows?|lines?|ho|hona\s*chahiye|hoga|ka|ki|ke|ko|par|se|wali|wale|wala|waley|vali|vale|vala|valey|chahiye)\b)+$/i, "").trim();
     s = s.replace(/[.,;]+$/, "").trim();
 
     // Strip enclosing parentheses or brackets: (val1, val2) or [val1, val2]
@@ -261,7 +263,8 @@ export class DynamicSheetFilter {
     // If no quotes, split by comma or " or " / " ya " / " athva "
     const parts = s.split(/\s*,\s*|\s+(?:or|OR|ya|athva)\s+/);
     for (const p of parts) {
-      const cleanP = p.trim().replace(/^["'`]+|["'`]+$/g, "").trim();
+      let cleanP = p.trim().replace(/^["'`]+|["'`]+$/g, "").trim();
+      cleanP = cleanP.replace(/(?:[\s,;.]+(?:ho|hona\s*chahiye|hoga|ka|ki|ke|ko|par|se|wali|wale|wala|waley|vali|vale|vala|valey|chahiye)\b)+$/i, "").trim();
       if (cleanP && !values.includes(cleanP)) {
         values.push(cleanP);
       }

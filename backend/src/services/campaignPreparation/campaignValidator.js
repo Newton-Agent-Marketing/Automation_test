@@ -369,6 +369,29 @@ export class CampaignValidator {
       this.getFieldValue(firstRowValues, "billing_event") ||
       "IMPRESSIONS";
 
+    // Conversion Event / Custom Event Type Detection
+    const detectedConversionEvent =
+      userAnswers.customEventType ||
+      userAnswers.conversionEvent ||
+      userAnswers.conversion_event ||
+      userAnswers.custom_event_type ||
+      this.getFieldValue(firstRowValues, "conversionEvent") ||
+      this.getFieldValue(firstRowValues, "conversion_event") ||
+      this.getFieldValue(firstRowValues, "customEventType") ||
+      this.getFieldValue(firstRowValues, "custom_event_type") ||
+      firstRowValues["Conversion event"] ||
+      firstRowValues["Conversion Event"] ||
+      firstRowValues["conversion_event"] ||
+      contextNodeData?.conversionEvent ||
+      contextNodeData?.customEventType ||
+      (contextNodeData?.funnelEvent && String(contextNodeData.funnelEvent).toLowerCase().includes("lead") ? "LEAD" : null) ||
+      (objective === "OUTCOME_LEADS" ? "LEAD" : (!isAppPromotion ? "PURCHASE" : null));
+
+    // If conversion event is LEAD or objective is OUTCOME_LEADS, ensure optimization goal defaults to OFFSITE_CONVERSIONS
+    if ((detectedConversionEvent === "LEAD" || objective === "OUTCOME_LEADS") && optimizationGoal === "VALUE") {
+      optimizationGoal = "OFFSITE_CONVERSIONS";
+    }
+
     // 4. AD LEVEL & MEDIA VALIDATION (Per Row)
     const adLevelRows = [];
     const missingPageRows = [];
@@ -882,6 +905,7 @@ export class CampaignValidator {
       appId: appId || userAnswers.appId || this.getFieldValue(firstRowValues, "appId") || firstRowValues.app_id || null,
       objectStoreUrl: isAppPromotion ? storeUrl : null,
       pixelId: pixelId || (!isAppPromotion ? (firstRowValues.pixel_id || userAnswers.pixelId) : null),
+      customEventType: detectedConversionEvent,
     };
   }
 

@@ -183,7 +183,7 @@ class SheetsService {
   /**
    * Read spreadsheet cells & rows from Google Sheets API v4 with fallbacks
    */
-  async readSpreadsheet({ spreadsheetIdOrUrl, range = null, gid = null, sheetTitle = null } = {}) {
+  async readSpreadsheet({ spreadsheetIdOrUrl, range = null, gid = null, sheetTitle = null, skipGridData = false } = {}) {
     const spreadsheetId = this.extractSpreadsheetId(spreadsheetIdOrUrl);
     if (!spreadsheetId) {
       throw new Error("No valid Google Sheet ID or URL provided.");
@@ -292,84 +292,90 @@ class SheetsService {
       // Fetch cell hyperlinks (Smart Chips / embedded drive links) via spreadsheets.get gridData
       const gridHyperlinksMap = new Map();
       const gridRawValuesMap = new Map();
-      try {
-        const gridRange = effectiveRange;
-        const gridUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?includeGridData=true&ranges=${encodeURIComponent(gridRange)}`;
-        let gridRes = null;
+      if (!skipGridData) {
         try {
-          gridRes = await auth.axiosInstance.get(gridUrl);
-        } catch (gUrlErr) {
-          if (gridRange.includes("!")) {
-            const fallbackGridUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?includeGridData=true&ranges=A1:Z1000`;
-            gridRes = await auth.axiosInstance.get(fallbackGridUrl);
-          }
-        }
-
-        const sheetsData = gridRes?.data?.sheets || [];
-        const matchedSheetObj = sheetsData.find((s) => s.properties?.title === targetSheetTitle) || sheetsData[0];
-        const sheetData = matchedSheetObj?.data?.[0]?.rowData || [];
-
-        sheetData.forEach((rowItem, rIdx) => {
-          const cells = rowItem.values || [];
-          cells.forEach((cellItem, cIdx) => {
-            let hLink = cellItem.hyperlink || null;
-
-            // 1. Extract Smart Chip / rich-text links from textFormatRuns
-            if (!hLink && Array.isArray(cellItem.textFormatRuns)) {
-              for (const run of cellItem.textFormatRuns) {
-                const runUri = run.format?.link?.uri || run.link?.uri;
-                if (runUri && (runUri.includes("drive.google.com") || runUri.includes("docs.google.com") || runUri.length >= 25)) {
-                  hLink = runUri;
-                  break;
-                }
-              }
-            }
-
-            // 2. Extract formula HYPERLINK
-            if (!hLink && cellItem.userEnteredValue?.formulaValue) {
-              const formVal = String(cellItem.userEnteredValue.formulaValue);
-              const match = formVal.match(/HYPERLINK\(\s*["']([^"']+)["']/i);
-              if (match) hLink = match[1];
-            }
-
-            // 3. Raw JSON pattern matching on cell object for Drive URL or folder ID
-            if (!hLink) {
+          const gridRange = effectiveRange;
+          // Restrict fields to avoid serializing fonts, borders, backgrounds and styles for tens of thousands of cells
+          const gridFields = "sheets(properties(sheetId,title),data(rowData/values(hyperlink,textFormatRuns(format(link(uri))),userEnteredValue,effectiveValue,formattedValue)))";
+          const gridUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?includeGridData=true&ranges=${encodeURIComponent(gridRange)}&fields=${encodeURIComponent(gridFields)}`;
+          let gridRes = null;
+          try {
+            gridRes = await auth.axiosInstance.get(gridUrl, { timeout: 12000 });
+          } catch (gUrlErr) {
+            if (gridRange.includes("!")) {
+              const fallbackGridUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?includeGridData=true&ranges=A1:Z500&fields=${encodeURIComponent(gridFields)}`;
               try {
-                const jsonStr = JSON.stringify(cellItem);
-                const driveMatch = jsonStr.match(/https?:\/\/(?:drive|docs)\.google\.com\/[^\s"',;}\\]+/i);
-                if (driveMatch) {
-                  hLink = driveMatch[0];
+                gridRes = await auth.axiosInstance.get(fallbackGridUrl, { timeout: 8000 });
+              } catch (_) {}
+            }
+          }
+
+          const sheetsData = gridRes?.data?.sheets || [];
+          const matchedSheetObj = sheetsData.find((s) => s.properties?.title === targetSheetTitle) || sheetsData[0];
+          const sheetData = matchedSheetObj?.data?.[0]?.rowData || [];
+
+          sheetData.forEach((rowItem, rIdx) => {
+            const cells = rowItem.values || [];
+            cells.forEach((cellItem, cIdx) => {
+              let hLink = cellItem.hyperlink || null;
+
+              // 1. Extract Smart Chip / rich-text links from textFormatRuns
+              if (!hLink && Array.isArray(cellItem.textFormatRuns)) {
+                for (const run of cellItem.textFormatRuns) {
+                  const runUri = run.format?.link?.uri || run.link?.uri;
+                  if (runUri && (runUri.includes("drive.google.com") || runUri.includes("docs.google.com") || runUri.length >= 25)) {
+                    hLink = runUri;
+                    break;
+                  }
                 }
-              } catch (e) {}
-            }
-
-            if (hLink) {
-              gridHyperlinksMap.set(`${rIdx}_${cIdx}`, hLink);
-            }
-
-            // 4. Extract uncorrupted raw numeric / string IDs to prevent Google Sheets scientific notation truncation
-            let rawCellVal = null;
-            if (cellItem.effectiveValue) {
-              if (typeof cellItem.effectiveValue.numberValue === "number" && Number.isInteger(cellItem.effectiveValue.numberValue)) {
-                rawCellVal = BigInt(cellItem.effectiveValue.numberValue).toString();
-              } else if (cellItem.effectiveValue.stringValue) {
-                rawCellVal = String(cellItem.effectiveValue.stringValue).trim();
               }
-            }
-            if (!rawCellVal && cellItem.userEnteredValue) {
-              if (typeof cellItem.userEnteredValue.numberValue === "number" && Number.isInteger(cellItem.userEnteredValue.numberValue)) {
-                rawCellVal = BigInt(cellItem.userEnteredValue.numberValue).toString();
-              } else if (cellItem.userEnteredValue.stringValue) {
-                rawCellVal = String(cellItem.userEnteredValue.stringValue).trim();
+
+              // 2. Extract formula HYPERLINK
+              if (!hLink && cellItem.userEnteredValue?.formulaValue) {
+                const formVal = String(cellItem.userEnteredValue.formulaValue);
+                const match = formVal.match(/HYPERLINK\(\s*["']([^"']+)["']/i);
+                if (match) hLink = match[1];
               }
-            }
-            if (rawCellVal) {
-              gridRawValuesMap.set(`${rIdx}_${cIdx}`, rawCellVal);
-            }
+
+              // 3. Fast pattern matching on string values for Drive URL (avoids heavy JSON.stringify on thousands of cells)
+              if (!hLink) {
+                const strVal = cellItem.formattedValue || cellItem.userEnteredValue?.stringValue || cellItem.effectiveValue?.stringValue;
+                if (strVal && typeof strVal === "string" && (strVal.includes("drive.google.com") || strVal.includes("docs.google.com"))) {
+                  const driveMatch = strVal.match(/https?:\/\/(?:drive|docs)\.google\.com\/[^\s"',;}\\]+/i);
+                  if (driveMatch) {
+                    hLink = driveMatch[0];
+                  }
+                }
+              }
+
+              if (hLink) {
+                gridHyperlinksMap.set(`${rIdx}_${cIdx}`, hLink);
+              }
+
+              // 4. Extract uncorrupted raw numeric / string IDs to prevent Google Sheets scientific notation truncation
+              let rawCellVal = null;
+              if (cellItem.effectiveValue) {
+                if (typeof cellItem.effectiveValue.numberValue === "number" && Number.isInteger(cellItem.effectiveValue.numberValue)) {
+                  rawCellVal = BigInt(cellItem.effectiveValue.numberValue).toString();
+                } else if (cellItem.effectiveValue.stringValue) {
+                  rawCellVal = String(cellItem.effectiveValue.stringValue).trim();
+                }
+              }
+              if (!rawCellVal && cellItem.userEnteredValue) {
+                if (typeof cellItem.userEnteredValue.numberValue === "number" && Number.isInteger(cellItem.userEnteredValue.numberValue)) {
+                  rawCellVal = BigInt(cellItem.userEnteredValue.numberValue).toString();
+                } else if (cellItem.userEnteredValue.stringValue) {
+                  rawCellVal = String(cellItem.userEnteredValue.stringValue).trim();
+                }
+              }
+              if (rawCellVal) {
+                gridRawValuesMap.set(`${rIdx}_${cIdx}`, rawCellVal);
+              }
+            });
           });
-        });
-      } catch (gErr) {
-        console.warn("[SheetsService] Grid hyperlink/Smart Chip extraction notice:", gErr.message);
+        } catch (gErr) {
+          console.warn("[SheetsService] Grid hyperlink/Smart Chip extraction notice:", gErr.message);
+        }
       }
 
       const rawValues = res?.data?.values || [];
@@ -951,7 +957,7 @@ class SheetsService {
   /**
    * Fetch data independently for a single worksheet tab
    */
-  async fetchWorksheetData({ spreadsheetIdOrUrl, sheetTitle, sheetId, maxRows = 500 }) {
+  async fetchWorksheetData({ spreadsheetIdOrUrl, sheetTitle, sheetId, maxRows = 500, skipGridData = true }) {
     const spreadsheetId = this.extractSpreadsheetId(spreadsheetIdOrUrl);
     if (!spreadsheetId) {
       throw new Error("No valid Google Sheet ID or URL provided.");
@@ -961,6 +967,7 @@ class SheetsService {
       spreadsheetIdOrUrl,
       sheetTitle: sheetTitle || null,
       gid: sheetId !== undefined && sheetId !== null ? String(sheetId) : null,
+      skipGridData,
     });
 
     const headers = result.headers || [];
@@ -982,7 +989,7 @@ class SheetsService {
   /**
    * Fetch independent data for multiple selected tabs without merging them incorrectly
    */
-  async fetchMultipleWorksheetsData({ spreadsheetIdOrUrl, selectedTabs = [], maxRowsPerTab = 500 }) {
+  async fetchMultipleWorksheetsData({ spreadsheetIdOrUrl, selectedTabs = [], maxRowsPerTab = 500, skipGridData = true }) {
     const spreadsheetId = this.extractSpreadsheetId(spreadsheetIdOrUrl);
     if (!spreadsheetId) {
       throw new Error("No valid Google Sheet ID or URL provided.");
@@ -1003,6 +1010,7 @@ class SheetsService {
           sheetTitle,
           sheetId,
           maxRows: maxRowsPerTab,
+          skipGridData,
         });
         results.push(tabData);
       } catch (tabErr) {

@@ -63,6 +63,7 @@ export const RowProgressTracker = ({ jobProgress }) => {
 
   // Extract explicit error text if present
   const alertText =
+    jobProgress.conversionError?.explanation ||
     errorNotice ||
     (rowsList.some((r) => r.error)
       ? rowsList
@@ -70,6 +71,11 @@ export const RowProgressTracker = ({ jobProgress }) => {
           .map((r) => `• Row ${r.rowNumber || r.rowIndex}: ${r.error}`)
           .join("\n")
       : null);
+
+  const isConvError = Boolean(
+    jobProgress.conversionError ||
+    (alertText && (alertText.toLowerCase().includes("conversion event") || alertText.toLowerCase().includes("adset error") || alertText.includes("100")))
+  );
 
   return (
     <motion.div
@@ -192,7 +198,7 @@ export const RowProgressTracker = ({ jobProgress }) => {
         >
           <div style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: 700, color: "#DC2626", marginBottom: "6px", fontSize: "13px" }}>
             <AlertCircle size={16} />
-            <span>Ad Creation Issue Alert</span>
+            <span>{isConvError ? "Ad Set Conversion Event Error (Stage 3/10)" : "Ad Creation Issue Alert"}</span>
           </div>
           <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.5, color: "#991B1B", fontSize: "12.5px", fontFamily: "inherit" }}>
             {alertText}

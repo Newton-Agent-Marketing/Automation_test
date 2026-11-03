@@ -69,19 +69,25 @@ export class MetaAdsOrchestrator {
 
     // 2. Initialize creation tracking state
     session.status = "CREATING";
+    const prevCampId = session.creationJob?.metaCampaignId || session.existingCampaignId || null;
+    const prevAdSetId = session.creationJob?.metaAdSetId || session.existingAdSetId || null;
+
     if (!session.creationJob || session.creationJob.status === "COMPLETED" || session.creationJob.campaignName !== session.campaignName) {
       session.creationJob = {
         status: "IN_PROGRESS",
         startedAt: new Date(),
         campaignName: session.campaignName,
-        metaCampaignId: null,
-        metaAdSetId: null,
+        metaCampaignId: prevCampId,
+        metaAdSetId: prevAdSetId,
         adResults: [],
         totalAds: session.preview?.adDetails?.length || 0,
       };
     } else {
       session.creationJob.status = "IN_PROGRESS";
       session.creationJob.startedAt = new Date();
+      if (!session.creationJob.metaCampaignId && prevCampId) {
+        session.creationJob.metaCampaignId = prevCampId;
+      }
     }
     await session.save();
 
@@ -308,32 +314,92 @@ export class MetaAdsOrchestrator {
         console.log(`   💳 Billing Event    : ${billingEv}`);
         console.log("--------------------------------------------------------------------------------");
 
-        const adSetRes = await executeAgentTool("create_meta_ad_set", {
-          campaignId: metaCampaignId,
-          name: adSetName,
-          dailyBudget: parsedBudget,
-          optimizationGoal: finalOptGoal,
-          billingEvent: billingEv,
-          status: "PAUSED",
-          accountId: targetAccountId,
-          userId,
-          objective,
-          appId,
-          objectStoreUrl,
-          pixelId,
-          destination_type: isAppCamp ? "APP" : "WEBSITE",
-          trackingType: isAppCamp ? "APP" : ((pixelId && appId) ? "BOTH" : "WEBSITE"),
-          customEventType: finalOptGoal === "APP_INSTALLS" ? null : (session.customEventType || session.userAnswers?.customEventType || null),
-        });
+        const selectedConvEvent =
+          session.customEventType ||
+          session.userAnswers?.customEventType ||
+          session.userAnswers?.conversionEvent ||
+          (session.preview?.adSetDetails?.find((d) => d.field === "Conversion Event")?.value) ||
+          (objective === "OUTCOME_LEADS" ? "LEAD" : null);
 
-        metaAdSetId = adSetRes.data?.adSetId || adSetRes.adSetId || adSetRes.id;
-        if (!metaAdSetId) {
-          throw new Error(`Failed to create Meta Ad Set: ${adSetRes.error || adSetRes.message || "Unknown error"}`);
+        let adSetRes = null;
+        try {
+          adSetRes = await executeAgentTool("create_meta_ad_set", {
+            campaignId: metaCampaignId,
+            name: adSetName,
+            dailyBudget: parsedBudget,
+            optimizationGoal: finalOptGoal,
+            billingEvent: billingEv,
+            status: "PAUSED",
+            accountId: targetAccountId,
+            userId,
+            objective,
+            appId,
+            objectStoreUrl,
+            pixelId,
+            destination_type: isAppCamp ? "APP" : "WEBSITE",
+            trackingType: isAppCamp ? "APP" : ((pixelId && appId) ? "BOTH" : "WEBSITE"),
+            customEventType: finalOptGoal === "APP_INSTALLS" ? null : selectedConvEvent,
+          });
+
+          metaAdSetId = adSetRes.data?.adSetId || adSetRes.adSetId || adSetRes.id;
+          if (!metaAdSetId) {
+            throw new Error(`Failed to create Meta Ad Set: ${adSetRes.error || adSetRes.message || "Unknown error"}`);
+          }
+          session.creationJob.metaAdSetId = metaAdSetId;
+          session.creationJob.conversionError = null;
+          session.conversionError = null;
+          await session.save();
+          console.log(`✅ [META ADS API] Level 2 Ad Set Created Successfully! ID: ${metaAdSetId}`);
+          emit(3, `Ad Set Created Successfully (ID: ${metaAdSetId})`);
+        } catch (adSetErr) {
+          console.error("[MetaAdsOrchestrator Stage 3 AdSet Error]:", adSetErr.message);
+          const metaCode = adSetErr.metaErrorCode || (adSetErr.message.match(/\[(\d+)\]/) ? adSetErr.message.match(/\[(\d+)\]/)[1] : "100");
+          const metaSubcode = adSetErr.metaErrorSubcode || (adSetErr.message.match(/subcode:?\s*(\d+)/i) ? adSetErr.message.match(/subcode:?\s*(\d+)/i)[1] : null);
+          const metaMsg = adSetErr.metaErrorMessage || adSetErr.message;
+          const isConvIssue = adSetErr.isConversionEventError ||
+            adSetErr.message.toLowerCase().includes("conversion event") ||
+            adSetErr.message.toLowerCase().includes("objective that you selected");
+
+          const effectiveConvEvent = selectedConvEvent || "LEAD";
+          const conversionError = {
+            isConversionEventError: Boolean(isConvIssue),
+            campaignObjective: objective || session.objective || "OUTCOME_SALES",
+            conversionLocation: isAppCamp ? "App" : "Website",
+            performanceGoal: finalOptGoal === "VALUE" ? "Maximise value of conversions" : (finalOptGoal === "OFFSITE_CONVERSIONS" ? "Maximise number of conversions" : finalOptGoal),
+            pixelId: pixelId || (isAppCamp ? appId : "Configured Pixel / Dataset"),
+            conversionEvent: effectiveConvEvent,
+            optimizationGoal: finalOptGoal,
+            destinationType: isAppCamp ? "APP" : "WEBSITE",
+            metaErrorCode: metaCode,
+            metaErrorSubcode: metaSubcode,
+            metaErrorMessage: metaMsg,
+            failedAtStage: "Stage 3/10 — Creating Ad Set",
+            explanation: `Meta API rejected the conversion event "${effectiveConvEvent}" because it is incompatible with your selected campaign objective "${objective || session.objective}". Choose another conversion event (e.g. PURCHASE for Sales, or LEAD for Leads) to publish.`,
+          };
+
+          session.status = "FAILED";
+          session.creationJob.status = "FAILED";
+          session.creationJob.error = adSetErr.message;
+          session.creationJob.conversionError = conversionError;
+          session.conversionError = conversionError;
+          session.creationJob.metaCampaignId = metaCampaignId; // Preserve campaign ID!
+          session.markModified("creationJob");
+          await session.save();
+
+          emit(3, `❌ Stage 3 Ad Set Creation Failed: ${metaMsg}`, {
+            error: adSetErr.message,
+            conversionError,
+            failedStage: 3,
+          });
+
+          const enhancedErr = new Error(adSetErr.message);
+          enhancedErr.conversionError = conversionError;
+          enhancedErr.metaErrorCode = metaCode;
+          enhancedErr.metaErrorSubcode = metaSubcode;
+          enhancedErr.metaErrorMessage = metaMsg;
+          enhancedErr.session = session;
+          throw enhancedErr;
         }
-        session.creationJob.metaAdSetId = metaAdSetId;
-        await session.save();
-        console.log(`✅ [META ADS API] Level 2 Ad Set Created Successfully! ID: ${metaAdSetId}`);
-        emit(3, `Ad Set Created Successfully (ID: ${metaAdSetId})`);
       } else {
         console.log(`ℹ️ [META ADS API] Reusing existing Ad Set (ID: ${metaAdSetId})`);
         emit(3, `Reusing already created Ad Set (ID: ${metaAdSetId})`);

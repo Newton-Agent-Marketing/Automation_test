@@ -247,10 +247,20 @@ export class DynamicFieldEditor {
       "goal",
       "campaign goal",
     ],
+    conversion_event: [
+      "conversion_event",
+      "conversionevent",
+      "conversion event",
+      "custom_event_type",
+      "custom event type",
+      "custom event",
+      "event type",
+      "pixel event",
+      "dataset event",
+    ],
     optimization_goal: [
       "optimization_goal",
       "optimizationgoal",
-      "conversion event",
       "performance goal",
       "optimize for",
       "optimization event",
@@ -906,6 +916,21 @@ export class DynamicFieldEditor {
     }
     if (field.key === "adset_name") {
       session.adSetName = String(value);
+    }
+
+    if (
+      field.key === "conversion_event" ||
+      field.key === "custom_event_type" ||
+      field.key === "customEventType" ||
+      field.key === "conversionEvent"
+    ) {
+      session.userAnswers.conversionEvent = String(value).trim().toUpperCase();
+      session.userAnswers.customEventType = String(value).trim().toUpperCase();
+      session.customEventType = String(value).trim().toUpperCase();
+      if (session.creationJob) {
+        session.creationJob.conversionError = null;
+      }
+      session.conversionError = null;
     }
 
     // 2. Update preview data in-place

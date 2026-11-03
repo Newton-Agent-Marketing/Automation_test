@@ -113,6 +113,16 @@ export class PreviewBuilder {
         source: !isCBO ? getSource("budget", userAnswers.adSetBudget, firstRowValues.adset_daily_budget, "Default") : "Campaign CBO",
       },
       {
+        field: "Conversion Location",
+        value: campaignType === "APP_PROMOTION" ? "App" : (objective === "OUTCOME_LEADS" && !effectivePixelId ? "Instant Forms" : "Website"),
+        source: "Workflow",
+      },
+      {
+        field: "Conversion Event",
+        value: validationResult.customEventType || userAnswers.customEventType || userAnswers.conversionEvent || firstRowValues.conversion_event || (campaignType === "APP_PROMOTION" ? "App Installs" : (objective === "OUTCOME_LEADS" ? "LEAD" : "PURCHASE")),
+        source: getSource("conversionEvent", userAnswers.customEventType || userAnswers.conversionEvent, firstRowValues.conversion_event, "Default"),
+      },
+      {
         field: "Performance Goal",
         value: (() => {
           if (optimizationGoal === "VALUE") return "Maximise value of conversions";

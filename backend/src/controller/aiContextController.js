@@ -953,30 +953,45 @@ export class AiContextController {
       // Default initial selection: select all discovered tabs
       const initialSelectedTabIds = discoveredTabs.map((t) => (t.sheetId !== undefined ? t.sheetId : t.title));
 
-      // Independently fetch rows for each discovered worksheet tab without mixing data structures
-      let selectedTabsData = [];
-      try {
-        selectedTabsData = await sheetsService.fetchMultipleWorksheetsData({
-          spreadsheetIdOrUrl: cleanUrl,
-          selectedTabs: discoveredTabs,
-        });
-      } catch (multiErr) {
-        console.warn("[connectSheet] fetchMultipleWorksheetsData notice:", multiErr.message);
-      }
+      // Independently build tab data: Reuse already ingested primary tab to avoid heavy redundant re-fetching
+      const primaryTabId = discoveredTabs[0]?.sheetId !== undefined ? discoveredTabs[0].sheetId : 0;
+      const primaryTabTitle = ingestionResult.worksheetName || discoveredTabs[0]?.title || "Sheet1";
+      const primaryTabData = {
+        sheetId: primaryTabId,
+        tabName: primaryTabTitle,
+        columns: headers,
+        rows: rows.slice(0, 50).map((r) => r.values || r),
+        totalRows: rows.length,
+        totalDataRows: rows.filter((r) => r.isPopulated).length,
+        detectedHeaderRowIndex: ingestionResult.detectedHeaderRowIndex || 0,
+        lastSyncedAt: new Date(),
+      };
 
-      if (!selectedTabsData || selectedTabsData.length === 0) {
-        selectedTabsData = [
-          {
-            sheetId: 0,
-            tabName: ingestionResult.worksheetName || "Sheet1",
-            columns: headers,
-            rows: rows.map((r) => r.values || r),
-            totalRows: rows.length,
-            totalDataRows: rows.filter((r) => r.isPopulated).length,
-            detectedHeaderRowIndex: ingestionResult.detectedHeaderRowIndex || 0,
-            lastSyncedAt: new Date(),
-          },
-        ];
+      let selectedTabsData = [primaryTabData];
+
+      // If multiple tabs exist, fetch fast lightweight previews for the other tabs (skipping heavy grid data)
+      if (discoveredTabs.length > 1) {
+        const otherTabs = discoveredTabs.filter((t) => {
+          const tId = t.sheetId !== undefined ? t.sheetId : t.title;
+          const tTitle = t.title || t.tabName;
+          return String(tId) !== String(primaryTabId) && tTitle !== primaryTabTitle;
+        });
+
+        if (otherTabs.length > 0) {
+          try {
+            const extraTabsData = await sheetsService.fetchMultipleWorksheetsData({
+              spreadsheetIdOrUrl: cleanUrl,
+              selectedTabs: otherTabs,
+              maxRowsPerTab: 50,
+              skipGridData: true,
+            });
+            if (Array.isArray(extraTabsData) && extraTabsData.length > 0) {
+              selectedTabsData.push(...extraTabsData);
+            }
+          } catch (multiErr) {
+            console.warn("[connectSheet] fetchMultipleWorksheetsData notice:", multiErr.message);
+          }
+        }
       }
 
       // Update MongoDB AiContext if userId exists
@@ -1044,9 +1059,12 @@ export class AiContextController {
             _isBlank: r._isBlank,
           }));
           const diffInit = SpreadsheetSyncService.diffSpreadsheetRows(previousTracked, rawRowObjects, headers);
-          diffInit.trackedRows.forEach((tr, i) => {
-            if (rows[i]) tr.cachedValues = { ...(rows[i].values || rows[i]) };
-          });
+          // For memory & BSON limit safety, only attach cachedValues for smaller sheets (sheetRows already retains full row records)
+          if (rows.length <= 500) {
+            diffInit.trackedRows.forEach((tr, i) => {
+              if (rows[i]) tr.cachedValues = { ...(rows[i].values || rows[i]) };
+            });
+          }
 
           const lastRowNumber = ingestionResult.lastRowNumber || diffInit.lastRowNumber || (rows.length > 0 ? rows[rows.length - 1].originalRowNumber : 1);
           const totalSheetRows = ingestionResult.totalSheetRows || diffInit.totalSheetRows || (rows.length + 1);

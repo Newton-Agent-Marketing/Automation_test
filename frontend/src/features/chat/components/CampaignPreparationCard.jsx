@@ -48,6 +48,8 @@ export const CampaignPreparationCard = ({
   const [answers, setAnswers] = useState({});
   const [isEditingCustom, setIsEditingCustom] = useState(false);
   const [editInstruction, setEditInstruction] = useState("");
+  const [showTechDetails, setShowTechDetails] = useState(false);
+  const [customEventInput, setCustomEventInput] = useState("");
 
   const summaryTable = validationReport.summaryTable || [];
   const blockingCount = validationReport.blockingCount || 0;
@@ -59,6 +61,60 @@ export const CampaignPreparationCard = ({
   const isFailed = status === "FAILED" || creationJob.status === "FAILED";
   const isStale = status === "STALE_APPROVAL";
   const isNeedsInput = status === "NEEDS_USER_INPUT" || blockingCount > 0;
+
+  // Extract structured conversion error from backend
+  const conversionError =
+    creationJob.conversionError ||
+    session.conversionError ||
+    (creationJob.error &&
+    (creationJob.error.toLowerCase().includes("conversion event") ||
+      creationJob.error.toLowerCase().includes("adset error") ||
+      creationJob.error.toLowerCase().includes("objective that you selected"))
+      ? {
+          isConversionEventError: true,
+          campaignObjective: objective || "OUTCOME_SALES",
+          conversionLocation: campaignType === "APP_PROMOTION" ? "App" : "Website",
+          performanceGoal:
+            preview.adSetDetails?.find((d) => d.field === "Performance Goal")?.value ||
+            "Maximise value of conversions",
+          pixelId:
+            session.pixelId ||
+            session.userAnswers?.pixelId ||
+            preview.adSetDetails?.find((d) => d.field.includes("Tracking"))?.value ||
+            "Configured Pixel / Dataset",
+          conversionEvent:
+            session.customEventType ||
+            session.userAnswers?.customEventType ||
+            session.userAnswers?.conversionEvent ||
+            preview.adSetDetails?.find((d) => d.field === "Conversion Event")?.value ||
+            "LEAD",
+          optimizationGoal:
+            preview.adSetDetails?.find((d) => d.field === "Performance Goal")?.value || "VALUE",
+          destinationType: campaignType === "APP_PROMOTION" ? "APP" : "WEBSITE",
+          metaErrorCode: "100",
+          metaErrorSubcode: "3858084",
+          metaErrorMessage: creationJob.error,
+          failedAtStage: "Stage 3/10 — Creating Ad Set",
+          explanation:
+            "This conversion event isn't available with the objective that you selected. Choose another conversion event in order to publish.",
+        }
+      : null);
+
+  const handleEventSelect = (newEvent) => {
+    if (!newEvent || isSending) return;
+    if (typeof onAnswerField === "function") {
+      onAnswerField({ customEventType: newEvent, conversionEvent: newEvent });
+    } else if (typeof onEdit === "function") {
+      onEdit(`Change conversion event to ${newEvent}`);
+    }
+  };
+
+  const handleCustomEventSubmit = () => {
+    if (!customEventInput.trim() || isSending) return;
+    const ev = customEventInput.trim().toUpperCase();
+    handleEventSelect(ev);
+    setCustomEventInput("");
+  };
 
   const adDetails = preview.adDetails || [];
   const pageSize = 5;
@@ -84,6 +140,13 @@ export const CampaignPreparationCard = ({
 
   // Status Badge Helper
   const getStatusBadge = () => {
+    if (conversionError) {
+      return (
+        <span className="prep-badge prep-badge-error">
+          <AlertTriangle size={13} /> Incompatible Conversion Event
+        </span>
+      );
+    }
     if (isCompleted) {
       return (
         <span className="prep-badge prep-badge-success">
@@ -130,6 +193,251 @@ export const CampaignPreparationCard = ({
       <span className="prep-badge prep-badge-neutral">
         <Clock size={13} /> Validating Source Sheet
       </span>
+    );
+  };
+
+  const renderConversionErrorBox = () => {
+    if (!conversionError) return null;
+
+    const actualConfig = [
+      {
+        label: "Campaign Objective",
+        value: conversionError.campaignObjective || objective || "OUTCOME_SALES",
+        isError: false,
+      },
+      {
+        label: "Conversion Location",
+        value: conversionError.conversionLocation || (campaignType === "APP_PROMOTION" ? "App" : "Website"),
+        isError: false,
+      },
+      {
+        label: "Performance Goal",
+        value: conversionError.performanceGoal || "Maximise value of conversions",
+        isError: false,
+      },
+      {
+        label: "Dataset / Pixel ID",
+        value: conversionError.pixelId || session.pixelId || "Configured Pixel / Dataset",
+        isError: false,
+      },
+      {
+        label: "Conversion Event",
+        value: conversionError.conversionEvent || session.customEventType || "LEAD",
+        isError: true,
+      },
+      {
+        label: "Optimization Goal",
+        value: conversionError.optimizationGoal || "VALUE",
+        isError: false,
+      },
+      {
+        label: "Destination Type",
+        value: conversionError.destinationType || (campaignType === "APP_PROMOTION" ? "APP" : "WEBSITE"),
+        isError: false,
+      },
+    ];
+
+    const quickEvents = [
+      { id: "PURCHASE", label: "PURCHASE", desc: "Standard for Sales & Value" },
+      { id: "LEAD", label: "LEAD", desc: "For Lead Generation Campaigns" },
+      { id: "ADD_TO_CART", label: "ADD_TO_CART", desc: "E-Commerce Funnel" },
+      { id: "INITIATE_CHECKOUT", label: "INITIATE_CHECKOUT", desc: "Checkout Funnel" },
+      { id: "VIEW_CONTENT", label: "VIEW_CONTENT", desc: "Page / Content Views" },
+    ];
+
+    return (
+      <div
+        className="prep-conversion-error-box"
+        style={{
+          backgroundColor: "#FFF5F5",
+          border: "1.5px solid #F87171",
+          borderRadius: "12px",
+          padding: "16px 18px",
+          marginBottom: "18px",
+          boxShadow: "0 2px 8px -2px rgba(239, 68, 68, 0.12)",
+        }}
+      >
+        {/* Error Header */}
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px", marginBottom: "12px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <div style={{ width: "32px", height: "32px", borderRadius: "8px", backgroundColor: "#FEE2E2", display: "flex", alignItems: "center", justifyContent: "center", color: "#DC2626" }}>
+              <AlertTriangle size={18} />
+            </div>
+            <div>
+              <h5 style={{ margin: 0, fontSize: "14px", fontWeight: 700, color: "#991B1B" }}>
+                Ad Set Conversion Event Error
+              </h5>
+              <p style={{ margin: "2px 0 0 0", fontSize: "12px", color: "#B91C1C" }}>
+                Stage 3/10 — Creating Ad Set Failed due to incompatible conversion event
+              </p>
+            </div>
+          </div>
+          <span className="prep-badge prep-badge-error" style={{ fontSize: "10.5px" }}>
+            Meta Code {conversionError.metaErrorCode || "100"}
+          </span>
+        </div>
+
+        {/* Explanation */}
+        <div style={{ backgroundColor: "#FFFFFF", border: "1px solid #FECACA", borderRadius: "8px", padding: "10px 14px", fontSize: "12.5px", color: "#7F1D1D", lineHeight: 1.5, marginBottom: "14px" }}>
+          <strong>Why Meta rejected this:</strong> {conversionError.explanation || "This conversion event isn't available with the objective that you selected. Choose another conversion event in order to publish."}
+        </div>
+
+        {/* Actual Values Sent to Meta Grid */}
+        <div style={{ marginBottom: "16px" }}>
+          <span style={{ fontSize: "11px", fontWeight: 700, color: "#64748B", textTransform: "uppercase", letterSpacing: "0.5px", display: "block", marginBottom: "8px" }}>
+            Actual Values Sent to Meta Marketing API:
+          </span>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "8px" }}>
+            {actualConfig.map((item, idx) => (
+              <div
+                key={idx}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: "8px",
+                  border: item.isError ? "2px solid #DC2626" : "1px solid #E2E8F0",
+                  backgroundColor: item.isError ? "#FEF2F2" : "#FFFFFF",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "3px",
+                  position: "relative",
+                  boxShadow: item.isError ? "0 0 0 2px rgba(220, 38, 38, 0.15)" : "none",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: "10.5px", fontWeight: 600, color: item.isError ? "#991B1B" : "#64748B" }}>
+                    {item.label}
+                  </span>
+                  {item.isError && (
+                    <span style={{ fontSize: "9.5px", fontWeight: 700, color: "#FFFFFF", backgroundColor: "#DC2626", padding: "1px 5px", borderRadius: "4px" }}>
+                      INCOMPATIBLE
+                    </span>
+                  )}
+                </div>
+                <span style={{ fontSize: "12px", fontWeight: item.isError ? 700 : 500, color: item.isError ? "#DC2626" : "#0F172A", wordBreak: "break-all" }}>
+                  {item.value}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Action: Change Conversion Event */}
+        <div style={{ backgroundColor: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: "10px", padding: "12px 14px", marginBottom: "14px" }}>
+          <strong style={{ fontSize: "12.5px", color: "#0F172A", display: "block", marginBottom: "6px" }}>
+            Change Conversion Event:
+          </strong>
+          <p style={{ fontSize: "11.5px", color: "#64748B", margin: "0 0 10px 0" }}>
+            Select a compatible event below. All previously configured campaign details, targeting, and creatives will be preserved.
+          </p>
+
+          {/* Quick Select Buttons */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "10px" }}>
+            {quickEvents.map((ev) => (
+              <button
+                key={ev.id}
+                type="button"
+                disabled={isSending}
+                onClick={() => handleEventSelect(ev.id)}
+                className="prep-btn-secondary"
+                style={{
+                  fontSize: "11px",
+                  padding: "5px 10px",
+                  backgroundColor: conversionError.conversionEvent === ev.id ? "#FEE2E2" : "#F8FAFC",
+                  border: conversionError.conversionEvent === ev.id ? "1.5px solid #EF4444" : "1px solid #CBD5E1",
+                  color: "#0F172A",
+                  fontWeight: 600,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "4px",
+                }}
+              >
+                <span>{ev.label}</span>
+                <span style={{ fontSize: "9.5px", color: "#64748B", fontWeight: 400 }}>({ev.desc})</span>
+              </button>
+            ))}
+          </div>
+
+          {/* Custom Event Input */}
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <input
+              type="text"
+              placeholder="Or type custom event (e.g. PURCHASE)..."
+              value={customEventInput}
+              onChange={(e) => setCustomEventInput(e.target.value.toUpperCase())}
+              onKeyDown={(e) => e.key === "Enter" && handleCustomEventSubmit()}
+              style={{
+                flex: 1,
+                padding: "7px 10px",
+                borderRadius: "6px",
+                border: "1px solid #CBD5E1",
+                fontSize: "12px",
+                outline: "none",
+                fontFamily: "monospace",
+              }}
+            />
+            <button
+              type="button"
+              disabled={!customEventInput.trim() || isSending}
+              onClick={handleCustomEventSubmit}
+              className="prep-btn-primary"
+              style={{ padding: "7px 14px", fontSize: "11.5px" }}
+            >
+              Update Event
+            </button>
+          </div>
+        </div>
+
+        {/* Safe Stage 3 Retry Box */}
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "10px", padding: "10px 12px", borderRadius: "8px", backgroundColor: "#EFF6FF", border: "1px solid #BFDBFE" }}>
+          <div style={{ fontSize: "12px", color: "#1E40AF" }}>
+            <span>🎯 <strong>Safe Resume:</strong> Campaign <code>{creationJob.metaCampaignId || "Active"}</code> is preserved. Retrying will execute only the failed Ad Set creation (Stage 3).</span>
+          </div>
+          <button
+            type="button"
+            disabled={isSending}
+            onClick={() => {
+              if (typeof onApprove === "function") onApprove();
+            }}
+            className="prep-btn-warning"
+            style={{ padding: "7px 14px", fontSize: "12px", fontWeight: 600, display: "flex", alignItems: "center", gap: "6px" }}
+          >
+            <RefreshCw size={13} className={isSending ? "spin" : ""} /> Retry Ad Set Creation
+          </button>
+        </div>
+
+        {/* Collapsible Technical Details */}
+        <div style={{ marginTop: "12px", paddingTop: "10px", borderTop: "1px solid #FECACA" }}>
+          <button
+            type="button"
+            onClick={() => setShowTechDetails(!showTechDetails)}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              color: "#7F1D1D",
+              fontSize: "11.5px",
+              fontWeight: 600,
+              display: "flex",
+              alignItems: "center",
+              gap: "5px",
+              padding: 0,
+            }}
+          >
+            {showTechDetails ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+            <span>Technical Details (Meta API Error [{conversionError.metaErrorCode || "100"}])</span>
+          </button>
+
+          {showTechDetails && (
+            <div style={{ marginTop: "8px", padding: "10px 12px", borderRadius: "6px", backgroundColor: "#1E293B", color: "#F8FAFC", fontFamily: "monospace", fontSize: "11px", lineHeight: 1.6 }}>
+              <div><strong>Meta API Error Code:</strong> {conversionError.metaErrorCode || 100}</div>
+              {conversionError.metaErrorSubcode && <div><strong>Meta API Subcode:</strong> {conversionError.metaErrorSubcode}</div>}
+              <div><strong>Failed Stage:</strong> {conversionError.failedAtStage || "Stage 3/10 — Creating Ad Set"}</div>
+              <div><strong>Raw Error:</strong> {conversionError.metaErrorMessage || creationJob.error}</div>
+              <div><strong>Meta Campaign ID:</strong> {creationJob.metaCampaignId || "N/A"}</div>
+            </div>
+          )}
+        </div>
+      </div>
     );
   };
 
@@ -236,6 +544,10 @@ export const CampaignPreparationCard = ({
                   Table 2: Ad Set Details
                 </h5>
               </div>
+
+              {/* Prominent Ad Set Conversion Error & Recovery Section */}
+              {conversionError && renderConversionErrorBox()}
+
               <div className="prep-table-container">
                 <table className="prep-data-table">
                   <thead>
@@ -246,17 +558,89 @@ export const CampaignPreparationCard = ({
                     </tr>
                   </thead>
                   <tbody>
-                    {(preview.adSetDetails || []).map((row, idx) => (
-                      <tr key={idx}>
-                        <td style={{ fontWeight: 600 }}>{row.field}</td>
-                        <td style={{ color: "#059669", fontWeight: 500 }}>{String(row.value)}</td>
-                        <td>
-                          <span style={{ padding: "2px 6px", borderRadius: "4px", backgroundColor: "#F1F5F9", fontSize: "11px", color: "#475569" }}>
-                            {row.source}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
+                    {(preview.adSetDetails || []).map((row, idx) => {
+                      const isConvEventRow =
+                        row.field.toLowerCase().includes("conversion event") ||
+                        row.field.toLowerCase().includes("event type");
+                      const isRowIncompatible = Boolean(conversionError && isConvEventRow);
+
+                      return (
+                        <tr
+                          key={idx}
+                          style={
+                            isRowIncompatible
+                              ? {
+                                  backgroundColor: "#FEF2F2",
+                                  borderLeft: "3px solid #DC2626",
+                                }
+                              : {}
+                          }
+                        >
+                          <td style={{ fontWeight: 600 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                              {isRowIncompatible && <AlertTriangle size={13} style={{ color: "#DC2626" }} />}
+                              <span style={{ color: isRowIncompatible ? "#991B1B" : "inherit" }}>
+                                {row.field}
+                              </span>
+                              {isRowIncompatible && (
+                                <span
+                                  style={{
+                                    fontSize: "9.5px",
+                                    fontWeight: 700,
+                                    backgroundColor: "#DC2626",
+                                    color: "#FFFFFF",
+                                    padding: "1px 5px",
+                                    borderRadius: "4px",
+                                  }}
+                                >
+                                  INCOMPATIBLE
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td
+                            style={{
+                              color: isRowIncompatible ? "#DC2626" : "#059669",
+                              fontWeight: isRowIncompatible ? 700 : 500,
+                            }}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                              <span>{String(row.value)}</span>
+                              {isConvEventRow && (
+                                <button
+                                  type="button"
+                                  disabled={isSending}
+                                  onClick={() => {
+                                    setIsEditingCustom(true);
+                                    setEditInstruction("Change conversion event to ");
+                                  }}
+                                  style={{
+                                    border: "1px solid #CBD5E1",
+                                    background: "#FFFFFF",
+                                    borderRadius: "4px",
+                                    padding: "2px 8px",
+                                    fontSize: "11px",
+                                    cursor: "pointer",
+                                    color: isRowIncompatible ? "#DC2626" : "var(--blue)",
+                                    fontWeight: 600,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "3px",
+                                  }}
+                                >
+                                  <Edit3 size={11} /> Edit
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                          <td>
+                            <span style={{ padding: "2px 6px", borderRadius: "4px", backgroundColor: "#F1F5F9", fontSize: "11px", color: "#475569" }}>
+                              {row.source}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -500,6 +884,8 @@ export const CampaignPreparationCard = ({
         {/* 4. CREATION RESULTS TAB */}
         {activeTab === "creation" && (
           <div>
+            {conversionError && renderConversionErrorBox()}
+
             <div style={{ padding: "12px 16px", borderRadius: "8px", backgroundColor: "#EEF4FF", border: "1px solid #BFDBFE", fontSize: "12.5px", marginBottom: 14 }}>
               <strong style={{ color: "var(--blue)", display: "block", marginBottom: 3 }}>Execution Summary:</strong>
               <span style={{ color: "var(--ink)" }}>

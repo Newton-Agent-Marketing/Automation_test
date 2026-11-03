@@ -688,15 +688,32 @@ export const runAgentChat = async ({
       }
     } catch (prepErr) {
       console.error("[CampaignPreparationService Error]:", prepErr);
-      const errMsg = `### ⚠️ Campaign Preparation Notice\n\n${prepErr.message}\n\nPlease check your spreadsheet data or configuration and try again.`;
+      let sessionDoc = null;
+      try {
+        const CampaignPreparationSession = (await import("../models/campaignPreparationSession.js")).default;
+        sessionDoc = await CampaignPreparationSession.findOne({ conversationId }).lean();
+      } catch (_) {}
+
+      const convErr = prepErr.conversionError || sessionDoc?.creationJob?.conversionError;
+      const errMsg = convErr
+        ? `### ⚠️ Ad Set Creation Issue — Incompatible Conversion Event\n\n**Meta API AdSet Error [${convErr.metaErrorCode || "100"}]**: ${convErr.metaErrorMessage || prepErr.message}\n\n> 💡 **Why this happened**: ${convErr.explanation || "This conversion event isn't available with the objective that you selected."}\n\nYour Campaign has been preserved. Please change the conversion event below to retry.`
+        : `### ⚠️ Campaign Preparation Notice\n\n${prepErr.message}\n\nPlease check your configuration below and retry.`;
+
       result = {
         content: errMsg,
         toolCalls: [],
+        preparationData: sessionDoc || activePrepSession,
       };
       if (typeof onEvent === "function") {
         onEvent({ type: "text_delta", content: errMsg });
+        if (sessionDoc) {
+          onEvent({ type: "preparation_update", session: sessionDoc });
+        }
       }
       if (res) {
+        if (sessionDoc) {
+          AgentStreamHandler.sendPreparationUpdate(res, sessionDoc);
+        }
         AgentStreamHandler.sendChunk(res, errMsg);
       }
     }
@@ -1129,6 +1146,9 @@ export class ChatAgentController {
       const act = String(action || "").toLowerCase().trim();
       if (act === "approve" || act.includes("approve")) {
         userMessage = "Approve Campaign & Create Ads";
+      } else if (act === "change_conversion_event" || act === "change_event") {
+        const ev = payload?.customEventType || payload?.conversionEvent || payload?.event || "PURCHASE";
+        userMessage = `Change conversion event to ${ev}`;
       } else if (act === "edit" || act.includes("edit")) {
         userMessage = payload?.message || payload?.instructions || "Edit details";
       } else if (act === "answer" || act.includes("answer")) {
@@ -1168,7 +1188,20 @@ export class ChatAgentController {
       });
     } catch (error) {
       console.error("[Preparation Action Error]:", error);
-      return res.status(500).json({ success: false, message: error.message });
+      let sessionDoc = null;
+      try {
+        const CampaignPreparationSession = (await import("../models/campaignPreparationSession.js")).default;
+        sessionDoc = await CampaignPreparationSession.findOne({ conversationId }).lean();
+      } catch (_) {}
+
+      return res.status(200).json({
+        success: false,
+        message: error.message,
+        session: sessionDoc,
+        data: {
+          session: sessionDoc,
+        },
+      });
     }
   }
 }

@@ -423,9 +423,9 @@ export class CampaignPreparationService {
         startedAt: new Date(),
         completedAt: null,
         campaignName: session.campaignName,
-        metaCampaignId: null,
-        metaAdSetId: null,
-        adResults: [],
+        metaCampaignId: session.creationJob?.metaCampaignId || session.existingCampaignId || null,
+        metaAdSetId: session.creationJob?.metaAdSetId || session.existingAdSetId || null,
+        adResults: session.creationJob?.adResults || [],
         totalAds: session.preview?.adDetails?.length || 0,
       };
       session.auditHistory.push({
@@ -439,31 +439,59 @@ export class CampaignPreparationService {
       emit("Starting Meta Ads creation in strict dependency order...");
 
       // 2. Execute creation in dependency order
-      const creationResult = await MetaAdsOrchestrator.executeApprovalCreation({
-        session,
-        userId,
-        userEmail,
-        onProgress,
-      });
+      let creationResult = null;
+      try {
+        creationResult = await MetaAdsOrchestrator.executeApprovalCreation({
+          session,
+          userId,
+          userEmail,
+          onProgress,
+        });
 
-      const responseMd = MetaAdsOrchestrator.formatCreationResultMarkdown(
-        creationResult,
-        session.campaignName,
-        session.adSetName
-      );
+        const responseMd = MetaAdsOrchestrator.formatCreationResultMarkdown(
+          creationResult,
+          session.campaignName,
+          session.adSetName
+        );
 
-      return {
-        content: responseMd,
-        preparationSession: typeof session?.toObject === "function" ? session.toObject() : session,
-        toolCalls: [
-          {
-            toolName: "execute_meta_ads_creation",
-            toolArgs: { campaignName: session.campaignName, adSetName: session.adSetName },
-            toolResult: creationResult,
-            status: "SUCCESS",
-          },
-        ],
-      };
+        return {
+          content: responseMd,
+          preparationSession: typeof session?.toObject === "function" ? session.toObject() : session,
+          toolCalls: [
+            {
+              toolName: "execute_meta_ads_creation",
+              toolArgs: { campaignName: session.campaignName, adSetName: session.adSetName },
+              toolResult: creationResult,
+              status: "SUCCESS",
+            },
+          ],
+        };
+      } catch (creationErr) {
+        console.error("[CampaignPreparationService Approval Creation Error]:", creationErr.message);
+        const convErr = creationErr.conversionError || session.creationJob?.conversionError || session.conversionError;
+        let responseMd = "";
+        if (convErr) {
+          responseMd = `### ⚠️ Ad Set Creation Issue — Incompatible Conversion Event\n\n` +
+            `**Meta API AdSet Error [${convErr.metaErrorCode || "100"}]**: ${convErr.metaErrorMessage || creationErr.message}\n\n` +
+            `> 💡 **Why this happened**: ${convErr.explanation || "This conversion event isn't available with the objective that you selected."}\n\n` +
+            `Your Campaign (\`${session.creationJob?.metaCampaignId || "Created"}\`) has been safely preserved. Please review the Conversion section in your campaign card below to select a compatible event and retry Ad Set creation.`;
+        } else {
+          responseMd = `### ⚠️ Campaign Creation Notice\n\n${creationErr.message}\n\nPlease inspect the details below and retry creation.`;
+        }
+
+        return {
+          content: responseMd,
+          preparationSession: typeof session?.toObject === "function" ? session.toObject() : session,
+          toolCalls: [
+            {
+              toolName: "execute_meta_ads_creation",
+              toolArgs: { campaignName: session.campaignName, adSetName: session.adSetName },
+              toolResult: { error: creationErr.message, conversionError: convErr },
+              status: "FAILED",
+            },
+          ],
+        };
+      }
     }
 
     // =========================================================================
@@ -710,9 +738,9 @@ export class CampaignPreparationService {
             startedAt: new Date(),
             completedAt: null,
             campaignName: session.campaignName,
-            metaCampaignId: null,
-            metaAdSetId: null,
-            adResults: [],
+            metaCampaignId: session.creationJob?.metaCampaignId || session.existingCampaignId || null,
+            metaAdSetId: session.creationJob?.metaAdSetId || session.existingAdSetId || null,
+            adResults: session.creationJob?.adResults || [],
             totalAds: preview.adDetails?.length || 0,
           };
           session.auditHistory.push({
@@ -724,33 +752,55 @@ export class CampaignPreparationService {
           await session.save();
 
           emit("Executing Meta Ads creation on selected Meta Ad Account...");
-          const creationResult = await MetaAdsOrchestrator.executeApprovalCreation({
-            session,
-            userId,
-            userEmail,
-            onProgress,
-          });
+          try {
+            const creationResult = await MetaAdsOrchestrator.executeApprovalCreation({
+              session,
+              userId,
+              userEmail,
+              onProgress,
+            });
 
-          let replyMd = `### ✅ Missing Fields Received & Ad Creation Resumed\n\n`;
-          replyMd += `> 📥 **Injected Values**: ` + Object.entries(parsedAnswers).map(([k, v]) => `\`${k}\`: \`${v}\``).join(", ") + `\n\n`;
-          replyMd += MetaAdsOrchestrator.formatCreationResultMarkdown(
-            creationResult,
-            session.campaignName,
-            session.adSetName
-          );
+            let replyMd = `### ✅ Missing Fields Received & Ad Creation Resumed\n\n`;
+            replyMd += `> 📥 **Injected Values**: ` + Object.entries(parsedAnswers).map(([k, v]) => `\`${k}\`: \`${v}\``).join(", ") + `\n\n`;
+            replyMd += MetaAdsOrchestrator.formatCreationResultMarkdown(
+              creationResult,
+              session.campaignName,
+              session.adSetName
+            );
 
-          return {
-            content: replyMd,
-            preparationSession: typeof session?.toObject === "function" ? session.toObject() : session,
-            toolCalls: [
-              {
-                toolName: "inject_missing_fields_and_create_ad",
-                toolArgs: parsedAnswers,
-                toolResult: creationResult,
-                status: "SUCCESS",
-              },
-            ],
-          };
+            return {
+              content: replyMd,
+              preparationSession: typeof session?.toObject === "function" ? session.toObject() : session,
+              toolCalls: [
+                {
+                  toolName: "inject_missing_fields_and_create_ad",
+                  toolArgs: parsedAnswers,
+                  toolResult: creationResult,
+                  status: "SUCCESS",
+                },
+              ],
+            };
+          } catch (creationErr) {
+            console.error("[CampaignPreparationService Resume Creation Error]:", creationErr.message);
+            const convErr = creationErr.conversionError || session.creationJob?.conversionError || session.conversionError;
+            let replyMd = `### ⚠️ Ad Set Creation Issue — Incompatible Conversion Event\n\n` +
+              `**Meta API AdSet Error [${convErr?.metaErrorCode || "100"}]**: ${convErr?.metaErrorMessage || creationErr.message}\n\n` +
+              `> 💡 **Why this happened**: ${convErr?.explanation || "This conversion event isn't available with the objective that you selected."}\n\n` +
+              `Your Campaign (\`${session.creationJob?.metaCampaignId || "Created"}\`) has been preserved. Please change the conversion event below and retry.`;
+
+            return {
+              content: replyMd,
+              preparationSession: typeof session?.toObject === "function" ? session.toObject() : session,
+              toolCalls: [
+                {
+                  toolName: "inject_missing_fields_and_create_ad",
+                  toolArgs: parsedAnswers,
+                  toolResult: { error: creationErr.message, conversionError: convErr },
+                  status: "FAILED",
+                },
+              ],
+            };
+          }
         } else {
           session.status = "NEEDS_USER_INPUT";
           await session.save();
@@ -986,9 +1036,9 @@ export class CampaignPreparationService {
           startedAt: new Date(),
           completedAt: null,
           campaignName: session.campaignName,
-          metaCampaignId: null,
-          metaAdSetId: null,
-          adResults: [],
+          metaCampaignId: session.creationJob?.metaCampaignId || session.existingCampaignId || null,
+          metaAdSetId: session.creationJob?.metaAdSetId || session.existingAdSetId || null,
+          adResults: session.creationJob?.adResults || [],
           totalAds: session.preview?.adDetails?.length || 0,
         };
         session.auditHistory.push({
@@ -999,31 +1049,51 @@ export class CampaignPreparationService {
         });
         await session.save();
 
-        const creationResult = await MetaAdsOrchestrator.executeApprovalCreation({
-          session,
-          userId,
-          userEmail,
-          onProgress,
-        });
+        try {
+          const creationResult = await MetaAdsOrchestrator.executeApprovalCreation({
+            session,
+            userId,
+            userEmail,
+            onProgress,
+          });
 
-        const responseMd = MetaAdsOrchestrator.formatCreationResultMarkdown(
-          creationResult,
-          session.campaignName,
-          session.adSetName
-        );
+          const responseMd = MetaAdsOrchestrator.formatCreationResultMarkdown(
+            creationResult,
+            session.campaignName,
+            session.adSetName
+          );
 
-        return {
-          content: responseMd,
-          preparationSession: typeof session?.toObject === "function" ? session.toObject() : session,
-          toolCalls: [
-            {
-              toolName: "execute_meta_ads_creation",
-              toolArgs: { campaignName: session.campaignName, adSetName: session.adSetName },
-              toolResult: creationResult,
-              status: "SUCCESS",
-            },
-          ],
-        };
+          return {
+            content: responseMd,
+            preparationSession: typeof session?.toObject === "function" ? session.toObject() : session,
+            toolCalls: [
+              {
+                toolName: "execute_meta_ads_creation",
+                toolArgs: { campaignName: session.campaignName, adSetName: session.adSetName },
+                toolResult: creationResult,
+                status: "SUCCESS",
+              },
+            ],
+          };
+        } catch (creationErr) {
+          console.error("[CampaignPreparationService Auto Creation Error]:", creationErr.message);
+          const convErr = creationErr.conversionError || session.creationJob?.conversionError || session.conversionError;
+          return {
+            content: `### ⚠️ Ad Set Creation Issue — Incompatible Conversion Event\n\n` +
+              `**Meta API AdSet Error [${convErr?.metaErrorCode || "100"}]**: ${convErr?.metaErrorMessage || creationErr.message}\n\n` +
+              `> 💡 **Why this happened**: ${convErr?.explanation || "This conversion event isn't available with the objective that you selected."}\n\n` +
+              `Your Campaign (\`${session.creationJob?.metaCampaignId || "Created"}\`) has been preserved. Please change the conversion event below to retry.`,
+            preparationSession: typeof session?.toObject === "function" ? session.toObject() : session,
+            toolCalls: [
+              {
+                toolName: "execute_meta_ads_creation",
+                toolArgs: { campaignName: session.campaignName, adSetName: session.adSetName },
+                toolResult: { error: creationErr.message, conversionError: convErr },
+                status: "FAILED",
+              },
+            ],
+          };
+        }
       }
 
       outputMd += `\n\n` + PreviewBuilder.formatPreviewMarkdown(preview);
