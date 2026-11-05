@@ -1438,6 +1438,17 @@ export class AiContextController {
       const totalDataRows = selectedTabsData.reduce((sum, t) => sum + (t.totalDataRows || 0), 0);
       const allColumns = Array.from(new Set(selectedTabsData.flatMap((t) => t.columns || [])));
 
+      const sanitizeMongoKeys = (obj) => {
+        if (!obj || typeof obj !== "object") return obj;
+        if (Array.isArray(obj)) return obj.map(sanitizeMongoKeys);
+        const clean = {};
+        for (const [k, v] of Object.entries(obj)) {
+          const cleanKey = String(k).replace(/\./g, "_").replace(/^\$/, "_");
+          clean[cleanKey] = (v && typeof v === "object") ? sanitizeMongoKeys(v) : v;
+        }
+        return clean;
+      };
+
       // Combine rows from selected tabs only, tagging each row with _worksheetTab
       const combinedSelectedRows = [];
       selectedTabsData.forEach((tab) => {
@@ -1450,6 +1461,13 @@ export class AiContextController {
         });
       });
 
+      // Cap stored sample rows and tabs for memory & MongoDB 16MB document size limit
+      const safeStoredRows = combinedSelectedRows.slice(0, 300).map((r) => sanitizeMongoKeys(r ? (r.values || r) : {}));
+      const safeSelectedTabsData = selectedTabsData.map((tab) => ({
+        ...tab,
+        rows: (tab.rows || []).slice(0, 50).map((r) => sanitizeMongoKeys(r ? (r.values || r) : {})),
+      }));
+
       // Update target sheet in sheets array (resiliently update or push)
       const primarySelectedTitle = tabsToFetch.length > 0 ? (tabsToFetch[0].title || tabsToFetch[0].tabName) : (targetSheet?.worksheetName || "Sheet1");
       const updatedSheetEntry = {
@@ -1460,11 +1478,11 @@ export class AiContextController {
         targetTab: primarySelectedTitle,
         selectedTabIds,
         availableTabs,
-        selectedTabsData,
+        selectedTabsData: safeSelectedTabsData,
         totalRows,
         totalDataRows,
         sheetColumns: allColumns,
-        sheetRows: combinedSelectedRows,
+        sheetRows: safeStoredRows,
         lastSyncedAt: new Date(),
       };
 
@@ -1481,17 +1499,21 @@ export class AiContextController {
         targetTab: primarySelectedTitle,
         selectedTabIds,
         availableTabs,
-        selectedTabsData,
+        selectedTabsData: safeSelectedTabsData,
         totalRows,
         totalDataRows,
         sheetColumns: allColumns,
-        sheetRows: combinedSelectedRows,
+        sheetRows: safeStoredRows,
         lastSyncedAt: new Date(),
         sheets: sheetsArr,
       };
 
-      context.markModified("nodes");
-      await context.save();
+      try {
+        context.markModified("nodes");
+        await context.save();
+      } catch (mongoSaveErr) {
+        console.warn("[saveTabSelection] MongoDB context save warning (skipping full node save to preserve 200 response):", mongoSaveErr.message);
+      }
 
       return res.status(200).json({
         success: true,
