@@ -1,3 +1,41 @@
+const FIELD_DEFINITIONS = [
+  { key: "primary_text", aliases: ["primary text", "ad copy", "caption", "copy"], output: ["primaryText", "primary_text"] },
+  { key: "headline", aliases: ["ad headline", "headline"], output: ["headline"] },
+  { key: "daily_budget", aliases: ["daily budget", "campaign budget", "ad set budget", "budget"], output: ["daily_budget", "campaignBudget", "adSetBudget", "budget"], type: "number" },
+  { key: "pixel_id", aliases: ["facebook pixel id", "pixel id", "pixel", "dataset id", "dataset", "fb_pixel"], output: ["pixelId", "pixel_id", "dataset_id"] },
+  { key: "page_id", aliases: ["facebook page id", "fb page id", "page id"], output: ["pageId", "page_id"] },
+  { key: "display_link", aliases: ["display link", "display url", "display_link", "vanity url"], output: ["displayLink", "display_link"] },
+  { key: "instagram_account_id", aliases: ["instagram account id", "instagram id", "ig account id"], output: ["instagramId", "instagram_id", "instagram_account_id"] },
+  { key: "app_id", aliases: ["meta app id", "application id", "app id", "appid"], output: ["appId", "app_id"] },
+  { key: "object_store_url", aliases: ["app store url", "play store url", "store url", "object store url"], output: ["objectStoreUrl", "object_store_url"] },
+  { key: "landing_page_url", aliases: ["landing page url", "website url", "destination url", "landing page"], output: ["landingPageUrl", "landing_page_url", "website_url"] },
+  { key: "conversion_event", aliases: ["conversion event", "custom event type", "event type"], output: ["conversionEvent", "conversion_event", "customEventType"] },
+  { key: "url_tags", aliases: ["tracking parameters", "url parameters", "url tags", "utm parameters"], output: ["urlTags", "url_tags"] },
+];
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function toCamelCase(value) {
+  return value.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
+}
+
+function normalizeKey(value) {
+  return String(value || "")
+    .replace(/([a-z])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "");
+}
+
+function cleanValue(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^[\s"'“”]+/, "")
+    .replace(/[\s"'“”]+$/, "")
+    .trim();
+}
 export class MissingFieldCollector {
   /**
    * Format questions asking the user for missing fields
@@ -13,8 +51,8 @@ export class MissingFieldCollector {
         item.level === "campaign"
           ? "Campaign Level"
           : item.level === "adset"
-          ? "Ad Set Level"
-          : "Ad Level";
+            ? "Ad Set Level"
+            : "Ad Level";
 
       const rowsText =
         item.affectedRows && item.affectedRows.length > 0
@@ -30,7 +68,7 @@ export class MissingFieldCollector {
     });
 
     md += `Please provide these values here in the chat so I can continue creating your ad.\n\n`;
-    md += `> 💬 **Example response**: *"Pixel ID is 123456789, Page ID is 987654321 and Display Link is example.com"*\n`;
+    md += `> 💬 **Example response**: *"Primary Text: This is our best offer, get 50% discount, Headline: Get Started Today, Daily Budget: 500"*\n`;
     md += `> Once received, I will automatically merge these values with your Google Sheet data and proceed with ad creation.`;
 
     return md;
@@ -44,6 +82,9 @@ export class MissingFieldCollector {
     const answers = {};
     const msg = userMessage.trim();
     const msgLower = msg.toLowerCase();
+
+
+
 
     // 1. Pixel ID / Dataset ID
     const pixelMatch =
@@ -182,20 +223,23 @@ export class MissingFieldCollector {
     }
 
     // 11. Headline
-    const headlineMatch =
-      msg.match(/(?:ad\s*headline|headline)\s*(?:is|:|=|-|\s)\s*["'“]?([^"\n,;]+?)["'”]?$/im) ||
-      msg.match(/(?:ad\s*headline|headline)[\s:=]+([^\n,]+)/i);
+    const headlineMatch = msg.match(
+      /(?:ad\s*headline|headline)\s*(?:is|:|=|-)\s*["'“]?(.+?)(?=\s*(?:,\s*)?(?:primary\s*text|ad\s*copy|copy|caption|daily\s*budget|budget|pixel\s*id|page\s*id|app\s*id|store\s*url)\s*(?:is|:|=|-)|$)/i
+    );
+
     if (headlineMatch) {
-      answers.headline = headlineMatch[1].trim();
+      answers.headline = cleanValue(headlineMatch[1]);
     }
 
     // 12. Primary Text / Ad Copy
-    const textMatch =
-      msg.match(/(?:primary\s*text|ad\s*copy|copy|caption)\s*(?:is|:|=|-|\s)\s*["'“]?([^"\n;]+?)["'”]?$/im) ||
-      msg.match(/(?:primary\s*text|ad\s*copy|copy|caption)[\s:=]+([^\n]+)/i);
+    const textMatch = msg.match(
+      /(?:primary\s*text|ad\s*copy|copy|caption)\s*(?:is|:|=|-)\s*["'“]?(.+?)(?=\s*(?:,\s*)?(?:headline|ad\s*headline|daily\s*budget|campaign\s*budget|budget|pixel\s*id|page\s*id|app\s*id|store\s*url|conversion\s*event)\s*(?:is|:|=|-)|$)/i
+    );
+
     if (textMatch) {
-      answers.primaryText = textMatch[1].trim();
-      answers.primary_text = textMatch[1].trim();
+      const primaryText = cleanValue(textMatch[1]);
+      answers.primaryText = primaryText;
+      answers.primary_text = primaryText;
     }
 
     // 13. Conversion Event / Custom Event Type
@@ -217,26 +261,42 @@ export class MissingFieldCollector {
       answers.url_tags = t;
     }
 
+
     // 15. Dynamic Field Match against provided missingFields
     if (Array.isArray(missingFields) && missingFields.length > 0) {
       for (const fieldItem of missingFields) {
-        const fKey = fieldItem.field;
-        const fLabel = fieldItem.label;
+        const fKey = fieldItem.field || fieldItem.key;
+        const fLabel = fieldItem.label || fKey;
 
-        // If already resolved above, skip
-        if (answers[fKey] || answers[fKey.replace(/_([a-z])/g, (_, c) => c.toUpperCase())]) {
+        if (!fKey || !fLabel) continue;
+
+        const normalizedKey = normalizeKey(fKey);
+        const camelKey = toCamelCase(normalizedKey);
+
+        if (answers[fKey] !== undefined || answers[camelKey] !== undefined) {
           continue;
         }
 
-        // Try regex with label: e.g. "Facebook Page ID is ..." or "Display Link is ..."
-        const labelClean = (fLabel || "").replace(/[^a-zA-Z0-9\s]/g, "").trim();
-        if (labelClean.length >= 3) {
-          const labelRegex = new RegExp(`(?:${labelClean})\\s*(?:is|:|=|-|\\s)\\s*([^\\n,;]+)`, "i");
-          const lMatch = msg.match(labelRegex);
-          if (lMatch) {
-            const val = lMatch[1].trim().replace(/^['"]|['"]$/g, "");
-            answers[fKey] = val;
-            answers[fKey.replace(/_([a-z])/g, (_, c) => c.toUpperCase())] = val;
+        const labelClean = String(fLabel).trim();
+
+        if (labelClean.length < 3) continue;
+
+        const labelRegex = new RegExp(
+          `(?:${escapeRegex(labelClean)})\\s*(?:is|:|=)\\s*(.+?)(?=\\s*(?:,\\s*)?(?:${missingFields
+            .map((f) => escapeRegex(f.label || f.field || f.key || ""))
+            .filter(Boolean)
+            .join("|")})\\s*(?:is|:|=)|$)`,
+          "i"
+        );
+
+        const match = msg.match(labelRegex);
+
+        if (match) {
+          const value = cleanValue(match[1]);
+
+          if (value) {
+            answers[fKey] = value;
+            answers[camelKey] = value;
           }
         }
       }
