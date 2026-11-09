@@ -550,6 +550,18 @@ export class ClaudeAgentService {
       throw new Error("Claude SDK Authentication Bypassed: Missing or invalid ANTHROPIC_API_KEY");
     }
 
+    const authCheck = await fetch("https://api.anthropic.com/v1/models", {
+      headers: {
+        "x-api-key": cleanApiKey,
+        "anthropic-version": "2023-06-01",
+      },
+    });
+
+    console.log("[ANTHROPIC DIRECT AUTH TEST]", {
+      status: authCheck.status,
+      success: authCheck.ok,
+    });
+
     const options = {
       systemPrompt: systemPromptText,
       model: modelName,
