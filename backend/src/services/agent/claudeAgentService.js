@@ -142,109 +142,109 @@ ${edgesLines}`;
 
     skillsText = loadedSkills;
 
-      if (googleAcc) {
-        const rawId = String(googleAcc.accountId || "").replace(/[^0-9]/g, "");
-        const formattedId = /^\d{10}$/.test(rawId) ? rawId.replace(/(\d{3})(\d{3})(\d{4})/, "$1-$2-$3") : rawId;
-        const childList = Array.isArray(googleAcc.accounts) && googleAcc.accounts.length > 0 ? googleAcc.accounts : [];
+    if (googleAcc) {
+      const rawId = String(googleAcc.accountId || "").replace(/[^0-9]/g, "");
+      const formattedId = /^\d{10}$/.test(rawId) ? rawId.replace(/(\d{3})(\d{3})(\d{4})/, "$1-$2-$3") : rawId;
+      const childList = Array.isArray(googleAcc.accounts) && googleAcc.accounts.length > 0 ? googleAcc.accounts : [];
 
-        if (googleAcc.isManager && childList.length > 0) {
-          const childRows = childList.map((c, i) => {
-            const cId = String(c.customerId || "").replace(/[^0-9]/g, "");
-            const cFormatted = /^\d{10}$/.test(cId) ? cId.replace(/(\d{3})(\d{3})(\d{4})/, "$1-$2-$3") : cId;
-            return `  ${i + 1}. **"${c.name || "Child Account"}"** — Customer ID: \`${cFormatted}\` (\`${cId}\`) [Status: ${c.status || "ENABLED"}]`;
-          }).join("\n");
+      if (googleAcc.isManager && childList.length > 0) {
+        const childRows = childList.map((c, i) => {
+          const cId = String(c.customerId || "").replace(/[^0-9]/g, "");
+          const cFormatted = /^\d{10}$/.test(cId) ? cId.replace(/(\d{3})(\d{3})(\d{4})/, "$1-$2-$3") : cId;
+          return `  ${i + 1}. **"${c.name || "Child Account"}"** — Customer ID: \`${cFormatted}\` (\`${cId}\`) [Status: ${c.status || "ENABLED"}]`;
+        }).join("\n");
 
-          const childId = googleAcc.selectedCustomerId || (childList.find((a) => !a.isManager)?.customerId) || rawId;
-          const mgrId = googleAcc.managerCustomerId || googleAcc.managerAccountId || rawId;
-          const mgrFormatted = /^\d{10}$/.test(String(mgrId)) ? String(mgrId).replace(/(\d{3})(\d{3})(\d{4})/, "$1-$2-$3") : mgrId;
+        const childId = googleAcc.selectedCustomerId || (childList.find((a) => !a.isManager)?.customerId) || rawId;
+        const mgrId = googleAcc.managerCustomerId || googleAcc.managerAccountId || rawId;
+        const mgrFormatted = /^\d{10}$/.test(String(mgrId)) ? String(mgrId).replace(/(\d{3})(\d{3})(\d{4})/, "$1-$2-$3") : mgrId;
 
-          googleContextText = `Manager Account (MCC): \`${mgrFormatted}\` (\`${mgrId}\`) - "${googleAcc.accountName}" | Currency: ${googleAcc.currency || "INR"}
+        googleContextText = `Manager Account (MCC): \`${mgrFormatted}\` (\`${mgrId}\`) - "${googleAcc.accountName}" | Currency: ${googleAcc.currency || "INR"}
 Active Child Accounts under Manager (${mgrFormatted}):
 ${childRows}
 Default Selected Child Customer ID: \`${childId}\``;
-        } else {
-          googleContextText = `Connected Google Ads Account: "${googleAcc.accountName}"
+      } else {
+        googleContextText = `Connected Google Ads Account: "${googleAcc.accountName}"
 Customer ID: \`${formattedId}\` (\`${rawId}\`)
 Account Status: ${googleAcc.accountStatus === 1 || googleAcc.isActive ? "ACTIVE" : "PAUSED"}
 Currency: ${googleAcc.currency || "INR"} | TimeZone: ${googleAcc.timezoneName || "Asia/Kolkata"}
 Hierarchy: Direct / Single Account (No Manager MCC)`;
+      }
+    }
+
+    if (metaAcc) {
+      const isLocked = Boolean(lockedMetaAccountId);
+      metaContextText = `${isLocked ? "[STRICT LOCKED META ACCOUNT] " : ""}Account ID: ${metaAcc.accountId} (act_${String(metaAcc.accountId).replace(/^act_/, "")}) | Name: "${metaAcc.accountName}" | Currency: ${metaAcc.currency || "INR"}${metaAcc.isActive ? " | Status: ACTIVE" : " | Status: INACTIVE"}`;
+    } else if (lockedMetaAccountId) {
+      metaContextText = `[STRICT LOCKED META ACCOUNT]: act_${String(lockedMetaAccountId).replace(/^act_/, "")} (Not found in user's connected Meta accounts or inactive)`;
+    }
+
+    if (aiCtx && (aiCtx.hasContext || (aiCtx.rawNodes && aiCtx.rawNodes.length > 0) || (aiCtx.flows && aiCtx.flows.length > 0))) {
+      const bus = (aiCtx.businessUnits || []).map((b) => `  - **${b.name || "Business Unit"}**: ${b.description || "Active Unit"}`).join("\n") || "  - None configured";
+
+      const channels = (aiCtx.adChannels || []).map((c) => {
+        const buStr = c.businessUnitName ? ` [Business Unit: "${c.businessUnitName}"] ➔ ` : "";
+        const accStr = c.accountId
+          ? ` [Ad Account: "${c.accountName || "Account"}" (ID: \`${c.accountId}\`)]`
+          : " [Account: Auto-detect / Connected]";
+        return `  - ${buStr}**${c.channel || c.channelName || "Ad Channel"}**${accStr} | Funnel Event: "${c.funnelEvent || "Purchase"}"${c.funnelDescription ? ` (Desc: "${c.funnelDescription}")` : ""}`;
+      }).join("\n") || "  - None configured";
+
+      const prods = (aiCtx.products || []).map((p) => {
+        const cat = p.catalog && p.catalog.length > 0
+          ? `\n    * Catalog Items (${p.catalog.length}): ${p.catalog.slice(0, 5).map(item => `"${item.name || "Item"}"${item.price ? ` (₹${item.price})` : ""}${item.url ? ` [${item.url}]` : ""}`).join(", ")}`
+          : "";
+        return `  - **${p.name || p.productName || "Product"}** | Landing Page URL: \`${p.url || p.productUrl || "N/A"}\` | Price: ₹${p.price || p.productPrice || "N/A"} | Platforms: ${(p.platforms || ["Web"]).join(", ")}${cat}`;
+      }).join("\n") || "  - None configured";
+
+      const briefs = (aiCtx.marketingBriefs || []).map((b) => {
+        const buPart = b.businessUnitName ? ` [Business Unit: "${b.businessUnitName}"]` : "";
+        const periodStr = b.targetPeriod ? ` [Target Period: "${b.targetPeriod}"]` : "";
+        const descStr = b.description ? ` | Strategy/Offer: "${b.description}"` : "";
+        let metricsDetail = b.metrics ? `Tracked Metrics & Targets: "${b.metrics}"` : "Tracked Metrics: Not specified";
+        if (Array.isArray(b.metricsList) && b.metricsList.length > 0) {
+          const listStr = b.metricsList
+            .map((m, i) => `\n    * Date Range #${i + 1} (${m.formattedPeriod || `${m.startDate} to ${m.endDate}`}): "${m.metrics}"`)
+            .join("");
+          metricsDetail = `Configured Date-Range Metrics (${b.metricsList.length} ranges):${listStr}`;
         }
-      }
+        return `  - **${b.name || "Marketing Brief"}**${buPart}${periodStr}${descStr} | ${metricsDetail}`;
+      }).join("\n") || "  - None configured";
 
-      if (metaAcc) {
-        const isLocked = Boolean(lockedMetaAccountId);
-        metaContextText = `${isLocked ? "[STRICT LOCKED META ACCOUNT] " : ""}Account ID: ${metaAcc.accountId} (act_${String(metaAcc.accountId).replace(/^act_/, "")}) | Name: "${metaAcc.accountName}" | Currency: ${metaAcc.currency || "INR"}${metaAcc.isActive ? " | Status: ACTIVE" : " | Status: INACTIVE"}`;
-      } else if (lockedMetaAccountId) {
-        metaContextText = `[STRICT LOCKED META ACCOUNT]: act_${String(lockedMetaAccountId).replace(/^act_/, "")} (Not found in user's connected Meta accounts or inactive)`;
-      }
+      const dws = (aiCtx.dataWarehouses || []).map((d) => {
+        const parts = [];
+        if (Array.isArray(d.sheets) && d.sheets.length > 0) {
+          const sheetDetails = d.sheets.map((s, idx) => {
+            const sName = s.workbookName || `Sheet #${idx + 1}`;
+            const sRows = s.totalRows ? `, ${s.totalRows} rows` : "";
+            const sUrl = s.sheetUrl ? ` [URL: "${s.sheetUrl}"]` : "";
+            const sStatus = s.excelSyncStatus ? ` (Status: ${s.excelSyncStatus})` : "";
+            const sLabel = s.dataLabels ? ` - Data Label: "${s.dataLabels}"` : "";
+            return `\n    * Sheet #${idx + 1}: ${sName}${sStatus}${sRows}${sUrl}${sLabel}`;
+          }).join("");
+          parts.push(`Connected Sheets (${d.sheets.length} total, max 10):${sheetDetails}`);
+        } else {
+          if (d.sheetUrl) parts.push(`Sheet URL: "${d.sheetUrl}" [Status: ${d.excelSyncStatus || "READY"}, Rows: ${d.totalRows || 0}]`);
+          else if (d.workbookName || d.workbookId) parts.push(`Workbook: "${d.workbookName || d.workbookId}" [Status: ${d.excelSyncStatus || "READY"}]`);
+          const purpose = d.dataLevel || d.dataLabels;
+          if (purpose) parts.push(`Data Label: "${purpose}"`);
+        }
+        if (d.googleDriveConnected || d.googleDriveEmail) parts.push(`Google Drive: "${d.googleDriveEmail || "Connected"}"`);
+        if (parts.length === 0) parts.push(`${d.name} (${d.platform || "Excel Sheet & Google Drive"})`);
+        return `  - **${d.name || "Data Warehouse"}**: ${parts.join(" | ")}`;
+      }).join("\n") || "  - None configured";
 
-      if (aiCtx && (aiCtx.hasContext || (aiCtx.rawNodes && aiCtx.rawNodes.length > 0) || (aiCtx.flows && aiCtx.flows.length > 0))) {
-        const bus = (aiCtx.businessUnits || []).map((b) => `  - **${b.name || "Business Unit"}**: ${b.description || "Active Unit"}`).join("\n") || "  - None configured";
-        
-        const channels = (aiCtx.adChannels || []).map((c) => {
-          const buStr = c.businessUnitName ? ` [Business Unit: "${c.businessUnitName}"] ➔ ` : "";
-          const accStr = c.accountId
-            ? ` [Ad Account: "${c.accountName || "Account"}" (ID: \`${c.accountId}\`)]`
-            : " [Account: Auto-detect / Connected]";
-          return `  - ${buStr}**${c.channel || c.channelName || "Ad Channel"}**${accStr} | Funnel Event: "${c.funnelEvent || "Purchase"}"${c.funnelDescription ? ` (Desc: "${c.funnelDescription}")` : ""}`;
-        }).join("\n") || "  - None configured";
-
-        const prods = (aiCtx.products || []).map((p) => {
-          const cat = p.catalog && p.catalog.length > 0
-            ? `\n    * Catalog Items (${p.catalog.length}): ${p.catalog.slice(0, 5).map(item => `"${item.name || "Item"}"${item.price ? ` (₹${item.price})` : ""}${item.url ? ` [${item.url}]` : ""}`).join(", ")}`
-            : "";
-          return `  - **${p.name || p.productName || "Product"}** | Landing Page URL: \`${p.url || p.productUrl || "N/A"}\` | Price: ₹${p.price || p.productPrice || "N/A"} | Platforms: ${(p.platforms || ["Web"]).join(", ")}${cat}`;
-        }).join("\n") || "  - None configured";
-
-        const briefs = (aiCtx.marketingBriefs || []).map((b) => {
-          const buPart = b.businessUnitName ? ` [Business Unit: "${b.businessUnitName}"]` : "";
-          const periodStr = b.targetPeriod ? ` [Target Period: "${b.targetPeriod}"]` : "";
-          const descStr = b.description ? ` | Strategy/Offer: "${b.description}"` : "";
-          let metricsDetail = b.metrics ? `Tracked Metrics & Targets: "${b.metrics}"` : "Tracked Metrics: Not specified";
-          if (Array.isArray(b.metricsList) && b.metricsList.length > 0) {
-            const listStr = b.metricsList
-              .map((m, i) => `\n    * Date Range #${i + 1} (${m.formattedPeriod || `${m.startDate} to ${m.endDate}`}): "${m.metrics}"`)
-              .join("");
-            metricsDetail = `Configured Date-Range Metrics (${b.metricsList.length} ranges):${listStr}`;
-          }
-          return `  - **${b.name || "Marketing Brief"}**${buPart}${periodStr}${descStr} | ${metricsDetail}`;
-        }).join("\n") || "  - None configured";
-
-        const dws = (aiCtx.dataWarehouses || []).map((d) => {
-          const parts = [];
-          if (Array.isArray(d.sheets) && d.sheets.length > 0) {
-            const sheetDetails = d.sheets.map((s, idx) => {
-              const sName = s.workbookName || `Sheet #${idx + 1}`;
-              const sRows = s.totalRows ? `, ${s.totalRows} rows` : "";
-              const sUrl = s.sheetUrl ? ` [URL: "${s.sheetUrl}"]` : "";
-              const sStatus = s.excelSyncStatus ? ` (Status: ${s.excelSyncStatus})` : "";
-              const sLabel = s.dataLabels ? ` - Data Label: "${s.dataLabels}"` : "";
-              return `\n    * Sheet #${idx + 1}: ${sName}${sStatus}${sRows}${sUrl}${sLabel}`;
-            }).join("");
-            parts.push(`Connected Sheets (${d.sheets.length} total, max 10):${sheetDetails}`);
-          } else {
-            if (d.sheetUrl) parts.push(`Sheet URL: "${d.sheetUrl}" [Status: ${d.excelSyncStatus || "READY"}, Rows: ${d.totalRows || 0}]`);
-            else if (d.workbookName || d.workbookId) parts.push(`Workbook: "${d.workbookName || d.workbookId}" [Status: ${d.excelSyncStatus || "READY"}]`);
-            const purpose = d.dataLevel || d.dataLabels;
-            if (purpose) parts.push(`Data Label: "${purpose}"`);
-          }
-          if (d.googleDriveConnected || d.googleDriveEmail) parts.push(`Google Drive: "${d.googleDriveEmail || "Connected"}"`);
-          if (parts.length === 0) parts.push(`${d.name} (${d.platform || "Excel Sheet & Google Drive"})`);
-          return `  - **${d.name || "Data Warehouse"}**: ${parts.join(" | ")}`;
-        }).join("\n") || "  - None configured";
-
-        const flowList = (aiCtx.flows || []).map((f, i) => {
-          const lp = f.campaignLaunchParameters || {};
-          const buPart = lp.businessUnit ? `Business Unit: **"${lp.businessUnit}"** | ` : "";
-          const periodPart = lp.targetPeriod ? ` | Target Period: "${lp.targetPeriod}"` : "";
-          const metricsStr = Array.isArray(lp.metricsList) && lp.metricsList.length > 0
-            ? lp.metricsList.map((m) => `[${m.formattedPeriod || `${m.startDate} to ${m.endDate}`}]: ${m.metrics}`).join(" ; ")
-            : (lp.metrics || "ROAS");
-          return `  - Flow #${f.flowIndex || i + 1} (${f.flowTag || "Workflow"}): ${f.flowSummary}
+      const flowList = (aiCtx.flows || []).map((f, i) => {
+        const lp = f.campaignLaunchParameters || {};
+        const buPart = lp.businessUnit ? `Business Unit: **"${lp.businessUnit}"** | ` : "";
+        const periodPart = lp.targetPeriod ? ` | Target Period: "${lp.targetPeriod}"` : "";
+        const metricsStr = Array.isArray(lp.metricsList) && lp.metricsList.length > 0
+          ? lp.metricsList.map((m) => `[${m.formattedPeriod || `${m.startDate} to ${m.endDate}`}]: ${m.metrics}`).join(" ; ")
+          : (lp.metrics || "ROAS");
+        return `  - Flow #${f.flowIndex || i + 1} (${f.flowTag || "Workflow"}): ${f.flowSummary}
     * Synthesized Blueprint: ${buPart}Channel: **${lp.channel || "Meta Ads"}** | Ad Account: **"${lp.accountName || lp.accountId || "Auto"}"** (\`${lp.accountId || "N/A"}\`) | Target Product: "${lp.productName || "Product"}" | Funnel Event: "${lp.funnelEvent || "Purchase"}"${lp.funnelDescription ? ` ("${lp.funnelDescription}")` : ""}${periodPart} | Target Metrics: "${metricsStr}"`;
-        }).join("\n") || "  - Direct Unified Context Canvas";
+      }).join("\n") || "  - Direct Unified Context Canvas";
 
-        aiContextText = `Workflow Name: "${aiCtx.workflowName || "Primary AI Context"}" (${aiCtx.totalFlows || 1} active flow paths, ${aiCtx.totalNodes || 1} total nodes)
+      aiContextText = `Workflow Name: "${aiCtx.workflowName || "Primary AI Context"}" (${aiCtx.totalFlows || 1} active flow paths, ${aiCtx.totalNodes || 1} total nodes)
 1. Business Units:
 ${bus}
 2. Configured Ad Channels:
@@ -257,10 +257,10 @@ ${prods}
 ${dws}
 6. Flow Pipelines & Pre-Synthesized Launch Parameters:
 ${flowList}`;
-      }
-    } catch (e) {
-      console.warn("Error building system prompt context:", e?.message || e);
     }
+  } catch (e) {
+    console.warn("Error building system prompt context:", e?.message || e);
+  }
 
   return `You are Newton Ads AI, an advanced multi-channel performance marketing intelligence assistant with real-time access to Google Ads, Meta Ads, and the user's structured AI Context Flow hierarchy via live MCP servers and database analytics.
 
@@ -325,8 +325,7 @@ Capabilities & Exact Execution Guidelines:
             - "CONFLICTING" or "UNKNOWN": Ask user for clarification before creating anything. Never fallback to website workflow.
          4. Read exact row fields: campaign_name, adset_name, ad_name, headline, primary_text, daily_budget, landing_page_url, drive_url, app_id, object_store_url, etc.
        * Dynamic Hierarchy Naming Rules (CRITICAL):
-         - Extract both Campaign Name and Ad Set Name dynamically from the user's latest chat instruction (e.g. Campaign name: `<name>`, Ad set name: `<name>`).
-         - Never hardcode or invent default campaign names or ad set names.
+         - Extract both Campaign Name and Ad Set Name dynamically from the user's latest chat instruction (e.g. Campaign name: <name>, Ad set name: <name>).         - Never hardcode or invent default campaign names or ad set names.
          - Never search the spreadsheet for these names unless the user explicitly requests that they come from the sheet.
          - If either required name is missing or ambiguous, ask the user for clarification rather than creating campaigns with placeholder or default names.
          - Log/track the source of each name as CHAT_INSTRUCTION.
@@ -611,7 +610,7 @@ export class ClaudeAgentService {
             const rawToolName = event.content_block.name || "";
             const cleanToolName = rawToolName.replace(/^mcp__(?:ads__)?/, "");
             const toolCallId = event.content_block.id;
-            
+
             if (!actionsPerformed.some(a => a.action === cleanToolName)) {
               actionsPerformed.push({
                 action: cleanToolName,
@@ -732,8 +731,8 @@ export class ClaudeAgentService {
     if (
       streamedText &&
       (streamedText.toLowerCase().includes("credit balance") ||
-       streamedText.toLowerCase().includes("credit is too low") ||
-       streamedText.toLowerCase().includes("invalid_request_error"))
+        streamedText.toLowerCase().includes("credit is too low") ||
+        streamedText.toLowerCase().includes("invalid_request_error"))
     ) {
       throw new Error(streamedText);
     }
