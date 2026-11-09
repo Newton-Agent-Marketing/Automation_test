@@ -538,6 +538,13 @@ export class ClaudeAgentService {
     const rawApiKey = (process.env.ANTHROPIC_API_KEY || "").trim().replace(/^["']|["']$/g, "");
     const cleanApiKey = rawApiKey;
 
+    console.log("[Claude API KEY CHECK]", {
+      exists: !!cleanApiKey,
+      length: cleanApiKey.length,
+      isAnthropicKey: cleanApiKey.startsWith("sk-ant-"),
+      authTokenExists: !!process.env.ANTHROPIC_AUTH_TOKEN,
+    });
+
     if (!cleanApiKey || cleanApiKey.includes("your_anthropic") || cleanApiKey.length < 15) {
       console.warn("[ClaudeAgentService Backend Diagnostic]: ANTHROPIC_API_KEY is omitted, invalid, or placeholder. Bypassing SDK call to trigger clean fallback.");
       throw new Error("Claude SDK Authentication Bypassed: Missing or invalid ANTHROPIC_API_KEY");
