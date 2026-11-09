@@ -152,7 +152,7 @@ export const runAgentChat = async ({
       if (userDoc?.email) {
         resolvedUserEmail = userDoc.email;
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
   const isAutomationTask = Boolean(conversationId?.startsWith("automation_"));
@@ -175,7 +175,7 @@ export const runAgentChat = async ({
       if (metaChannelNode?.data?.adAccountId) {
         contextMetaAccountId = String(metaChannelNode.data.adAccountId).trim();
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
   const msgLower = (userMessage || "").toLowerCase();
@@ -242,7 +242,7 @@ export const runAgentChat = async ({
           effectiveAccountId = String(matchedChild.customerId).replace(/[^0-9]/g, "");
           GoogleAccount.findByIdAndUpdate(googleAcc._id, {
             $set: { selectedCustomerId: effectiveAccountId },
-          }).catch(() => {});
+          }).catch(() => { });
         }
       }
 
@@ -473,13 +473,13 @@ export const runAgentChat = async ({
         const autoToolCalls = typeof autoRes === "object" && autoRes.toolCalls?.length
           ? autoRes.toolCalls
           : [
-              {
-                toolName: "execute_automation_node_task",
-                toolArgs: { instruction: (userMessage || "").split(/\[Context from/i)[0].trim() },
-                toolResult: { status: "SUCCESS" },
-                status: "SUCCESS",
-              },
-            ];
+            {
+              toolName: "execute_automation_node_task",
+              toolArgs: { instruction: (userMessage || "").split(/\[Context from/i)[0].trim() },
+              toolResult: { status: "SUCCESS" },
+              status: "SUCCESS",
+            },
+          ];
 
         // Stream immediately for automation node without artificial delay
         if (typeof onEvent === "function") {
@@ -692,7 +692,7 @@ export const runAgentChat = async ({
       try {
         const CampaignPreparationSession = (await import("../models/campaignPreparationSession.js")).default;
         sessionDoc = await CampaignPreparationSession.findOne({ conversationId }).lean();
-      } catch (_) {}
+      } catch (_) { }
 
       const convErr = prepErr.conversionError || sessionDoc?.creationJob?.conversionError;
       const errMsg = convErr
@@ -730,8 +730,8 @@ export const runAgentChat = async ({
         ClaudeAgentService.streamChat({
           res,
           onEvent,
-        conversationId,
-        userMessage,
+          conversationId,
+          userMessage,
           accountId: effectiveAccountId,
           userId: validUserId || userId,
         }),
@@ -741,17 +741,17 @@ export const runAgentChat = async ({
       if (
         result?.content &&
         (result.content.toLowerCase().includes("credit balance") ||
-         result.content.toLowerCase().includes("credit is too low") ||
-         result.content.toLowerCase().includes("invalid_request_error") ||
-         result.content.toLowerCase().includes("api key is invalid") ||
-         result.content.toLowerCase().includes("failed to authenticate") ||
-         result.content.toLowerCase().includes("401"))
+          result.content.toLowerCase().includes("credit is too low") ||
+          result.content.toLowerCase().includes("invalid_request_error") ||
+          result.content.toLowerCase().includes("api key is invalid") ||
+          result.content.toLowerCase().includes("failed to authenticate") ||
+          result.content.toLowerCase().includes("401"))
       ) {
         console.warn("[Claude API Credit/Auth Error detected in result content, discarding and triggering clean fallback]");
         result = null;
       }
     } catch (sdkError) {
-      console.warn("[Claude Agent SDK warning, falling back to Newton AI stream]:", sdkError.message);
+      console.error("[Claude Agent SDK FULL ERROR]:", sdkError.stack || sdkError);
       result = null;
     }
   }
@@ -782,13 +782,13 @@ export const runAgentChat = async ({
     const fallbackToolCalls = typeof fallbackRes === "object" && fallbackRes.toolCalls?.length
       ? fallbackRes.toolCalls
       : [
-          {
-            toolName: "marketing_strategy_engine",
-            toolArgs: { context: "workspace_analysis" },
-            toolResult: { status: "PROCESSED", context: "workspace_analysis" },
-            status: "SUCCESS",
-          },
-        ];
+        {
+          toolName: "marketing_strategy_engine",
+          toolArgs: { context: "workspace_analysis" },
+          toolResult: { status: "PROCESSED", context: "workspace_analysis" },
+          status: "SUCCESS",
+        },
+      ];
 
     if (fallbackPrepData) {
       if (typeof onEvent === "function") {
@@ -1132,7 +1132,7 @@ export class ChatAgentController {
           if (metaChannelNode?.data?.adAccountId) {
             lockedMetaAccountId = String(metaChannelNode.data.adAccountId).trim();
           }
-        } catch (_) {}
+        } catch (_) { }
       }
 
       if (!lockedMetaAccountId) {
@@ -1192,7 +1192,7 @@ export class ChatAgentController {
       try {
         const CampaignPreparationSession = (await import("../models/campaignPreparationSession.js")).default;
         sessionDoc = await CampaignPreparationSession.findOne({ conversationId }).lean();
-      } catch (_) {}
+      } catch (_) { }
 
       return res.status(200).json({
         success: false,
