@@ -661,6 +661,19 @@ export class AiAgentOrchestrator {
             userId: context.userId,
             datePreset: "last_7d",
           });
+          // If last_7d has 0 insights, try broader 'maximum' window so historical spend isn't missed
+          if (metaResult && (!metaResult.insights || metaResult.insights.length === 0)) {
+            try {
+              const broaderResult = await MetaMcpClient.executeLiveTool("get_live_campaign_insights", {
+                accountId: targetAccountId,
+                userId: context.userId,
+                datePreset: "maximum",
+              });
+              if (broaderResult?.insights?.length > 0) {
+                metaResult = broaderResult;
+              }
+            } catch (_) {}
+          }
         } catch (mcpErr) {
           console.warn("[AiAgentOrchestrator Live Meta MCP Warning]:", mcpErr.message);
         }
@@ -905,16 +918,16 @@ export class AiAgentOrchestrator {
           detail: `Target account act_${metaTool.toolResult?.accountId}`,
         });
 
-        if (insights.length === 0) {
+        if (insights.length === 0 && campaigns.length === 0) {
           isPassed = false;
           status = "failed";
           failureReason =
-            "Meta campaigns were retrieved, but no performance insights were returned. Cannot generate a verified performance report.";
+            "Meta account connected, but no campaigns or performance insights were found.";
 
           checks.push({
             name: "Performance Ingestion",
             passed: false,
-            detail: `0 insight periods retrieved. ${campaigns.length} campaigns found.`,
+            detail: `0 insight periods and 0 campaigns retrieved.`,
           });
           break;
         }
@@ -925,7 +938,10 @@ export class AiAgentOrchestrator {
         checks.push({
           name: "Performance Ingestion",
           passed: true,
-          detail: `Ingested ${insights.length} insight periods and ${campaigns.length} campaigns.`,
+          detail:
+            insights.length > 0
+              ? `Ingested ${insights.length} insight periods and ${campaigns.length} campaigns.`
+              : `Retrieved ${campaigns.length} campaigns (0 active spend/insight records in current window).`,
         });
 
         verifiedOutputData = {
