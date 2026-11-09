@@ -532,9 +532,9 @@ export class ClaudeAgentService {
 
     const systemPromptText = await buildSystemPrompt({ accountId, userId });
     let rawModel = process.env.CLAUDE_AGENT_MODEL || "claude-3-5-sonnet-20241022";
-    const modelName = (rawModel.includes("4-5") || rawModel.includes("sonnet-4"))
-      ? "claude-3-5-sonnet-20241022"
-      : rawModel;
+    const modelName = (
+      process.env.CLAUDE_AGENT_MODEL || "claude-sonnet-5-5"
+    ).trim();
     const rawApiKey = (process.env.ANTHROPIC_API_KEY || "").trim().replace(/^["']|["']$/g, "");
     const cleanApiKey = rawApiKey;
 

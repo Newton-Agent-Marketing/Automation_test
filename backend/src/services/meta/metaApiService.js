@@ -635,11 +635,26 @@ export class MetaApiService {
 
     return await this.withRateLimitRetry(async () => {
       try {
-        const response = await axios.post(url, null, { params: payload });
+        // Send payload in POST body as application/x-www-form-urlencoded (Meta Marketing API standard)
+        const formBody = new URLSearchParams();
+        Object.entries(payload).forEach(([k, v]) => {
+          if (v !== undefined && v !== null) {
+            formBody.append(k, typeof v === "object" ? JSON.stringify(v) : String(v));
+          }
+        });
+        const response = await axios.post(url, formBody.toString(), {
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        });
         return response.data;
       } catch (error) {
-        // If remote Graph API throws error, capture details
+        // Fallback attempt with query params if body was rejected
         const metaErr = error.response?.data?.error;
+        if (metaErr?.code === 2500) {
+          try {
+            const fallbackRes = await axios.post(url, null, { params: payload });
+            return fallbackRes.data;
+          } catch (_) {}
+        }
         if (metaErr) {
           const errToThrow = new Error(
             `Meta API Error [${metaErr.code || "unknown"}]: ${metaErr.message || metaErr.error_user_msg || error.message}`
