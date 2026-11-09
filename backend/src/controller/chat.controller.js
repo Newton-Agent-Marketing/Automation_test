@@ -615,16 +615,22 @@ export const runAgentChat = async ({
     !mentionsGoogleAds
   );
 
+  // Check if user is asking to rename or update an existing ad
+  const isAdRenameOrUpdateCmd =
+    /\b(?:rename\s+.*ad|replace\s+.*ad|update\s+.*ad|change\s+.*ad\s*name)\b/i.test(userMessage) ||
+    (/\b(?:adname|ad\s*name)\b/i.test(userMessage) && /\b(?:replace|rename|update)\b/i.test(userMessage));
+
   const isMetaPrepWorkflow =
-    isAnsweringMissingFields ||
+    !isAdRenameOrUpdateCmd &&
+    (isAnsweringMissingFields ||
     (!mentionsGoogleAds &&
       !isPureFetchOrQueryCmd &&
       !isAnalyticalTask &&
       (!isAutomationRun || isExplicitCampaignDeployCmd) &&
-      (Boolean(activePrepSession) ||
+      (Boolean(activePrepSession && activePrepSession.status !== "COMPLETED" && activePrepSession.status !== "FAILED") ||
         CampaignPreparationService.isApprovalCommand(userMessage, activePrepSession) ||
         CampaignPreparationService.isEditCommand(userMessage, activePrepSession) ||
-        isCreationOrCampaignCmd));
+        isCreationOrCampaignCmd)));
 
   if (!result && isMetaPrepWorkflow) {
     try {

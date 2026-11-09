@@ -302,85 +302,87 @@ export class MetaMcpClient {
         }
       }
 
+
       case "get_live_campaigns_status": {
         try {
-          const campaigns = await MetaApiService.getCampaigns(effectiveAccountId, effectiveToken);
+          // 1. Fetch campaigns from the selected live Meta account
+          const campaigns = await MetaApiService.getCampaigns(
+            effectiveAccountId,
+            effectiveToken
+          );
 
-          let totalAdsInAccount = 0;
-          const mappedCampaigns = (campaigns || []).map((c) => {
-            const rawAds = Array.isArray(c.ads?.data)
-              ? c.ads.data
-              : Array.isArray(c.ads)
-                ? c.ads
-                : [];
-            totalAdsInAccount += rawAds.length;
-            return {
-              id: c.id,
-              name: c.name,
-              status: c.status,
-              effectiveStatus: c.effective_status,
-              dailyBudget: c.daily_budget ? Number(c.daily_budget) / 100 : 0,
-              objective: c.objective,
-              totalAds: rawAds.length,
-              ads: rawAds.map((a) => ({ id: a.id, name: a.name, status: a.status || a.effective_status || "ACTIVE" })),
-            };
-          });
+          // 2. Sort campaigns by creation date (newest first)
+          const latestCampaigns = [...(campaigns || [])]
+            .sort((a, b) => {
+              return (
+                new Date(b.created_time || 0).getTime() -
+                new Date(a.created_time || 0).getTime()
+              );
+            })
+            .slice(0, 10);
 
-          // Fallback: If campaigns did not contain nested ads, query account ads safely
-          if (totalAdsInAccount === 0 && mappedCampaigns.length > 0) {
-            try {
-              const allAds = await MetaApiService.getAccountAds(effectiveAccountId, effectiveToken);
-              if (allAds && allAds.length > 0) {
-                totalAdsInAccount = allAds.length;
-                const adsByCamp = {};
-                allAds.forEach((a) => {
-                  if (a.campaign_id) {
-                    if (!adsByCamp[a.campaign_id]) adsByCamp[a.campaign_id] = [];
-                    adsByCamp[a.campaign_id].push(a);
-                  }
-                });
-                mappedCampaigns.forEach((c) => {
-                  const cAds = adsByCamp[c.id] || [];
-                  if (cAds.length > 0) {
-                    c.totalAds = cAds.length;
-                    c.ads = cAds.map((a) => ({ id: a.id, name: a.name, status: a.status || "ACTIVE" }));
-                  }
-                });
-              }
-            } catch (fallbackErr) {
-              console.warn("[get_live_campaigns_status]: Fallback getAccountAds error:", fallbackErr.message);
-            }
-          }
+          // 3. Fetch Ad Sets for each selected campaign
+          const mappedCampaigns = await Promise.all(
+            latestCampaigns.map(async (campaign) => {
+              const adSets = await MetaApiService.getCampaignAdSets(
+                campaign.id,
+                effectiveToken
+              );
 
+              return {
+                id: campaign.id,
+                name: campaign.name,
+                status: campaign.status,
+                effectiveStatus: campaign.effective_status,
+                createdTime: campaign.created_time || null,
+                objective: campaign.objective || null,
+
+                adSets: (adSets || []).map((adSet) => ({
+                  id: adSet.id,
+                  name: adSet.name,
+                  status: adSet.status,
+                  effectiveStatus: adSet.effective_status,
+                })),
+
+                totalAdSets: (adSets || []).length,
+              };
+            })
+          );
+
+          // 4. Return compact live data to the AI Agent
           return {
             status: "LIVE_DATA_FROM_META",
             accountId: effectiveAccountId,
             accountName: account.accountName,
-            totalAdsInAccount,
+            totalCampaignsReturned: mappedCampaigns.length,
+            totalAdSetsReturned: mappedCampaigns.reduce(
+              (total, campaign) => total + campaign.totalAdSets,
+              0
+            ),
             campaigns: mappedCampaigns,
           };
+
         } catch (err) {
           if (MetaApiService.isTokenRevokedOrExpired(err)) {
-            await MetaAccount.updateOne({ _id: account._id }, { $set: { isActive: false } });
+            await MetaAccount.updateOne(
+              { _id: account._id },
+              { $set: { isActive: false } }
+            );
+
             throw new Error(
               "Meta authorization has expired or been revoked. Please reconnect your Meta Ads account in Channels."
             );
           }
-          // Fallback to locally saved campaigns if remote API isn't responding
-          const localCampaigns = await MetaCampaign.find({ accountId: effectiveAccountId });
-          return {
-            status: "LOCAL_DATABASE_FALLBACK",
-            accountId: effectiveAccountId,
-            accountName: account.accountName,
-            campaigns: localCampaigns.map((c) => ({
-              id: c.campaignId,
-              name: c.name,
-              status: c.status,
-              effectiveStatus: c.effectiveStatus || c.status,
-              dailyBudget: c.dailyBudget,
-              objective: c.objective,
-            })),
-          };
+
+          // Never return stale local database data for a live Meta request
+          console.error(
+            "[get_live_campaigns_status] Live Meta API error:",
+            err?.response?.data || err.message
+          );
+
+          throw new Error(
+            `Unable to fetch live Meta campaign data: ${err.message}`
+          );
         }
       }
 

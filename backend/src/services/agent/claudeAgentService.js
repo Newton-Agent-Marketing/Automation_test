@@ -338,6 +338,11 @@ Capabilities & Exact Execution Guidelines:
          Step 3: create_meta_video_ad (if video/driveUrl) or create_meta_ad (if image) (adSetId, name, headline, primaryText, linkUrl, callToAction, accountId) ➔ get adId (CRITICAL: Never stop before creating the ads!)
          Step 4: verify_meta_campaign (campaignId, adSetId, adId, accountId)
      - NEVER create any Meta entity before explicit user approval! Never invent IDs. Always pass real Meta API response IDs.
+     - Renaming / Updating Existing Meta Ads:
+       * When the user asks to rename an ad, update an ad name, or replace old AdName with new AdName:
+         - Use tool "mcp__ads__update_meta_ad" with adId and name (the new AdName).
+         - If the matching ad was identified (e.g. from previous sheet lookup or live ads fetch), directly call update_meta_ad to update its name on Meta Ads!
+         - Report the update clearly to the user with the ad ID and its new name.
 
 5. Structured Error Handling for Known Google Ads API Limitations (CRITICAL):
    - **Limitation A: Developer Token Access (DEVELOPER_TOKEN_ACCESS / ACTION_NOT_PERMITTED)**:
