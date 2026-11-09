@@ -229,6 +229,12 @@ export class MetaMcpClient {
 
       case "get_live_campaign_insights": {
         try {
+          const {
+            datePreset,
+            timeRange,
+            timeIncrement,
+          } = args || {};
+
           const [campaigns, insights] = await Promise.all([
             MetaApiService.getCampaigns(
               effectiveAccountId,

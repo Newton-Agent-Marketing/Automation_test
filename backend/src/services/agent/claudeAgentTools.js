@@ -572,6 +572,7 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
     "Update an existing Meta Ads campaign status (PAUSED/ACTIVE), name, or budget.",
     {
       campaignId: z.string().describe("The ID of the campaign to update"),
+      accountId: z.string().optional().describe("Meta Ad Account ID"),
       status: z.enum(["ACTIVE", "PAUSED", "ARCHIVED"]).optional().describe("New status"),
       dailyBudget: z.number().optional().describe("New daily budget"),
       name: z.string().optional().describe("New campaign name"),
