@@ -591,8 +591,11 @@ export class MetaApiService {
   ) {
     const effectiveUserId = callerUserId || userId || null;
     accessToken = await this.resolveOAuthToken(accountId, effectiveUserId, accessToken);
-    const cleanId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
+    const rawAccId = String(accountId || "").trim().replace(/^act_/, "").trim();
+    const cleanId = `act_${rawAccId}`;
     const url = `${META_GRAPH_URL}/${cleanId}/campaigns`;
+
+    console.log(`[Meta createCampaign] Dispatching to: ${url} | Clean ID: ${cleanId}`);
 
     const payload = {
       name: this.truncateToMaxBytes(name || `Campaign_${Date.now()}`, 250),
@@ -634,27 +637,47 @@ export class MetaApiService {
     }
 
     return await this.withRateLimitRetry(async () => {
+      const formBody = new URLSearchParams();
+      Object.entries(payload).forEach(([k, v]) => {
+        if (v !== undefined && v !== null) {
+          formBody.append(k, typeof v === "object" ? JSON.stringify(v) : String(v));
+        }
+      });
+
+      const requestConfig = {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: `Bearer ${accessToken}`,
+        },
+      };
+
       try {
-        // Send payload in POST body as application/x-www-form-urlencoded (Meta Marketing API standard)
-        const formBody = new URLSearchParams();
-        Object.entries(payload).forEach(([k, v]) => {
-          if (v !== undefined && v !== null) {
-            formBody.append(k, typeof v === "object" ? JSON.stringify(v) : String(v));
-          }
-        });
-        const response = await axios.post(url, formBody.toString(), {
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        });
+        const response = await axios.post(url, formBody.toString(), requestConfig);
         return response.data;
       } catch (error) {
-        // Fallback attempt with query params if body was rejected
         const metaErr = error.response?.data?.error;
+
+        // If Error 2500 (Unknown path components), attempt fallback to stable Graph API v21.0
         if (metaErr?.code === 2500) {
+          console.warn(`[Meta createCampaign 2500 Notice]: Retrying with stable Graph API v21.0 for ${cleanId}...`);
           try {
-            const fallbackRes = await axios.post(url, null, { params: payload });
-            return fallbackRes.data;
-          } catch (_) {}
+            const fallbackV21Url = `https://graph.facebook.com/v21.0/${cleanId}/campaigns`;
+            const retryV21 = await axios.post(fallbackV21Url, formBody.toString(), requestConfig);
+            return retryV21.data;
+          } catch (v21Err) {
+            console.warn("[Meta createCampaign v21 Fallback Failed]:", v21Err.response?.data?.error?.message || v21Err.message);
+          }
+
+          // Try query params fallback on v21
+          try {
+            const fallbackParamsUrl = `https://graph.facebook.com/v21.0/${cleanId}/campaigns`;
+            const retryParams = await axios.post(fallbackParamsUrl, null, { params: payload });
+            return retryParams.data;
+          } catch (paramsErr) {
+            console.warn("[Meta createCampaign params Fallback Failed]:", paramsErr.response?.data?.error?.message || paramsErr.message);
+          }
         }
+
         if (metaErr) {
           const errToThrow = new Error(
             `Meta API Error [${metaErr.code || "unknown"}]: ${metaErr.message || metaErr.error_user_msg || error.message}`
