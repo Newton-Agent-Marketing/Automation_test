@@ -17,7 +17,7 @@ import { AgentStreamHandler } from "./agentStream.js";
 import {
   createAdsMcpServer,
   ADS_ALLOWED_TOOLS,
-} from "../claudeAgentTools.js";
+} from "./claudeAgentTools.js";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
 /**
