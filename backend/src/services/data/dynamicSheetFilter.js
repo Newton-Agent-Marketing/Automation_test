@@ -484,6 +484,7 @@ export class DynamicSheetFilter {
       return [
         "row", "rows", "line", "lines",
         "upload", "create", "launch", "start", "process", "filter", "select", "where", "only",
+        "replace", "update", "rename", "change", "modify", "swap", "edit",
         "meta", "google", "facebook", "instagram", "sheet", "file", "excel", "data", "whatsapp",
         "column", "columns", "header", "headers"
       ].includes(norm);

@@ -659,6 +659,28 @@ export class MetaMcpClient {
         };
       }
 
+      case "update_meta_ad": {
+        const { adId, ad_id, id, name, newName, status } = args;
+        const targetAdId = adId || ad_id || id;
+        const targetName = name || newName;
+        if (!targetAdId) throw new Error("adId is required to update a Meta ad");
+
+        const updateRes = await MetaApiService.updateAd(targetAdId, effectiveToken, {
+          name: targetName,
+          status,
+        });
+
+        return {
+          success: true,
+          status: "AD_UPDATED",
+          adId: targetAdId,
+          name: targetName,
+          adStatus: status,
+          data: updateRes,
+          message: `Meta Ad ${targetAdId} updated successfully with name: "${targetName || "unchanged"}".`,
+        };
+      }
+
       case "set_meta_targeting": {
         const { adSetId, locations, countries, cities, ageMin = 18, ageMax = 65, genders, interests = [] } = args;
         if (!adSetId) throw new Error("adSetId is required to set Meta targeting");

@@ -679,6 +679,30 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
     }
   );
 
+  const updateMetaAd = tool(
+    "update_meta_ad",
+    "Update or rename an existing Meta Ad (name, status). Use this when user asks to rename an ad or replace old AdName with new AdName.",
+    {
+      adId: z.string().describe("Meta Ad ID (e.g. '120251301040470466')"),
+      name: z.string().optional().describe("New Ad Name to update/replace with"),
+      status: z.enum(["ACTIVE", "PAUSED", "ARCHIVED"]).optional().describe("Ad status"),
+      accountId: z.string().optional(),
+    },
+    async (args) => {
+      try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.accountId);
+        const result = await executeAgentTool("update_meta_ad", {
+          ...args,
+          accountId: effectiveMetaAccountId,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
   const setMetaTargeting = tool(
     "set_meta_targeting",
     "Set audience targeting (locations, age, gender, interests) for a Meta Ad Set.",
@@ -1569,6 +1593,7 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
       updateMetaAdSet,
       setMetaTargeting,
       createMetaAd,
+      updateMetaAd,
       createMetaVideoAd,
       verifyMetaCampaign,
       switchGoogleAccount,
@@ -1631,6 +1656,7 @@ export const ADS_ALLOWED_TOOLS = [
   "mcp__ads__update_meta_ad_set",
   "mcp__ads__set_meta_targeting",
   "mcp__ads__create_meta_ad",
+  "mcp__ads__update_meta_ad",
   "mcp__ads__create_meta_video_ad",
   "mcp__ads__verify_meta_campaign",
   "mcp__ads__create_meta_lead_campaign",

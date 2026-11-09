@@ -232,6 +232,23 @@ export const AGENT_TOOLS_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "update_meta_ad",
+      description: "Updates or renames an existing Meta Ad (name, status). Use this when user asks to rename an ad or replace old AdName with new AdName.",
+      parameters: {
+        type: "object",
+        properties: {
+          adId: { type: "string", description: "Meta Ad ID" },
+          name: { type: "string", description: "New ad name" },
+          status: { type: "string", enum: ["ACTIVE", "PAUSED", "ARCHIVED"] },
+          accountId: { type: "string" },
+        },
+        required: ["adId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "set_meta_targeting",
       description: "Sets audience targeting (locations, age, gender, interests) on a Meta Ad Set.",
       parameters: {
@@ -248,6 +265,23 @@ export const AGENT_TOOLS_DEFINITIONS = [
           accountId: { type: "string" },
         },
         required: ["adSetId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_meta_ad",
+      description: "Updates or renames an existing Meta Ad (name, status). Use this when user asks to rename an ad or replace old AdName with new AdName.",
+      parameters: {
+        type: "object",
+        properties: {
+          adId: { type: "string", description: "Meta Ad ID" },
+          name: { type: "string", description: "New ad name" },
+          status: { type: "string", enum: ["ACTIVE", "PAUSED", "ARCHIVED"] },
+          accountId: { type: "string" },
+        },
+        required: ["adId"],
       },
     },
   },
@@ -2306,6 +2340,10 @@ export async function executeAgentTool(toolName, args) {
 
   if (toolName === "create_meta_ad") {
     return await MetaMcpClient.executeLiveTool("create_meta_ad", args);
+  }
+
+  if (toolName === "update_meta_ad") {
+    return await MetaMcpClient.executeLiveTool("update_meta_ad", args);
   }
 
   if (toolName === "create_meta_video_ad") {

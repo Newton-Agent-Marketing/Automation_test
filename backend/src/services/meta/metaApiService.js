@@ -493,7 +493,7 @@ export class MetaApiService {
       params: {
         access_token: accessToken,
         fields:
-          "id,name,status,effective_status,objective,daily_budget,lifetime_budget,start_time,stop_time,ads{id,name,status,effective_status}",
+          "id,name,status,effective_status,objective,daily_budget,lifetime_budget,start_time,stop_time,created_time",
         limit: 100,
       },
     });
@@ -2246,6 +2246,46 @@ export class MetaApiService {
       }
       throw error;
     }
+  }
+
+  // 14b. Update Ad on Meta Ads (Rename, Status, etc.)
+  static async updateAd(adId, accessToken, { name, status } = {}) {
+    if (!adId) throw new Error("adId is required to update an ad");
+    const cleanAdId = String(adId).trim();
+    const url = `${META_GRAPH_URL}/${cleanAdId}`;
+    const payload = { access_token: accessToken };
+    if (name) payload.name = name;
+    if (status) payload.status = status;
+
+    return await this.withRateLimitRetry(async () => {
+      const formBody = new URLSearchParams();
+      Object.entries(payload).forEach(([k, v]) => {
+        if (v !== undefined && v !== null) formBody.append(k, String(v));
+      });
+      const requestConfig = {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: `Bearer ${accessToken}`,
+        },
+      };
+      try {
+        const response = await axios.post(url, formBody.toString(), requestConfig);
+        return response.data;
+      } catch (error) {
+        const metaErr = error.response?.data?.error;
+        if (metaErr?.code === 2500) {
+          try {
+            const fallbackUrl = `https://graph.facebook.com/v21.0/${cleanAdId}`;
+            const retryRes = await axios.post(fallbackUrl, formBody.toString(), requestConfig);
+            return retryRes.data;
+          } catch (_) {}
+        }
+        if (metaErr) {
+          throw new Error(`Meta API Ad Update Error: ${metaErr.message || error.message}`);
+        }
+        throw error;
+      }
+    });
   }
 
   // Normalize Call to Action Enum (BOOK_TRAVEL maps to "Book now" in Meta Ads Manager UI)
