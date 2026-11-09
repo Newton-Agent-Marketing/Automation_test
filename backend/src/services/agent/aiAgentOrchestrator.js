@@ -875,20 +875,58 @@ export class AiAgentOrchestrator {
         break;
       }
 
+
       case "META_ADS_METRICS": {
-        const metaTool = executedTools.find((t) => t.toolName === "fetch_live_meta_ads_mcp");
+        const metaTool = executedTools.find(
+          (t) => t.toolName === "fetch_live_meta_ads_mcp"
+        );
+
         if (!metaTool || metaTool.status !== "SUCCESS") {
           isPassed = false;
           status = "failed";
-          failureReason = metaTool?.toolResult?.error || "Meta Ads API authorization error or account unreachable.";
-          checks.push({ name: "Meta Ads Graph API Call", passed: false, detail: failureReason });
+          failureReason =
+            metaTool?.toolResult?.error ||
+            "Meta Ads API authorization error or account unreachable.";
+
+          checks.push({
+            name: "Meta Ads Graph API Call",
+            passed: false,
+            detail: failureReason,
+          });
           break;
         }
 
         const insights = metaTool.toolResult?.insights || [];
         const campaigns = metaTool.toolResult?.campaigns || [];
-        checks.push({ name: "Meta Account Connection", passed: true, detail: `Target account act_${metaTool.toolResult?.accountId}` });
-        checks.push({ name: "Performance Ingestion", passed: true, detail: `Ingested records: ${insights.length} insight periods, ${campaigns.length} campaigns` });
+
+        checks.push({
+          name: "Meta Account Connection",
+          passed: true,
+          detail: `Target account act_${metaTool.toolResult?.accountId}`,
+        });
+
+        if (insights.length === 0) {
+          isPassed = false;
+          status = "failed";
+          failureReason =
+            "Meta campaigns were retrieved, but no performance insights were returned. Cannot generate a verified performance report.";
+
+          checks.push({
+            name: "Performance Ingestion",
+            passed: false,
+            detail: `0 insight periods retrieved. ${campaigns.length} campaigns found.`,
+          });
+          break;
+        }
+
+        isPassed = true;
+        status = "completed";
+
+        checks.push({
+          name: "Performance Ingestion",
+          passed: true,
+          detail: `Ingested ${insights.length} insight periods and ${campaigns.length} campaigns.`,
+        });
 
         verifiedOutputData = {
           type: "meta_ads_metrics",
@@ -899,6 +937,7 @@ export class AiAgentOrchestrator {
           rawInsights: insights.slice(0, 20),
           status: "success",
         };
+
         break;
       }
 
