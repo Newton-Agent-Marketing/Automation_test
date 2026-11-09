@@ -373,13 +373,19 @@ export class MetaApiService {
         );
       }
     }
-
-    // In dev mode without configured Meta App secret, provide a seamless token exchange
-    return {
-      access_token: code.startsWith("EAAB") ? code : `EAAB_simulated_${Date.now()}_${code.slice(0, 16)}`,
-      token_type: "bearer",
-      expires_in: 5184000, // 60 days
+     // Never generate fake Meta tokens for real OAuth flows.
+     // Simulation is allowed only during automated tests.
+     if (process.env.NODE_ENV === "test") {
+     return {
+     access_token: `EAAB_simulated_${Date.now()}_${code.slice(0, 16)}`,
+     token_type: "bearer",
+     expires_in: 5184000,
     };
+   }
+
+throw new Error(
+  "Meta OAuth is not configured. Please set META_APP_ID and META_APP_SECRET in backend environment variables."
+);
   }
 
   // 3. Exchange for Long-Lived Token (60 Days)

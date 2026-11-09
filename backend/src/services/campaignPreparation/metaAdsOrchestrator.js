@@ -132,6 +132,26 @@ export class MetaAdsOrchestrator {
 
     emit(1, `Meta Ad Account act_${cleanAccId} validated successfully.`);
 
+
+    // Merge all answers received from chat with saved session values
+      const chatAnswers = {
+        ...(session.userAnswers || {}),
+        ...(session.chatInjectedValues || {}),
+      };
+      // Persist merged answers in memory for this execution
+      session.userAnswers = chatAnswers;
+      session.chatInjectedValues = chatAnswers;
+
+      const getAnswer = (...keys) => {
+        for (const key of keys) {
+          const value = chatAnswers[key];
+          if (value !== undefined && value !== null && String(value).trim() !== "") {
+            return value;
+          }
+        }
+        return null;
+       };
+
     const campaignName = session.campaignName;
     const adSetName = session.adSetName;
     const objective = session.objective || "OUTCOME_SALES";

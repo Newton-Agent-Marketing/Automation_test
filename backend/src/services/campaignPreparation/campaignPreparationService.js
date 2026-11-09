@@ -95,7 +95,19 @@ export class CampaignPreparationService {
     if (session && session.pendingEdit) return true;
     if (!msg || typeof msg !== "string") return false;
     const clean = msg.toLowerCase().trim();
-    if (
+
+   if (session?.status === "NEEDS_USER_INPUT") {
+    const parsedAnswers = MissingFieldCollector.parseAnswersFromMessage(
+      msg,
+      session.missingFields || []
+    );
+
+    if (Object.keys(parsedAnswers).length > 0) {
+      return false;
+    }
+  }
+
+  if (
       clean.startsWith("edit") ||
       clean.includes("edit") ||
       clean.includes("change") ||
@@ -645,19 +657,6 @@ export class CampaignPreparationService {
           session.campaignType = combinedAnswers.campaignType;
         }
         await session.save();
-
-        // Attempt to update source sheet cells (gracefully handle sheets without matching columns)
-        let updateRes = { success: true };
-        try {
-          updateRes = await SheetUpdateService.updateSourceSheet({
-            userId,
-            source: session.source,
-            updates: combinedAnswers,
-            affectedRows: [],
-          });
-        } catch (sheetErr) {
-          console.warn("[SheetUpdateService Warning]:", sheetErr.message);
-        }
 
         // Re-read back latest values from sheet
         let sourceData = null;

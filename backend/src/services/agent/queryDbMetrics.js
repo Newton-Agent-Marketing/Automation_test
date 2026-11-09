@@ -178,6 +178,33 @@ export const AGENT_TOOLS_DEFINITIONS = [
             },
           },
           accountId: { type: "string", description: "Meta Ad Account ID" },
+
+          pixelId: {
+            type: "string",
+            description: "Meta Pixel ID for website conversion tracking"
+          },
+          appId: {
+            type: "string",
+            description: "Meta App ID for app promotion tracking"
+          },
+          objectStoreUrl: {
+            type: "string",
+            description: "App Store or Play Store URL for app promotion"
+          },
+          customEventType: {
+            type: "string",
+            description: "Conversion event such as PURCHASE, COMPLETE_REGISTRATION, or INSTALL"
+          },
+          trackingType: {
+            type: "string",
+            enum: ["APP", "WEBSITE", "BOTH"],
+            description: "Tracking destination type"
+          },
+          promotedObject: {
+            type: "object",
+            description: "Meta promoted object configuration for conversion tracking"
+          },
+
         },
         required: ["campaignId", "name"],
       },
@@ -796,10 +823,10 @@ export async function getUserAiContext({ userId }) {
       contextTag: currentNode.contextTag || currentNode.data?.contextTag || context.name,
       previousNode: parentNode
         ? {
-            id: parentNode.id,
-            label: parentNode.label || parentNode.data?.name || parentNode.type,
-            type: parentNode.type,
-          }
+          id: parentNode.id,
+          label: parentNode.label || parentNode.data?.name || parentNode.type,
+          type: parentNode.type,
+        }
         : null,
       details: {
         name: currentNode.data?.name || currentNode.label,
@@ -877,8 +904,8 @@ export async function getUserAiContext({ userId }) {
             briefDetails?.name && briefDetails?.name !== "Marketing Brief"
               ? briefDetails.name
               : productDetails?.productName
-              ? `${productDetails.productName} Growth Campaign`
-              : `${buName || "Marketing"} Campaign`,
+                ? `${productDetails.productName} Growth Campaign`
+                : `${buName || "Marketing"} Campaign`,
           businessUnit: buName || "Default Business Unit",
           businessUnitName: buName || "Default Business Unit",
           channel: channelDetails?.channelName || channelDetails?.channel || "Meta Ads",
@@ -961,7 +988,7 @@ export async function getUserAiContext({ userId }) {
 
   // Build complete Business Unit hierarchy (Multi-Business Unit & Multi-Channel Lineage)
   const businessUnitsHierarchy = [];
-  
+
   function getDescendants(startId) {
     const reachable = new Set();
     const queue = [startId];
@@ -1374,7 +1401,7 @@ export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedCh
     });
 
     // 5b. Match by matched product name
-    
+
     if (!matchedSheet && matchedProduct) {
       const pName = (matchedProduct.productName || matchedProduct.name || "").toLowerCase().trim();
       const pWords = pName.split(/[\s_-]+/).filter((w) => w.length >= 3 && !["item", "product", "premium"].includes(w));
@@ -1576,7 +1603,7 @@ export async function executeAgentTool(toolName, args) {
     if (!selectedSheet && (args.userMessage || args.userInstruction)) {
       const msg = `${args.userMessage || ""} ${args.userInstruction || ""}`.toLowerCase();
       const isSecond = /\b(second|2nd|sheet\s*#?\s*2|sheet2|two\s*sheet|2\s*sheet|dusra|dusri|doosra|doosri)\b/i.test(msg) &&
-                       !/\b(first|1st|sheet\s*#?\s*1|sheet1)\b/i.test(msg);
+        !/\b(first|1st|sheet\s*#?\s*1|sheet1)\b/i.test(msg);
       const isThird = /\b(third|3rd|sheet\s*#?\s*3|sheet3|three\s*sheet|3\s*sheet|teesra|teesri)\b/i.test(msg);
       const isFirst = /\b(first|1st|sheet\s*#?\s*1|sheet1|one\s*sheet|1\s*sheet|pehla|pehli)\b/i.test(msg);
 
@@ -1804,6 +1831,164 @@ export async function executeAgentTool(toolName, args) {
     };
   }
 
+  if (toolName === "write_connected_sheet_rows") {
+    const { userId, sheetIndex, sheetUrl, tabName, values } = args;
+
+    if (!userId) {
+      throw new Error("User authentication is required.");
+    }
+
+    if (!Array.isArray(values) || values.length === 0) {
+      throw new Error("No rows provided to write.");
+    }
+
+    if (!values.every(Array.isArray)) {
+      throw new Error("Invalid data format. Expected an array of rows.");
+    }
+
+    if (!tabName || !String(tabName).trim()) {
+      throw new Error("Worksheet tab name is required.");
+    }
+
+    const context = await AiContext.findOne({ userId }).lean();
+
+    const allSheets = [];
+
+    for (const node of context?.nodes || []) {
+      if (node.type !== "data_warehouse") continue;
+
+      const sheets = Array.isArray(node.data?.sheets)
+        ? node.data.sheets
+        : [node.data];
+
+      for (const sheet of sheets) {
+        if (!sheet?.sheetUrl) continue;
+
+        allSheets.push({
+          sheetUrl: sheet.sheetUrl.trim(),
+          sheetName: sheet.workbookName || sheet.sheetName,
+          availableTabs: sheet.availableTabs || [],
+          selectedTabIds: sheet.selectedTabIds || [],
+          selectedTabsData: sheet.selectedTabsData || [],
+        });
+      }
+    }
+
+    if (!allSheets.length) {
+      throw new Error("No connected Google Spreadsheet found.");
+    }
+
+
+    let targetSheet = null;
+
+    if (sheetUrl) {
+      const normalizedUrl = String(sheetUrl).trim();
+
+      targetSheet = allSheets.find(
+        (sheet) => sheet.sheetUrl === normalizedUrl
+      );
+    } else if (sheetIndex !== undefined && sheetIndex !== null) {
+      const index = Number(sheetIndex);
+
+      if (!Number.isInteger(index) || index < 1 || index > allSheets.length) {
+        throw new Error(
+          `Invalid sheetIndex. Please provide a number between 1 and ${allSheets.length}.`
+        );
+      }
+
+      targetSheet = allSheets[index - 1];
+    } else if (allSheets.length === 1) {
+      targetSheet = allSheets[0];
+    } else {
+      throw new Error(
+        "Multiple spreadsheets are connected. Specify sheetUrl or sheetIndex."
+      );
+    }
+
+    if (!targetSheet) {
+      throw new Error(
+        "Requested spreadsheet is not connected to this workspace."
+      );
+    }
+
+
+    if (!/^https:\/\/docs\.google\.com\/spreadsheets\/d\//i.test(targetSheet.sheetUrl)) {
+      throw new Error("Only connected Google Sheets URLs can be updated.");
+    }
+
+    const targetTab = String(tabName).trim();
+
+
+    const selectedTabsData = Array.isArray(targetSheet.selectedTabsData)
+      ? targetSheet.selectedTabsData
+      : [];
+
+    const selectedTabIds = Array.isArray(targetSheet.selectedTabIds)
+      ? targetSheet.selectedTabIds
+      : [];
+
+    const availableTabs = Array.isArray(targetSheet.availableTabs)
+      ? targetSheet.availableTabs
+      : [];
+
+    const normalizedTargetTab = targetTab.trim().toLowerCase();
+
+    // Check selection by saved tab name
+    const isSelectedInData = selectedTabsData.some((tab) => {
+      const name = String(
+        tab?.tabName || tab?.title || tab?.name || ""
+      ).trim().toLowerCase();
+
+      return name === normalizedTargetTab;
+    });
+
+    // Check selection by Google Sheets tab ID
+    const isSelectedById = availableTabs.some((tab) => {
+      const tabId = tab?.sheetId ?? tab?.id;
+
+      const tabName = String(
+        tab?.title || tab?.name || tab?.tabName || ""
+      ).trim().toLowerCase();
+
+      return (
+        selectedTabIds.some(
+          (id) => String(id) === String(tabId)
+        ) &&
+        tabName === normalizedTargetTab
+      );
+    });
+
+    // Allow the tab if either selection source confirms it
+    if (!isSelectedInData && !isSelectedById) {
+      throw new Error(
+        `Access denied. Worksheet "${targetTab}" is not selected in AI Context. Please select it first.`
+      );
+    }
+
+    const { default: sheetsService } = await import(
+      "../../google/sheetsService.js"
+    );
+
+    const result = await sheetsService.appendRowsToWorksheet({
+      spreadsheetIdOrUrl: targetSheet.sheetUrl,
+      sheetTitle: targetTab,
+      values,
+    });
+
+    return {
+      success: result.success === true,
+      operation: "append_rows",
+      spreadsheetId: result.spreadsheetId,
+      sheetName: targetSheet.sheetName,
+      tabName: targetTab,
+      updatedRange: result.updatedRange,
+      updatedRows: result.updatedRows,
+      updatedCells: result.updatedCells,
+      verified: false,
+      message: "Rows appended. Independent read-back verification is still pending.",
+    };
+  }
+
   if (toolName === "route_campaign_sheet") {
     const { headers = [], rows = [], sheetName = "", userInstruction = "" } = args;
     return CampaignRouter.routeSheet({ headers, rows, sheetName, userInstruction });
@@ -1966,7 +2151,7 @@ export async function executeAgentTool(toolName, args) {
 
       // If no records in DB yet, attempt live sync via GoogleSyncPipeline
       if (insights.length === 0 && cleanTargetId) {
-        await GoogleSyncPipeline.syncAccount(cleanTargetId).catch(() => {});
+        await GoogleSyncPipeline.syncAccount(cleanTargetId).catch(() => { });
         insights = await GoogleInsight.find(filter).sort({ date: -1 }).limit(30).lean();
         campaigns = await GoogleCampaign.find(cleanTargetId ? { accountId: { $in: [targetAccountId, cleanTargetId] } } : (args.userId ? { userId: args.userId } : {})).lean();
       }

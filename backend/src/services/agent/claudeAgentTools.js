@@ -26,17 +26,31 @@ const toToolError = (error) => ({
   isError: true,
 });
 
-export const validateSessionMetaAccountLock = (lockedAccountId, requestedAccountId) => {
-  const clean = (id) => String(id || "").replace(/^act_/, "").trim();
+export const validateSessionMetaAccountLock = (
+  lockedAccountId,
+  requestedAccountId
+) => {
+  const clean = (id) =>
+    String(id || "").replace(/^act_/, "").trim();
+
   const lockedClean = clean(lockedAccountId);
   const toolClean = clean(requestedAccountId);
 
-  if (lockedClean && toolClean && lockedClean !== toolClean) {
+  // A Meta account must be selected in the session.
+  if (!lockedClean) {
     throw new Error(
-      `Account ID mismatch: Tool requested Meta account "act_${toolClean}", but the session is strictly locked to Meta account "act_${lockedClean}" selected in AI Context. Cross-account operations are strictly prohibited.`
+      "No Meta Ad Account is selected. Please select a Meta account in AI Context before performing this operation."
     );
   }
-  return lockedClean || toolClean || null;
+
+  // Prevent MCP tools from switching accounts.
+  if (toolClean && lockedClean !== toolClean) {
+    throw new Error(
+      `Account ID mismatch: Tool requested Meta account "act_${toolClean}", but the session is locked to "act_${lockedClean}". Cross-account operations are prohibited.`
+    );
+  }
+
+  return lockedClean;
 };
 
 export const createAdsMcpServer = ({ userId, accountId }) => {
@@ -71,7 +85,7 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
             availableAccounts: primaryGoogle?.accounts || [],
           },
           totalConnectedAccounts: (metaAccounts?.length || 0) + (googleAccounts?.length || 0),
-          activeAdAccountId: accountId || selectedGoogleChildId || null,
+          activeAdAccountId: accountId || null,
         });
       } catch (error) {
         return toToolError(error);
@@ -119,9 +133,14 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
     },
     async (args) => {
       try {
+        const effectiveAccountId =
+          args.channel?.toLowerCase().includes("meta")
+            ? resolveTargetMetaAccountId(args.accountId)
+            : args.accountId || accountId;
+
         const result = await executeAgentTool("query_database_metrics", {
           ...args,
-          accountId: args.accountId || accountId,
+          accountId: effectiveAccountId,
           userId,
         });
         return toToolResult(result);
@@ -940,12 +959,73 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
     "get_connected_sheet_rows",
     "Fetch latest real-time campaign configuration rows, columns, and stable row_ids from the user's connected Google Sheet or Excel warehouse document. Can target a specific sheet by index (e.g. 1 for first sheet, 2 for second sheet) or sheetUrl.",
     {
-      sheetIndex: z.number().optional().describe("1-based index of the connected sheet (1 for first sheet, 2 for second sheet, etc.)"),
-      sheetUrl: z.string().optional().describe("Optional URL of the specific spreadsheet to fetch rows from"),
+
+      sheetIndex: z.number().optional().describe(
+        "1-based index of the connected spreadsheet"
+      ),
+
+      sheetUrl: z.string().optional().describe(
+        "URL of the specific connected spreadsheet"
+      ),
+
+      tabName: z.string().optional().describe(
+        "Exact worksheet tab name to read, for example BGMI, Free Fire or GPRC"
+      ),
+
+      userInstruction: z.string().optional().describe(
+        "Additional instructions for selecting and reading the correct spreadsheet and worksheet"
+      ),
+
     },
     async (args = {}) => {
       try {
         const result = await executeAgentTool("get_connected_sheet_rows", { ...args, userId });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const writeConnectedSheetRows = tool(
+    "write_connected_sheet_rows",
+    "Append dynamically generated rows to a specific connected Google Spreadsheet worksheet. Use this tool when the user asks to save, append, or export data, reports, analysis, or campaign metrics into Google Sheets. Always select the correct spreadsheet and worksheet tab. Never invent source data.",
+    {
+      sheetIndex: z.number().optional().describe(
+        "1-based index of the connected spreadsheet"
+      ),
+
+      sheetUrl: z.string().optional().describe(
+        "URL of the specific connected Google Spreadsheet"
+      ),
+
+      tabName: z.string().min(1).describe(
+        "Exact worksheet tab name, such as BGMI, Free Fire or GPRC"
+      ),
+
+      values: z.array(
+        z.array(
+          z.union([
+            z.string(),
+            z.number(),
+            z.boolean(),
+            z.null(),
+          ])
+        )
+      ).min(1).describe(
+        "Two-dimensional array of actual values to append. Each inner array represents one spreadsheet row."
+      ),
+    },
+    async (args) => {
+      try {
+        const result = await executeAgentTool(
+          "write_connected_sheet_rows",
+          {
+            ...args,
+            userId,
+          }
+        );
+
         return toToolResult(result);
       } catch (error) {
         return toToolError(error);
@@ -1509,6 +1589,7 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
       getGoogleCampaignStructure,
       queryTokenUsageMetrics,
       getConnectedSheetRows,
+      writeConnectedSheetRows,
       routeCampaignSheet,
       validateGoogleDriveAsset,
       downloadGoogleDriveAsset,
@@ -1537,6 +1618,7 @@ export const ADS_ALLOWED_TOOLS = [
   "mcp__ads__get_user_connected_accounts",
   "mcp__ads__get_user_ai_context",
   "mcp__ads__get_connected_sheet_rows",
+  "mcp__ads__write_connected_sheet_rows",
   "mcp__ads__route_campaign_sheet",
   "mcp__ads__validate_google_drive_asset",
   "mcp__ads__download_google_drive_asset",

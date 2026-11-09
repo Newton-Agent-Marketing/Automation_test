@@ -14,6 +14,11 @@ import { MetaMcpClient } from "../mcp/metaMcpClient.js";
 import { GoogleMcpClient } from "../mcp/googleMcpClient.js";
 import sheetsService from "../../google/sheetsService.js";
 import { AgentStreamHandler } from "./agentStream.js";
+import {
+  createAdsMcpServer,
+  ADS_ALLOWED_TOOLS,
+} from "../claudeAgentTools.js";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 
 /**
  * Shared AI Agent Orchestrator
@@ -143,14 +148,11 @@ export class AiAgentOrchestrator {
       }
     }
 
-    // Try resolving from user's connected Meta accounts
-    if (!targetMetaAccountId && metaAccounts.length > 0) {
-      targetMetaAccountId = String(metaAccounts[0].accountId).replace(/^act_/, "").trim();
-    }
-
-    // Final fallback to user's known active account
+    // No hardcoded Meta account fallback.
+    // If no account is selected or connected, keep null.
+    // MCP tools must reject operations without a valid account.
     if (!targetMetaAccountId) {
-      targetMetaAccountId = "1405197426806546";
+      targetMetaAccountId = null;
     }
 
     // Resolve Target Google Customer ID
@@ -349,7 +351,7 @@ export class AiAgentOrchestrator {
     const isMetaLeadRetrieval =
       !isMetaLeadCreation &&
       (/\b(show|fetch|get|list|display|export|view|count|download|kitne|batao)\b.*(?:meta\s*)?leads?\b/i.test(text) ||
-       /(how\s*many\s*leads|latest\s*leads|leads\s*from|leads\s*generated)/i.test(text));
+        /(how\s*many\s*leads|latest\s*leads|leads\s*from|leads\s*generated)/i.test(text));
 
     if (isMetaLeadRetrieval) {
       return {
@@ -384,8 +386,8 @@ export class AiAgentOrchestrator {
       !isMetaCreation &&
       !isSheetWriteOrSync &&
       (mentionsConnectedSheet ||
-       (mentionsSheet && mentionsFetch) ||
-       /fetch.*(sheet|spreadsheet|excel|rows|fields|columns|data\s*warehouse)|get.*(sheet|spreadsheet|excel|rows|fields)|read.*(sheet|spreadsheet|excel)|connected\s*google\s*sheet|load.*(sheet|spreadsheet)/i.test(text));
+        (mentionsSheet && mentionsFetch) ||
+        /fetch.*(sheet|spreadsheet|excel|rows|fields|columns|data\s*warehouse)|get.*(sheet|spreadsheet|excel|rows|fields)|read.*(sheet|spreadsheet|excel)|connected\s*google\s*sheet|load.*(sheet|spreadsheet)/i.test(text));
 
     if (isSheetFetch) {
       return {
@@ -768,7 +770,7 @@ export class AiAgentOrchestrator {
     previousNodeOutput = null,
   }) {
     const checks = [];
-    let isPassed = true;
+    let isPassed = false;
     let status = "completed";
     let failureReason = null;
     let verifiedOutputData = null;
@@ -921,12 +923,63 @@ export class AiAgentOrchestrator {
       }
 
       case "DYNAMIC_TASK": {
-        checks.push({ name: "Dynamic Autonomous Verification", passed: true, detail: "Evaluated prompt instructions and executed task successfully" });
+        const successfulTools = executedTools.filter(
+          (tool) => tool.status === "SUCCESS"
+        );
+
+        if (successfulTools.length === 0) {
+          isPassed = false;
+          status = "failed";
+          failureReason =
+            "The requested task was not executed by any verified tool. No successful execution can be confirmed.";
+
+          checks.push({
+            name: "Dynamic Task Verification",
+            passed: false,
+            detail: failureReason,
+          });
+
+          break;
+        }
+
+        const failedTools = executedTools.filter(
+          (tool) => tool.status !== "SUCCESS"
+        );
+
+        if (failedTools.length > 0) {
+          isPassed = false;
+          status = "failed";
+          failureReason =
+            "One or more required tools failed. Task completion cannot be confirmed.";
+
+          checks.push({
+            name: "Dynamic Task Verification",
+            passed: false,
+            detail: failureReason,
+          });
+
+          break;
+        }
+
+        checks.push({
+          name: "Tool Execution",
+          passed: true,
+          detail: `${successfulTools.length} tool(s) executed successfully.`,
+        });
+
         verifiedOutputData = {
           type: "dynamic_ai_task",
-          status: "success",
-          completed: true,
+          status: "executed",
+          completed: false,
+          toolsExecuted: successfulTools.map((tool) => tool.toolName),
         };
+
+        // Tool success alone is not proof of final task completion.
+        isPassed = false;
+        status = "unverified";
+        failureReason =
+          "Tools executed, but the final task outcome has not yet been independently verified.";
+
         break;
       }
 
@@ -1714,6 +1767,11 @@ Review campaign details in your Meta Ads Manager.`;
       }
     }
 
+    console.log("[Claude SDK Integration] Meta account:", context.targetMetaAccountId);
+    console.log("[Claude SDK Integration] MCP server imported:", typeof createAdsMcpServer);
+    console.log("[Claude SDK Integration] Allowed tools:", ADS_ALLOWED_TOOLS.length);
+    console.log("[Claude SDK Integration] Query function:", typeof query);
+
     const executedTools = await this.executeTools({
       intentObj,
       instruction: userMessage,
@@ -1786,7 +1844,7 @@ Review campaign details in your Meta Ads Manager.`;
     const intentObj = this.classifyIntent(instruction, context);
 
     if (typeof onProgress === "function") {
-      await Promise.resolve(onProgress({ state: "running", message: `Executing node task "${node.label || node.type}"...` })).catch(() => {});
+      await Promise.resolve(onProgress({ state: "running", message: `Executing node task "${node.label || node.type}"...` })).catch(() => { });
     }
 
     const executedTools = await this.executeTools({
@@ -1796,14 +1854,14 @@ Review campaign details in your Meta Ads Manager.`;
       previousNodeOutput,
       onStatus: (st) => {
         if (typeof onProgress === "function") {
-          Promise.resolve(onProgress({ state: "running", toolName: st.toolName, message: st.status })).catch(() => {});
+          Promise.resolve(onProgress({ state: "running", toolName: st.toolName, message: st.status })).catch(() => { });
         }
       },
     });
 
     // Enter VERIFYING state
     if (typeof onProgress === "function") {
-      await Promise.resolve(onProgress({ state: "verifying", message: `Verifying task outcomes and data validation...` })).catch(() => {});
+      await Promise.resolve(onProgress({ state: "verifying", message: `Verifying task outcomes and data validation...` })).catch(() => { });
     }
 
     const validation = this.verifyTaskCompletion({
