@@ -362,6 +362,22 @@ export class AiAgentOrchestrator {
       };
     }
 
+    // META CAMPAIGN SEARCH / LIST / STATUS
+    const isMetaCampaignSearch =
+      /(show|fetch|get|list|display|view|find|search|give|tell|batao|dikhao)/i.test(text) &&
+      /(campaign|campaigns|adset|ad\s*set|adsets|ad\s*sets)/i.test(text) &&
+      /(meta|facebook|campaign|adset|ad\s*set)/i.test(text) &&
+      !/(create|launch|draft|build|setup|publish|make|banao|deploy)/i.test(text);
+
+    if (isMetaCampaignSearch) {
+      return {
+        intent: "META_CAMPAIGN_SEARCH",
+        requiresTools: true,
+        tools: ["get_live_campaigns_status"],
+        description: "Fetch current live Meta campaigns and their statuses",
+      };
+    }
+
     // 2. Meta Ads Campaign / Ad Set / Creative Creation (Takes priority over pure sheet fetching)
     const isMetaCreation =
       /(create|launch|draft|build|setup|publish|make|banao|deploy)\s*(?:a\s*)?(?:new\s*)?(?:meta\s*|facebook\s*)?(?:draft\s*)?(campaign|adset|ad\s*set|ad\b|ads\b|creative)/i.test(text) ||
