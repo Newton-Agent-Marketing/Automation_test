@@ -55,7 +55,7 @@ export class MetaMcpClient {
               }
             }
           }
-        } catch (_) {}
+        } catch (_) { }
 
         if (args.accessToken && !args.accessToken.startsWith("EAAB_simulated")) {
           try {
@@ -229,14 +229,16 @@ export class MetaMcpClient {
 
       case "get_live_campaign_insights": {
         try {
-          const { datePreset, timeRange, timeIncrement } = args;
           const [campaigns, insights] = await Promise.all([
-            MetaApiService.getCampaigns(effectiveAccountId, effectiveToken).catch(() => []),
+            MetaApiService.getCampaigns(
+              effectiveAccountId,
+              effectiveToken
+            ),
             MetaApiService.getInsights(effectiveAccountId, effectiveToken, {
               datePreset: datePreset || (timeRange ? undefined : "last_7d"),
               timeRange,
               timeIncrement: timeIncrement ?? null,
-            }).catch(() => []),
+            }),
           ]);
 
           const statusMap = new Map();
@@ -303,8 +305,8 @@ export class MetaMcpClient {
             const rawAds = Array.isArray(c.ads?.data)
               ? c.ads.data
               : Array.isArray(c.ads)
-              ? c.ads
-              : [];
+                ? c.ads
+                : [];
             totalAdsInAccount += rawAds.length;
             return {
               id: c.id,

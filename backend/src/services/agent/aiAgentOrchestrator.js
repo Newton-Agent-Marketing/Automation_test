@@ -672,7 +672,7 @@ export class AiAgentOrchestrator {
               if (broaderResult?.insights?.length > 0) {
                 metaResult = broaderResult;
               }
-            } catch (_) {}
+            } catch (_) { }
           }
         } catch (mcpErr) {
           console.warn("[AiAgentOrchestrator Live Meta MCP Warning]:", mcpErr.message);
@@ -954,6 +954,8 @@ export class AiAgentOrchestrator {
           status: "success",
         };
 
+        isPassed = true;
+        status = "completed";
         break;
       }
 

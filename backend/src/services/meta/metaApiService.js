@@ -70,7 +70,7 @@ export function normalizeCountryCodes(countries) {
     }
   }
   return valid.length > 0 ? Array.from(new Set(valid)) : ["IN"];
-} 
+}
 
 export const VALID_META_APP_CUSTOM_EVENT_TYPES = [
   "PURCHASE",
@@ -112,7 +112,7 @@ export class MetaApiService {
     if (clean === "TUTORIAL_COMPLETED") return "TUTORIAL_COMPLETED";
     if (clean === "SUBSCRIBE" || clean === "SUBSCRIPTION") return "SUBSCRIBE";
     if (clean === "START_TRIAL" || clean === "TRIAL") return "START_TRIAL";
-    
+
     return VALID_META_APP_CUSTOM_EVENT_TYPES.includes(clean) ? clean : null;
   }
 
@@ -300,7 +300,7 @@ export class MetaApiService {
 
           console.warn(`[Meta Graph API Rate Limit ${errCode || 429} Notice]: Retrying request (attempt ${attempt}/${maxRetries}) after ${backoffMs / 1000}s pause to clear Meta Ad Account quota...`);
           if (typeof onRetry === "function") {
-            try { onRetry(attempt, backoffMs); } catch (_) {}
+            try { onRetry(attempt, backoffMs); } catch (_) { }
           }
           await new Promise((resolve) => setTimeout(resolve, backoffMs));
           continue;
@@ -373,19 +373,19 @@ export class MetaApiService {
         );
       }
     }
-     // Never generate fake Meta tokens for real OAuth flows.
-     // Simulation is allowed only during automated tests.
-     if (process.env.NODE_ENV === "test") {
-     return {
-     access_token: `EAAB_simulated_${Date.now()}_${code.slice(0, 16)}`,
-     token_type: "bearer",
-     expires_in: 5184000,
-    };
-   }
+    // Never generate fake Meta tokens for real OAuth flows.
+    // Simulation is allowed only during automated tests.
+    if (process.env.NODE_ENV === "test") {
+      return {
+        access_token: `EAAB_simulated_${Date.now()}_${code.slice(0, 16)}`,
+        token_type: "bearer",
+        expires_in: 5184000,
+      };
+    }
 
-throw new Error(
-  "Meta OAuth is not configured. Please set META_APP_ID and META_APP_SECRET in backend environment variables."
-);
+    throw new Error(
+      "Meta OAuth is not configured. Please set META_APP_ID and META_APP_SECRET in backend environment variables."
+    );
   }
 
   // 3. Exchange for Long-Lived Token (60 Days)
@@ -1247,7 +1247,7 @@ throw new Error(
                     }
                   }
                 }
-              } catch (e) {}
+              } catch (e) { }
 
               if (otherAppMatch && otherAccountWithApp) {
                 const otherAccId = String(otherAccountWithApp.id || otherAccountWithApp.account_id);
@@ -1370,7 +1370,7 @@ throw new Error(
               }
             }
           }
-        } catch (e) {}
+        } catch (e) { }
       }
 
       if (cleanId) {
@@ -1418,7 +1418,7 @@ throw new Error(
             };
           }
         }
-      } catch (e) {}
+      } catch (e) { }
 
       if (!isAppRequired) {
         return {
@@ -1509,7 +1509,7 @@ throw new Error(
             }
           }
         }
-      } catch (e) {}
+      } catch (e) { }
     }
 
     // 2. Check if current account has any mobile apps
@@ -1553,7 +1553,7 @@ throw new Error(
           };
         }
       }
-    } catch (e) {}
+    } catch (e) { }
 
     if (!accountApps || accountApps.length === 0) {
       return {
@@ -1643,7 +1643,7 @@ throw new Error(
               simObjective = foundCamp.objective;
             }
           }
-        } catch (_) {}
+        } catch (_) { }
       }
       if (!simObjective) {
         simObjective = (optimizationGoal === "APP_INSTALLS" || appId || applicationId || objectStoreUrl || object_store_url)
@@ -1669,30 +1669,30 @@ throw new Error(
           });
         });
         liveCampaign = campRes.data;
-    } catch (campErr) {
-      const metaErr = campErr.response?.data?.error;
-      console.error("[Meta API error] Failed live campaign lookup:", {
-        campaign_id: campaignId,
-        error: metaErr || campErr.message,
-      });
-      const metaMsg = metaErr?.message || metaErr?.error_user_msg || campErr.message || "Object not found or access denied";
-      const isRateLimitErr =
-        metaErr?.code === 80004 ||
-        metaErr?.error_subcode === 2446079 ||
-        metaMsg.toLowerCase().includes("too many calls") ||
-        metaMsg.toLowerCase().includes("rate limit");
+      } catch (campErr) {
+        const metaErr = campErr.response?.data?.error;
+        console.error("[Meta API error] Failed live campaign lookup:", {
+          campaign_id: campaignId,
+          error: metaErr || campErr.message,
+        });
+        const metaMsg = metaErr?.message || metaErr?.error_user_msg || campErr.message || "Object not found or access denied";
+        const isRateLimitErr =
+          metaErr?.code === 80004 ||
+          metaErr?.error_subcode === 2446079 ||
+          metaMsg.toLowerCase().includes("too many calls") ||
+          metaMsg.toLowerCase().includes("rate limit");
 
-      if (isRateLimitErr) {
+        if (isRateLimitErr) {
+          throw new Error(
+            `Meta API Rate Limit Error [80004]: Ad Account call volume quota reached for campaign ${campaignId}. Meta is temporarily throttling requests for this Ad Account. Please pause 1-2 minutes and try again.`
+          );
+        }
+
         throw new Error(
-          `Meta API Rate Limit Error [80004]: Ad Account call volume quota reached for campaign ${campaignId}. Meta is temporarily throttling requests for this Ad Account. Please pause 1-2 minutes and try again.`
+          `Selected campaign (${campaignId}) is invalid, deleted, or inaccessible: ${metaMsg}. Please select an active campaign.`
         );
       }
-
-      throw new Error(
-        `Selected campaign (${campaignId}) is invalid, deleted, or inaccessible: ${metaMsg}. Please select an active campaign.`
-      );
     }
-  }
 
     const campStatus = String(liveCampaign?.status || "").toUpperCase();
     const effectiveStatus = String(liveCampaign?.effective_status || "").toUpperCase();
@@ -1769,7 +1769,7 @@ throw new Error(
     const requestedAppId = appId || applicationId || targeting.appId || targeting.applicationId || (promotedObject && typeof promotedObject === "object" ? promotedObject?.application_id : null);
     const requestedStoreUrl = objectStoreUrl || object_store_url || targeting.objectStoreUrl || (promotedObject && typeof promotedObject === "object" ? promotedObject?.object_store_url : null);
     const requestedPixelId = pixelId || targeting.pixelId || (promotedObject && typeof promotedObject === "object" ? promotedObject?.pixel_id : null) || null;
-    
+
     let mode = (trackingType || tracking_type || "").toUpperCase();
     const isAppCampObjective = liveCampaign?.objective === "OUTCOME_APP_PROMOTION";
     if (!mode) {
@@ -2047,7 +2047,7 @@ throw new Error(
             // continue to next error handler
           }
         }
-        
+
         // Auto-retry 2: Without adset budget if campaign already has Campaign Budget Optimization (CBO) or subcode 1885621
         const isCboConflict = metaErr?.error_subcode === 1885621 || errMsg.includes("campaign budget") || errMsg.includes("ad set budget");
         if (metaErr && (payload.daily_budget || payload.lifetime_budget || isCboConflict)) {
@@ -2447,7 +2447,7 @@ throw new Error(
     if (!pageResolution.valid || !pageResolution.pageId) {
       const pageErr = new Error(
         pageResolution.error ||
-          "A Facebook Page with Ads permission is required to create an Ad Creative on Meta Ads. Please connect an authorized Page in Meta Business Manager."
+        "A Facebook Page with Ads permission is required to create an Ad Creative on Meta Ads. Please connect an authorized Page in Meta Business Manager."
       );
       pageErr.status = pageResolution.status || "PAGE_PERMISSION_MISSING";
       pageErr.step = "PAGE_VALIDATION";
@@ -2679,7 +2679,7 @@ throw new Error(
         } else if (typeof firstErr?.error_data === "object") {
           errData = firstErr.error_data;
         }
-      } catch (_) {}
+      } catch (_) { }
 
       const isAccountUnsettled =
         errData?.ad_account_status === 3 ||
@@ -2826,7 +2826,7 @@ throw new Error(
         if (appRes.valid && appRes.appId) {
           effectiveAppId = appRes.appId;
         }
-      } catch (appErr) {}
+      } catch (appErr) { }
     }
 
     const campaignObjective = String(params.campaignObjective || params.objective || "").toUpperCase();
@@ -2947,6 +2947,15 @@ throw new Error(
       fields: fields || defaultFields,
       limit: Math.min(limit || 500, 500),
     };
+
+    console.log("[Meta Insights Request]", {
+      accountId: cleanId,
+      datePreset,
+      timeRange,
+      level,
+      requestedAt: new Date().toISOString(),
+    });
+
     if (timeRange) {
       params.time_range = typeof timeRange === "string" ? timeRange : JSON.stringify(timeRange);
     } else if (datePreset) {
@@ -2972,7 +2981,11 @@ throw new Error(
         break;
       }
     }
-
+    console.log("[Meta Insights Response]", {
+      accountId: cleanId,
+      records: allRecords.length,
+      fetchedAt: new Date().toISOString(),
+    });
     return allRecords;
   }
 
@@ -3174,7 +3187,7 @@ throw new Error(
               metaResponse: retData,
               status: "READY",
             });
-          } catch (_) {}
+          } catch (_) { }
         }
         return retData;
       } catch (err) {
@@ -3228,7 +3241,7 @@ throw new Error(
             metaResponse: chunkRes,
             status: "READY",
           });
-        } catch (_) {}
+        } catch (_) { }
       }
       return chunkRes;
     }
@@ -3361,7 +3374,7 @@ throw new Error(
               metaResponse: imgData,
               status: "READY",
             });
-          } catch (_) {}
+          } catch (_) { }
 
           return res;
         }
@@ -3394,7 +3407,7 @@ throw new Error(
         if (fs.existsSync(expectedThumbPath) && fs.statSync(expectedThumbPath).size > 0) {
           return expectedThumbPath;
         }
-      } catch (_) {}
+      } catch (_) { }
 
       // Fallback to macOS qlmanage if available
       try {
@@ -3407,7 +3420,7 @@ throw new Error(
         if (match) {
           return path.join(scratchDir, match);
         }
-      } catch (_) {}
+      } catch (_) { }
     } catch (err) {
       console.warn("[Meta Video Thumbnail Extraction Warning]:", err.message);
     }
@@ -3496,7 +3509,7 @@ throw new Error(
     if (!pageResolution.valid || !pageResolution.pageId) {
       const pageErr = new Error(
         pageResolution.error ||
-          "A Facebook Page with Ads permission is required to create a Video Ad Creative on Meta Ads. Please connect an authorized Page in Meta Business Manager."
+        "A Facebook Page with Ads permission is required to create a Video Ad Creative on Meta Ads. Please connect an authorized Page in Meta Business Manager."
       );
       pageErr.status = pageResolution.status || "PAGE_PERMISSION_MISSING";
       pageErr.step = "PAGE_VALIDATION";
@@ -3646,8 +3659,8 @@ throw new Error(
       ...(effectiveImageHash
         ? { image_hash: effectiveImageHash }
         : effectiveImageUrl
-        ? { image_url: effectiveImageUrl }
-        : {}),
+          ? { image_url: effectiveImageUrl }
+          : {}),
       call_to_action: {
         type: effectiveCta,
         value: {
@@ -3785,81 +3798,49 @@ throw new Error(
       if (accessToken && accessToken.startsWith("EAAB_simulated") && !err.response) {
         creativeId = `sim_cr_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
       } else {
-      console.error("[Meta API error]:", {
-        status: err.response?.status,
-        data: err.response?.data,
-        error: err.response?.data?.error || err.message,
-      });
-      console.warn("[Meta Video Creative Attempt 1 Warning]:", err.response?.data?.error || err.message);
-
-      const firstErr = err.response?.data?.error;
-      let errData = null;
-      try {
-        if (typeof firstErr?.error_data === "string") {
-          errData = JSON.parse(firstErr.error_data);
-        } else if (typeof firstErr?.error_data === "object") {
-          errData = firstErr.error_data;
-        }
-      } catch (_) {}
-
-      const isAccountUnsettled =
-        errData?.ad_account_status === 3 ||
-        firstErr?.error_subcode === 1487194 ||
-        errData?.has_write_ad_account_permissions === "false";
-
-      if (isAccountUnsettled) {
-        throw new Error(
-          `Ad Account Unsettled (Unpaid Balance) [Meta Error 200 / Subcode 1487194]: Meta Ad Account has an unsettled balance (ad_account_status: 3). Meta strictly prohibits publishing new ads until the pending payment is cleared in Meta Ads Manager. Please click "Pay Now" in Meta Ads Manager to clear the balance.`
-        );
-      }
-
-      const isPermissionErr = firstErr?.code === 10 || firstErr?.error_subcode === 3858749 || (firstErr?.message || "").toLowerCase().includes("permission");
-
-      if (isPermissionErr && !objectStorySpec.instagram_actor_id && !objectStorySpec.instagram_user_id) {
-        throw new Error(
-          `Facebook Page Permission Error [Meta Code 10 / Subcode 3858749]: Your connected Meta account lacks "Advertiser" permission on Page "${objectStorySpec.page_id}". To publish ads for this Page, grant Advertiser access in Facebook Business Manager or use an authorized Page (such as 1151601711372388 - Impetus Billion).`
-        );
-      }
-
-      if (objectStorySpec.instagram_actor_id || objectStorySpec.instagram_user_id) {
-        console.warn(`[Meta Video Creative Retry]: Removing unverified Instagram ID and retrying under requested Page ID "${objectStorySpec.page_id}"...`);
-        delete objectStorySpec.instagram_actor_id;
-        delete objectStorySpec.instagram_user_id;
-        creativeParams.object_story_spec = JSON.stringify(objectStorySpec);
-      }
-      // Attempt 2: Retry with exact core video spec keys
-      try {
-        creativeParams.degrees_of_freedom_spec = JSON.stringify({
-          degrees_of_freedom_type: "USER_ENROLLED",
-          creative_features_spec: {
-            advantage_plus_creative: { enroll_status: "OPT_IN" },
-            text_optimizations: { enroll_status: "OPT_IN" },
-            inline_comment: { enroll_status: "OPT_IN" },
-            enhance_cta: {
-              enroll_status: "OPT_IN",
-              customizations: {
-                text_extraction: {
-                  enroll_status: "OPT_IN",
-                },
-              },
-            },
-            image_touchups: { enroll_status: "OPT_IN" },
-            video_auto_crop: { enroll_status: "OPT_IN" },
-            video_filtering: { enroll_status: "OPT_IN" },
-          },
+        console.error("[Meta API error]:", {
+          status: err.response?.status,
+          data: err.response?.data,
+          error: err.response?.data?.error || err.message,
         });
-        const retryRes2 = await axios.post(creativeUrl, null, { params: creativeParams });
-        console.log("[Meta Video Creative Attempt 2 Success Response]:", retryRes2.data);
-        creativeId = retryRes2.data?.id;
-      } catch (retryErr2) {
-        console.warn("[Meta Video Creative Attempt 2 Warning]:", retryErr2.response?.data?.error || retryErr2.message);
-        const err2 = retryErr2.response?.data?.error;
-        if (err2?.code === 10 || err2?.error_subcode === 3858749 || (err2?.message || "").toLowerCase().includes("permission")) {
+        console.warn("[Meta Video Creative Attempt 1 Warning]:", err.response?.data?.error || err.message);
+
+        const firstErr = err.response?.data?.error;
+        let errData = null;
+        try {
+          if (typeof firstErr?.error_data === "string") {
+            errData = JSON.parse(firstErr.error_data);
+          } else if (typeof firstErr?.error_data === "object") {
+            errData = firstErr.error_data;
+          }
+        } catch (_) { }
+
+        const isAccountUnsettled =
+          errData?.ad_account_status === 3 ||
+          firstErr?.error_subcode === 1487194 ||
+          errData?.has_write_ad_account_permissions === "false";
+
+        if (isAccountUnsettled) {
+          throw new Error(
+            `Ad Account Unsettled (Unpaid Balance) [Meta Error 200 / Subcode 1487194]: Meta Ad Account has an unsettled balance (ad_account_status: 3). Meta strictly prohibits publishing new ads until the pending payment is cleared in Meta Ads Manager. Please click "Pay Now" in Meta Ads Manager to clear the balance.`
+          );
+        }
+
+        const isPermissionErr = firstErr?.code === 10 || firstErr?.error_subcode === 3858749 || (firstErr?.message || "").toLowerCase().includes("permission");
+
+        if (isPermissionErr && !objectStorySpec.instagram_actor_id && !objectStorySpec.instagram_user_id) {
+          throw new Error(
+            `Facebook Page Permission Error [Meta Code 10 / Subcode 3858749]: Your connected Meta account lacks "Advertiser" permission on Page "${objectStorySpec.page_id}". To publish ads for this Page, grant Advertiser access in Facebook Business Manager or use an authorized Page (such as 1151601711372388 - Impetus Billion).`
+          );
+        }
+
+        if (objectStorySpec.instagram_actor_id || objectStorySpec.instagram_user_id) {
+          console.warn(`[Meta Video Creative Retry]: Removing unverified Instagram ID and retrying under requested Page ID "${objectStorySpec.page_id}"...`);
           delete objectStorySpec.instagram_actor_id;
           delete objectStorySpec.instagram_user_id;
           creativeParams.object_story_spec = JSON.stringify(objectStorySpec);
         }
-        // Attempt 3: Core video enhancements fallback with USER_ENROLLED
+        // Attempt 2: Retry with exact core video spec keys
         try {
           creativeParams.degrees_of_freedom_spec = JSON.stringify({
             degrees_of_freedom_type: "USER_ENROLLED",
@@ -3880,23 +3861,55 @@ throw new Error(
               video_filtering: { enroll_status: "OPT_IN" },
             },
           });
-          const retryRes3 = await axios.post(creativeUrl, null, { params: creativeParams });
-          console.log("[Meta Video Creative Attempt 3 Success Response]:", retryRes3.data);
-          creativeId = retryRes3.data?.id;
-        } catch (retryErr3) {
-          console.warn("[Meta Video Creative Attempt 3 Warning]:", retryErr3.response?.data?.error || retryErr3.message);
-          const metaErr = retryErr3.response?.data?.error || retryErr2.response?.data?.error || err.response?.data?.error;
-          if (metaErr?.code === 10 || metaErr?.error_subcode === 3858749 || (metaErr?.message || "").toLowerCase().includes("permission")) {
-            throw new Error(
-              `Facebook Page Permission Error [Meta Code 10 / Subcode 3858749]: Your connected Meta account lacks "Advertiser" permission on Page "${objectStorySpec.page_id}". To publish ads for this Page, grant Advertiser access in Facebook Business Manager or use an authorized Page (such as 1151601711372388 - Impetus Billion).`
-            );
+          const retryRes2 = await axios.post(creativeUrl, null, { params: creativeParams });
+          console.log("[Meta Video Creative Attempt 2 Success Response]:", retryRes2.data);
+          creativeId = retryRes2.data?.id;
+        } catch (retryErr2) {
+          console.warn("[Meta Video Creative Attempt 2 Warning]:", retryErr2.response?.data?.error || retryErr2.message);
+          const err2 = retryErr2.response?.data?.error;
+          if (err2?.code === 10 || err2?.error_subcode === 3858749 || (err2?.message || "").toLowerCase().includes("permission")) {
+            delete objectStorySpec.instagram_actor_id;
+            delete objectStorySpec.instagram_user_id;
+            creativeParams.object_story_spec = JSON.stringify(objectStorySpec);
           }
-          const msg = metaErr ? `[${metaErr.code}]: ${metaErr.message || metaErr.error_user_msg}` : retryErr3.message;
-          throw new Error(`Meta Video Ad Creative Creation Failed: ${msg}`);
+          // Attempt 3: Core video enhancements fallback with USER_ENROLLED
+          try {
+            creativeParams.degrees_of_freedom_spec = JSON.stringify({
+              degrees_of_freedom_type: "USER_ENROLLED",
+              creative_features_spec: {
+                advantage_plus_creative: { enroll_status: "OPT_IN" },
+                text_optimizations: { enroll_status: "OPT_IN" },
+                inline_comment: { enroll_status: "OPT_IN" },
+                enhance_cta: {
+                  enroll_status: "OPT_IN",
+                  customizations: {
+                    text_extraction: {
+                      enroll_status: "OPT_IN",
+                    },
+                  },
+                },
+                image_touchups: { enroll_status: "OPT_IN" },
+                video_auto_crop: { enroll_status: "OPT_IN" },
+                video_filtering: { enroll_status: "OPT_IN" },
+              },
+            });
+            const retryRes3 = await axios.post(creativeUrl, null, { params: creativeParams });
+            console.log("[Meta Video Creative Attempt 3 Success Response]:", retryRes3.data);
+            creativeId = retryRes3.data?.id;
+          } catch (retryErr3) {
+            console.warn("[Meta Video Creative Attempt 3 Warning]:", retryErr3.response?.data?.error || retryErr3.message);
+            const metaErr = retryErr3.response?.data?.error || retryErr2.response?.data?.error || err.response?.data?.error;
+            if (metaErr?.code === 10 || metaErr?.error_subcode === 3858749 || (metaErr?.message || "").toLowerCase().includes("permission")) {
+              throw new Error(
+                `Facebook Page Permission Error [Meta Code 10 / Subcode 3858749]: Your connected Meta account lacks "Advertiser" permission on Page "${objectStorySpec.page_id}". To publish ads for this Page, grant Advertiser access in Facebook Business Manager or use an authorized Page (such as 1151601711372388 - Impetus Billion).`
+              );
+            }
+            const msg = metaErr ? `[${metaErr.code}]: ${metaErr.message || metaErr.error_user_msg}` : retryErr3.message;
+            throw new Error(`Meta Video Ad Creative Creation Failed: ${msg}`);
+          }
         }
       }
     }
-  }
 
     if (!creativeId) {
       throw new Error("Failed to obtain a valid Video Creative ID from Meta Graph API.");
@@ -3952,7 +3965,7 @@ throw new Error(
         if (appRes.valid && appRes.appId) {
           effectiveAppId = appRes.appId;
         }
-      } catch (appErr) {}
+      } catch (appErr) { }
     }
 
     const campaignObjective = String(params.campaignObjective || params.objective || "").toUpperCase();
@@ -4201,7 +4214,7 @@ throw new Error(
         if (promoObj?.pixel_id && String(promoObj.pixel_id) !== String(requiredConfig.pixelId)) {
           return false;
         }
-      } catch (e) {}
+      } catch (e) { }
     }
     if (requiredConfig.appId && adSetPromoted) {
       try {
@@ -4209,7 +4222,7 @@ throw new Error(
         if (promoObj?.application_id && String(promoObj.application_id) !== String(requiredConfig.appId)) {
           return false;
         }
-      } catch (e) {}
+      } catch (e) { }
     }
 
     return true;
