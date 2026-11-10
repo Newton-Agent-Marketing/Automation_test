@@ -99,8 +99,26 @@ export class MetaMcpClient {
         "User-Agent": "atelion-meta-mcp-client/1.0.0",
       };
 
+      const customFetch = async (url, options = {}) => {
+        try {
+          return await fetch(url, options);
+        } catch (fetchErr) {
+          const cause = fetchErr.cause;
+          const causeCode = cause?.code || cause?.message || (typeof cause === "string" ? cause : "");
+          const causeDetail = causeCode ? ` (${causeCode})` : "";
+          console.error(
+            `[MetaMcpClient fetch] Request to ${url} failed: ${fetchErr.message}${causeDetail}`
+          );
+          if (causeCode && !fetchErr.message.includes(causeCode)) {
+            fetchErr.message = `${fetchErr.message}${causeDetail}`;
+          }
+          throw fetchErr;
+        }
+      };
+
       transport = new StreamableHTTPClientTransport(targetUrl, {
         requestInit: { headers },
+        fetch: customFetch,
       });
     }
 
