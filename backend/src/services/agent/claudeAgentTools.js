@@ -5,6 +5,8 @@ import ConnectedChannel from "../../models/connectedChannelModel.js";
 import MetaAccount from "../../models/metaAccount.js";
 import GoogleAccount from "../../models/googleAccountModel.js";
 import { executeAgentTool } from "./queryDbMetrics.js";
+import mcpToolRegistry from "../mcp/McpToolRegistry.js";
+import McpToolExecutor from "../mcp/McpToolExecutor.js";
 
 const toToolResult = (data) => ({
   content: [
@@ -1578,6 +1580,59 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
     }
   );
 
+  const listMetaMcpTools = tool(
+    "list_meta_mcp_tools",
+    "List all available dynamic tools discovered from the connected official Meta MCP server with their descriptions and input schemas.",
+    {},
+    async () => {
+      try {
+        const cleanId = String(accountId || "").replace(/^act_/, "").trim();
+        let tools = mcpToolRegistry.getTools(userId, cleanId);
+        if (!tools || tools.length === 0) {
+          const acc = await MetaAccount.findOne({
+            userId,
+            accountId: { $in: [cleanId, `act_${cleanId}`] },
+            isActive: true,
+          }).lean();
+          if (acc?.discoveredTools?.length) {
+            tools = acc.discoveredTools;
+          }
+        }
+        return toToolResult({
+          toolCount: (tools || []).length,
+          tools: (tools || []).map((t) => ({
+            name: t.name,
+            description: t.description || "",
+            inputSchema: t.inputSchema || {},
+          })),
+        });
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
+  const executeMetaMcpTool = tool(
+    "execute_meta_mcp_tool",
+    "Execute any dynamically discovered tool on the connected official Meta MCP server by tool name and arguments according to its discovered schema.",
+    {
+      toolName: z.string().describe("Name of the MCP tool to execute"),
+      arguments: z.record(z.any()).optional().describe("Arguments object matching the tool's input schema"),
+    },
+    async ({ toolName, arguments: toolArgs = {} }) => {
+      try {
+        const effectiveAccId = resolveTargetMetaAccountId(toolArgs?.accountId);
+        const result = await McpToolExecutor.executeTool(toolName, toolArgs, {
+          userId,
+          accountId: effectiveAccId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
   return createSdkMcpServer({
     name: "ads",
     version: "1.0.0",
@@ -1635,11 +1690,15 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
       getMetaLeads,
       getMetaLeadDetails,
       subscribeMetaLeadWebhook,
+      listMetaMcpTools,
+      executeMetaMcpTool,
     ],
   });
 };
 
 export const ADS_ALLOWED_TOOLS = [
+  "mcp__ads__list_meta_mcp_tools",
+  "mcp__ads__execute_meta_mcp_tool",
   "mcp__ads__get_account_context",
   "mcp__ads__get_user_connected_accounts",
   "mcp__ads__get_user_ai_context",

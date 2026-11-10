@@ -454,9 +454,14 @@ export class MetaApiService {
   }
 
   // 7. Campaigns List fetch karna
-  static async getCampaigns(param1, param2) {
+  static async getCampaigns(param1, param2, options = {}) {
     let accountId = param1;
     let accessToken = param2;
+
+    const {
+      limit = 100,
+      sortByCreatedTime = false,
+    } = options;
 
     if (param1 && typeof param1 === "object") {
       accountId = param1.accountId || param1.effectiveAccountId || param1.id;
@@ -494,7 +499,10 @@ export class MetaApiService {
         access_token: accessToken,
         fields:
           "id,name,status,effective_status,objective,daily_budget,lifetime_budget,start_time,stop_time,created_time",
-        limit: 100,
+        limit,
+        ...(sortByCreatedTime
+          ? { order: "created_time_descending" }
+          : {}),
       },
     });
     return response.data.data || [];
@@ -548,22 +556,31 @@ export class MetaApiService {
     }
   }
 
-  static async getCampaignAds(campaignId, accessToken) {
-    if (!accessToken || !campaignId) return [];
-    const url = `${META_GRAPH_URL}/${campaignId}/ads`;
+  // Fetch Ad Sets for a specific campaign
+  static async getCampaignAdSets(campaignId, accessToken) {
+    if (!accessToken || !campaignId) {
+      throw new Error("Campaign ID and access token are required to fetch Ad Sets.");
+    }
+
+    const url = `${META_GRAPH_URL}/${campaignId}/adsets`;
+
     try {
       const response = await axios.get(url, {
         params: {
           access_token: accessToken,
-          fields: "id,name,status,effective_status,campaign_id,adset_id",
+          fields: "id,name,status,effective_status",
           limit: 100,
         },
         timeout: 10000,
       });
+
       return response.data.data || [];
     } catch (err) {
-      console.warn(`[MetaApiService getCampaignAds Warning for ${campaignId}]:`, err?.response?.data || err.message);
-      return [];
+      console.error(
+        `[MetaApiService getCampaignAdSets Error for ${campaignId}]:`,
+        err?.response?.data || err.message
+      );
+      throw err;
     }
   }
 
@@ -2278,7 +2295,7 @@ export class MetaApiService {
             const fallbackUrl = `https://graph.facebook.com/v21.0/${cleanAdId}`;
             const retryRes = await axios.post(fallbackUrl, formBody.toString(), requestConfig);
             return retryRes.data;
-          } catch (_) {}
+          } catch (_) { }
         }
         if (metaErr) {
           throw new Error(`Meta API Ad Update Error: ${metaErr.message || error.message}`);

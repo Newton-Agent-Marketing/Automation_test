@@ -23,6 +23,7 @@ router.get("/meta/oauth/initiate", ChannelController.getMetaOAuthUrl);
 router.post("/meta/oauth-callback", ChannelController.handleMetaOAuthCallback);
 router.post("/oauth/callback", ChannelController.handleMetaOAuthCallback);
 router.post("/meta/mcp-connect", ChannelController.connectMcpServer);
+router.post("/meta/mcp-refresh", ChannelController.refreshMetaMcpTools);
 
 // 3. Fetch accessible Meta Ad Accounts with token
 router.post("/meta/fetch-accounts", ChannelController.fetchMetaAdAccounts);

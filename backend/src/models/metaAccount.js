@@ -84,6 +84,41 @@ const metaAccountSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
+    mcpTransport: {
+      type: String,
+      enum: ["SSE", "STDIO"],
+      default: "SSE",
+    },
+    mcpCommand: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    mcpArgs: {
+      type: [String],
+      default: [],
+    },
+    mcpStatus: {
+      type: String,
+      enum: ["DISCONNECTED", "CONNECTING", "CONNECTED", "ERROR"],
+      default: "DISCONNECTED",
+    },
+    discoveredTools: [
+      {
+        name: { type: String, required: true },
+        description: { type: String, default: "" },
+        inputSchema: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+        discoveredAt: { type: Date, default: Date.now },
+      },
+    ],
+    lastDiscoveredAt: {
+      type: Date,
+      default: null,
+    },
+    mcpErrorMessage: {
+      type: String,
+      default: null,
+    },
     isConnected: {
       type: Boolean,
       default: false,

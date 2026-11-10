@@ -7,6 +7,7 @@ import ConnectedChannel from "../models/connectedChannelModel.js";
 import { MetaApiService } from "../services/meta/metaApiService.js";
 import { MetaSyncPipeline } from "../services/meta/metaSyncPipe.js";
 import { MetaMcpClient } from "../services/mcp/metaMcpClient.js";
+import mcpToolRegistry from "../services/mcp/McpToolRegistry.js";
 import { GoogleApiService } from "../services/google/googleApiService.js";
 import { GoogleSyncPipeline } from "../services/google/googleSyncPipe.js";
 import { GoogleMcpClient, GOOGLE_MCP_TOOLS } from "../services/mcp/googleMcpClient.js";
@@ -724,46 +725,107 @@ export class ChannelController {
     }
   }
 
-  // 4. Connect to Meta Ads MCP Server URL (Step 1-3 & 12)
+  // 4. Connect to Meta Ads MCP Server with genuine MCP handshake & discovery
   static async connectMcpServer(req, res) {
     try {
       const userId = req.user._id;
-      const { mcpServerUrl, accountName, accountId } = req.body;
+      const {
+        mcpServerUrl,
+        accessToken,
+        transportType = "SSE",
+        command,
+        mcpCommand,
+        args = [],
+        mcpArgs = [],
+        accountName,
+        accountId,
+      } = req.body;
 
-      if (!mcpServerUrl) {
-        return res.status(400).json({
-          success: false,
-          message: "MCP Server URL is required",
-        });
+      const effectiveTransport = String(transportType || "SSE").toUpperCase();
+      const effectiveCommand = command || mcpCommand || "";
+      const effectiveArgs = Array.isArray(args) && args.length > 0 ? args : Array.isArray(mcpArgs) ? mcpArgs : [];
+
+      // Validate configuration according to transport
+      if (effectiveTransport === "STDIO") {
+        if (!effectiveCommand) {
+          return res.status(400).json({
+            success: false,
+            message: "Command (e.g. npx or server path) is required for STDIO transport",
+          });
+        }
+      } else {
+        if (!mcpServerUrl) {
+          return res.status(400).json({
+            success: false,
+            message: "MCP Server URL is required",
+          });
+        }
       }
-
-      // Ping/validate MCP Server URL
-      const mcpHealth = await MetaMcpClient.pingMcpServer(mcpServerUrl);
 
       // Check if user already has an active Meta account in DB
       let existingAccount = await MetaAccount.findOne({ userId, isActive: true });
 
       const cleanAccountId = accountId
         ? accountId.startsWith("act_")
-          ? accountId
-          : `act_${accountId}`
-        : existingAccount?.accountId || `act_mcp_${Date.now().toString().slice(-6)}`;
+          ? accountId.replace(/^act_/, "")
+          : accountId
+        : existingAccount?.accountId
+          ? String(existingAccount.accountId).replace(/^act_/, "")
+          : `mcp_${Date.now().toString().slice(-6)}`;
+
+      const fullAccountId = `act_${cleanAccountId}`;
 
       const cleanAccountName =
-        accountName || existingAccount?.accountName || "Meta Ads MCP Primary Account";
+        accountName || existingAccount?.accountName || "Meta Ads MCP Account";
 
-      const effectiveToken =
-        existingAccount?.accessToken || `mcp_active_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      // Never generate fake access tokens
+      const effectiveToken = accessToken || existingAccount?.accessToken || "";
 
-      const isConnected = Boolean(cleanAccountId && effectiveToken && effectiveToken.trim() !== "");
+      console.log(
+        `[Connect MCP Server] Initiating genuine MCP handshake for user ${userId}, account ${fullAccountId} via ${effectiveTransport}...`
+      );
 
-      // Upsert MetaAccount with MCP Server configuration
+      // Perform genuine MCP connection handshake and tools/list discovery
+      let mcpResult;
+      try {
+        mcpResult = await MetaMcpClient.connectSession({
+          userId,
+          accountId: cleanAccountId,
+          mcpServerUrl: mcpServerUrl || "",
+          accessToken: effectiveToken,
+          transportType: effectiveTransport,
+          command: effectiveCommand,
+          args: effectiveArgs,
+          timeoutMs: 15000,
+        });
+      } catch (handshakeError) {
+        console.error("[Connect MCP Server Handshake Failed]:", handshakeError.message);
+        // Do not mark account as connected if handshake fails
+        await MetaAccount.findOneAndUpdate(
+          { userId, accountId: { $in: [cleanAccountId, fullAccountId] } },
+          {
+            $set: {
+              mcpStatus: "ERROR",
+              isConnected: false,
+              mcpErrorMessage: handshakeError.message,
+            },
+          }
+        );
+
+        return res.status(400).json({
+          success: false,
+          message: `Failed to establish MCP session with server: ${handshakeError.message}`,
+          error: handshakeError.message,
+        });
+      }
+
+      // Upsert MetaAccount with genuine MCP Server configuration & discovered tools
       const updatedAccount = await MetaAccount.findOneAndUpdate(
-        { userId, isActive: true },
+        { userId, accountId: { $in: [cleanAccountId, fullAccountId] } },
         {
           $set: {
             userId,
-            accountId: cleanAccountId,
+            accountId: fullAccountId,
             accountName: cleanAccountName,
             accessToken: effectiveToken,
             currency: existingAccount?.currency || "INR",
@@ -772,10 +834,22 @@ export class ChannelController {
             spendCap: existingAccount?.spendCap || 50000,
             amountSpent: existingAccount?.amountSpent || 0,
             businessName: existingAccount?.businessName || "MCP Connected Enterprise",
-            mcpServerUrl,
+            mcpServerUrl: mcpServerUrl || "",
+            mcpTransport: effectiveTransport,
+            mcpCommand: effectiveCommand,
+            mcpArgs: effectiveArgs,
+            mcpStatus: "CONNECTED",
+            discoveredTools: (mcpResult.tools || []).map((t) => ({
+              name: t.name,
+              description: t.description || "",
+              inputSchema: t.inputSchema || {},
+              discoveredAt: new Date(),
+            })),
+            lastDiscoveredAt: new Date(),
+            mcpErrorMessage: null,
             authType: "MCP_SERVER",
-            isActive: isConnected,
-            isConnected: isConnected,
+            isActive: true,
+            isConnected: true,
             syncStatus: "IDLE",
           },
         },
@@ -796,8 +870,13 @@ export class ChannelController {
               accountName: updatedAccount.accountName,
               accessToken: effectiveToken,
               currency: updatedAccount.currency || "INR",
-              isConnected: isConnected,
-              config: { mcpServerUrl, authType: "MCP_SERVER" },
+              isConnected: true,
+              config: {
+                mcpServerUrl: updatedAccount.mcpServerUrl,
+                mcpTransport: updatedAccount.mcpTransport,
+                authType: "MCP_SERVER",
+                lastDiscoveredAt: updatedAccount.lastDiscoveredAt,
+              },
             },
           },
           { upsert: true, returnDocument: "after" }
@@ -806,14 +885,21 @@ export class ChannelController {
 
       return res.status(200).json({
         success: true,
-        requiresAuth: false,
-        message: `Successfully connected to Meta Ads MCP Server (${mcpServerUrl}) and activated all tools!`,
+        message: `Successfully connected to Meta Ads MCP Server and discovered ${mcpResult.count} dynamic tools!`,
         data: {
-          mcpServerUrl,
-          mcpHealth,
-          account: updatedAccount,
+          mcpServerUrl: updatedAccount.mcpServerUrl,
+          mcpTransport: updatedAccount.mcpTransport,
+          account: {
+            accountId: updatedAccount.accountId,
+            accountName: updatedAccount.accountName,
+            mcpServerUrl: updatedAccount.mcpServerUrl,
+            mcpTransport: updatedAccount.mcpTransport,
+            mcpStatus: updatedAccount.mcpStatus,
+            lastDiscoveredAt: updatedAccount.lastDiscoveredAt,
+          },
           channel: "Meta Ads",
-          enabledTools: META_MCP_TOOLS,
+          discoveredTools: mcpResult.tools,
+          toolCount: mcpResult.count,
         },
       });
     } catch (error) {
@@ -821,6 +907,72 @@ export class ChannelController {
       return res.status(500).json({
         success: false,
         message: "Failed to connect to Meta MCP server",
+        error: error.message,
+      });
+    }
+  }
+
+  // Refresh discovered MCP tools for connected Meta MCP account
+  static async refreshMetaMcpTools(req, res) {
+    try {
+      const userId = req.user._id;
+      const { accountId } = req.body || {};
+
+      let account = null;
+      if (accountId) {
+        const cleanId = String(accountId).replace(/^act_/, "").trim();
+        account = await MetaAccount.findOne({
+          userId,
+          accountId: { $in: [cleanId, `act_${cleanId}`] },
+          isActive: true,
+        });
+      } else {
+        account = await MetaAccount.findOne({ userId, isActive: true, authType: "MCP_SERVER" });
+      }
+
+      if (!account) {
+        return res.status(404).json({
+          success: false,
+          message: "No active Meta MCP account found to refresh tools.",
+        });
+      }
+
+      const mcpResult = await MetaMcpClient.connectSession({
+        userId,
+        accountId: account.accountId,
+        mcpServerUrl: account.mcpServerUrl,
+        accessToken: account.accessToken,
+        transportType: account.mcpTransport || "SSE",
+        command: account.mcpCommand,
+        args: account.mcpArgs,
+        timeoutMs: 15000,
+      });
+
+      const updatedTools = (mcpResult.tools || []).map((t) => ({
+        name: t.name,
+        description: t.description || "",
+        inputSchema: t.inputSchema || {},
+        discoveredAt: new Date(),
+      }));
+
+      account.discoveredTools = updatedTools;
+      account.lastDiscoveredAt = new Date();
+      account.mcpStatus = "CONNECTED";
+      account.mcpErrorMessage = null;
+      await account.save();
+
+      return res.status(200).json({
+        success: true,
+        message: `Successfully refreshed ${mcpResult.count} dynamic tools from Meta MCP server!`,
+        discoveredTools: mcpResult.tools,
+        toolCount: mcpResult.count,
+        lastDiscoveredAt: account.lastDiscoveredAt,
+      });
+    } catch (error) {
+      console.error("[Refresh Meta MCP Tools Error]:", error);
+      return res.status(500).json({
+        success: false,
+        message: `Failed to refresh Meta MCP tools: ${error.message}`,
         error: error.message,
       });
     }
@@ -1247,10 +1399,39 @@ export class ChannelController {
         });
       }
 
+      // If account is connected via genuine MCP Server, return dynamically discovered tools
+      if (activeAccount.authType === "MCP_SERVER") {
+        let tools = mcpToolRegistry.getTools(userId, activeAccount.accountId);
+        if (!tools || tools.length === 0) {
+          if (activeAccount.discoveredTools && activeAccount.discoveredTools.length > 0) {
+            mcpToolRegistry.loadFromAccount(activeAccount);
+            tools = mcpToolRegistry.getTools(userId, activeAccount.accountId);
+          }
+        }
+
+        return res.status(200).json({
+          success: true,
+          isConnected: activeAccount.isConnected,
+          channel: "Meta Ads",
+          authType: "MCP_SERVER",
+          activeAccount: {
+            accountId: activeAccount.accountId,
+            accountName: activeAccount.accountName,
+            mcpServerUrl: activeAccount.mcpServerUrl,
+            mcpTransport: activeAccount.mcpTransport,
+            mcpStatus: activeAccount.mcpStatus,
+            lastDiscoveredAt: activeAccount.lastDiscoveredAt,
+          },
+          tools: tools || [],
+          toolCount: (tools || []).length,
+        });
+      }
+
       return res.status(200).json({
         success: true,
         isConnected: true,
         channel: "Meta Ads",
+        authType: activeAccount.authType || "TOKEN",
         activeAccount: {
           accountId: activeAccount.accountId,
           accountName: activeAccount.accountName,

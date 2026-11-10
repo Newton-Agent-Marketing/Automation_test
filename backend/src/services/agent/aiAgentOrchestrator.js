@@ -13,6 +13,9 @@ import { executeAgentTool, getUserAiContext } from "./queryDbMetrics.js";
 import { MetaMcpClient } from "../mcp/metaMcpClient.js";
 import { GoogleMcpClient } from "../mcp/googleMcpClient.js";
 import sheetsService from "../../google/sheetsService.js";
+import { CampaignValidator } from "../campaignPreparation/campaignValidator.js";
+import { DynamicSheetFilter } from "../data/dynamicSheetFilter.js";
+import CampaignPreparationSession from "../../models/campaignPreparationSession.js";
 import { AgentStreamHandler } from "./agentStream.js";
 import {
   createAdsMcpServer,
@@ -362,6 +365,27 @@ export class AiAgentOrchestrator {
       };
     }
 
+
+    // META AD RENAME USING CONNECTED SHEET
+    const isMetaAdRename =
+      /(rename|renaming|change|update|replace|edit|modify)/i.test(text) &&
+      /(meta\s*ads?|facebook\s*ads?|ads?\s*name|adname|ad\s*set|adset)/i.test(text) &&
+      /(sheet|spreadsheet|worksheet|excel|connected|adname)/i.test(text);
+
+    if (isMetaAdRename) {
+      return {
+        intent: "META_AD_RENAME",
+        requiresTools: true,
+        tools: [
+          "get_connected_sheet_rows",
+          "get_live_adset_ads",
+          "update_meta_ad",
+        ],
+        description:
+          "Fetch every Ad inside the specified Meta Ad Set, match each existing Ad name with its original connected Sheet row, read the replacement name from AdName, rename and verify each Meta Ad.",
+      };
+    }
+
     // META CAMPAIGN SEARCH / LIST / STATUS
     const isMetaCampaignSearch =
       /(show|fetch|get|list|display|view|find|search|give|tell|batao|dikhao)/i.test(text) &&
@@ -526,7 +550,41 @@ export class AiAgentOrchestrator {
   }) {
     const executedTools = [];
     const targetAccountId = context.targetMetaAccountId;
+    let connectedSheetResult = null;
 
+    let campaignPreparationSession = null;
+    let campaignPreparationSessions = [];
+
+    if (intentObj.intent === "META_AD_RENAME" && context.userId) {
+      try {
+        const sessions = await CampaignPreparationSession.find({
+          userId: context.userId,
+          metaAccountId: { $exists: true, $nin: [null, ""] },
+        })
+          .sort({ createdAt: -1 })
+          .lean();
+
+        const normalizeAccountId = (id) =>
+          String(id || "").replace(/^act_/, "").trim();
+
+        const selectedAccountId = normalizeAccountId(targetAccountId);
+
+        campaignPreparationSessions = sessions.filter(
+          (session) =>
+            normalizeAccountId(session.metaAccountId) === selectedAccountId
+        );
+
+        console.log(
+          "[META_AD_RENAME] Account-matched sessions:",
+          campaignPreparationSessions.length
+        );
+      } catch (sessionError) {
+        console.warn(
+          "[META_AD_RENAME] Campaign session lookup failed:",
+          sessionError.message
+        );
+      }
+    }
     const emitStatus = (toolName, msg) => {
       if (typeof onStatus === "function") {
         onStatus({ toolName, status: msg });
@@ -535,10 +593,32 @@ export class AiAgentOrchestrator {
 
     // --- TOOL: get_connected_sheet_rows ---
     if (intentObj.intent === "GOOGLE_SHEET_FETCH" || intentObj.tools.includes("get_connected_sheet_rows")) {
-      const targetSheet = this.resolveTargetSheet(context.allConnectedSheets, instruction) || context.targetSheet;
-      const targetUrl = targetSheet?.sheetUrl || context.connectedSheetUrl;
-      const targetName = targetSheet?.sheetName || context.connectedSheetName;
-      const targetIndex = targetSheet?.sheetIndex || context.targetSheetIndex || 1;
+      const sessionSource = campaignPreparationSession?.source || {};
+
+      const targetSheet =
+        this.resolveTargetSheet(context.allConnectedSheets, instruction) ||
+        context.targetSheet;
+
+      const targetUrl =
+        (intentObj.intent === "META_AD_RENAME" && sessionSource.sheetUrl) ||
+        targetSheet?.sheetUrl ||
+        context.connectedSheetUrl;
+
+      const targetName =
+        (intentObj.intent === "META_AD_RENAME" && sessionSource.spreadsheetName) ||
+        targetSheet?.sheetName ||
+        context.connectedSheetName;
+
+      const targetIndex =
+        targetSheet?.sheetIndex ||
+        context.targetSheetIndex ||
+        1;
+
+      const targetWorksheetName =
+        (intentObj.intent === "META_AD_RENAME" && sessionSource.worksheetName) ||
+        targetSheet?.targetWorksheetName ||
+        targetSheet?.worksheetName ||
+        null;
 
       emitStatus("get_connected_sheet_rows", `Fetching rows from Sheet #${targetIndex} (${targetName})...`);
       const startTime = Date.now();
@@ -548,6 +628,8 @@ export class AiAgentOrchestrator {
           sheetUrl: targetUrl,
           sheetIndex: targetIndex,
           sheetName: targetName,
+          tabName: targetWorksheetName,
+          worksheetName: targetWorksheetName,
           userMessage: instruction,
         });
 
@@ -556,7 +638,7 @@ export class AiAgentOrchestrator {
           try {
             const directRead = await sheetsService.readSpreadsheet({
               spreadsheetIdOrUrl: targetUrl,
-              sheetTitle: targetSheet?.targetWorksheetName || targetSheet?.worksheetName || null,
+              sheetTitle: targetWorksheetName,
             });
             if (directRead && directRead.rows && directRead.rows.length > 0) {
               sheetResult = {
@@ -573,6 +655,7 @@ export class AiAgentOrchestrator {
             console.warn("[AiAgentOrchestrator Sheets Direct Read Error]:", readErr.message);
           }
         }
+        connectedSheetResult = sheetResult;
 
         executedTools.push({
           toolName: "get_connected_sheet_rows",

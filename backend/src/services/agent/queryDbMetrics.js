@@ -2285,6 +2285,29 @@ export async function executeAgentTool(toolName, args) {
     });
   }
 
+  if (toolName === "list_meta_mcp_tools") {
+    const { default: mcpToolRegistry } = await import("../mcp/McpToolRegistry.js");
+    const cleanId = String(args.accountId || "").replace(/^act_/, "").trim();
+    const tools = mcpToolRegistry.getTools(args.userId, cleanId);
+    return {
+      success: true,
+      toolCount: (tools || []).length,
+      tools: (tools || []).map((t) => ({
+        name: t.name,
+        description: t.description || "",
+        inputSchema: t.inputSchema || {},
+      })),
+    };
+  }
+
+  if (toolName === "execute_meta_mcp_tool") {
+    const { McpToolExecutor } = await import("../mcp/McpToolExecutor.js");
+    return await McpToolExecutor.executeTool(args.targetTool || args.toolName, args.arguments || args, {
+      userId: args.userId,
+      accountId: args.accountId,
+    });
+  }
+
   if (toolName === "fetch_live_meta_ads_mcp") {
     return await MetaMcpClient.executeLiveTool(args.toolType, args);
   }

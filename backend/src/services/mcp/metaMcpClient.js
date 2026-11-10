@@ -6,21 +6,299 @@ import MetaCampaign from "../../models/metaCampaign.js";
 import driveService from "../../google/driveService.js";
 import axios from "axios";
 import fs from "fs";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import mcpToolRegistry from "./McpToolRegistry.js";
 
 const META_GRAPH_URL = "https://graph.facebook.com/v24.0";
 
+// In-memory pool of active MCP client sessions: `${userId}_${cleanAccountId}` -> { client, transport, serverUrl, connectedAt, lastUsedAt }
+const activeClients = new Map();
+
 export class MetaMcpClient {
   /**
-   * Check MCP Server URL Health and capabilities
+   * Connect a genuine MCP session using the official @modelcontextprotocol/sdk
+   * @param {Object} params
+   * @param {string} params.userId
+   * @param {string} params.accountId
+   * @param {string} [params.mcpServerUrl]
+   * @param {string} [params.accessToken]
+   * @param {string} [params.transportType] - "SSE", "STDIO", or "STREAMABLE_HTTP"
+   * @param {string} [params.command]
+   * @param {Array<string>} [params.args]
+   * @param {number} [params.timeoutMs]
    */
-  static async pingMcpServer(mcpServerUrl) {
-    if (!mcpServerUrl) return { status: "OK", type: "BUILTIN" };
+  static async connectSession({
+    userId,
+    accountId,
+    mcpServerUrl,
+    accessToken,
+    transportType = "SSE",
+    command,
+    args = [],
+    timeoutMs = 15000,
+  }) {
+    if (!userId || !accountId) {
+      throw new Error("userId and accountId are required to connect an MCP session");
+    }
+
+    const cleanAccountId = String(accountId).replace(/^act_/, "").trim();
+    const clientKey = `${userId}_${cleanAccountId}`;
+
+    // Close any previous active session for this account
+    if (activeClients.has(clientKey)) {
+      try {
+        const oldEntry = activeClients.get(clientKey);
+        await oldEntry.client.close();
+      } catch (_) { }
+      activeClients.delete(clientKey);
+    }
+
+    let transport;
+    const cleanTransport = String(transportType || "SSE").toUpperCase();
+
+    if (cleanTransport === "STDIO") {
+      if (!command) {
+        throw new Error("Command is required for STDIO MCP transport");
+      }
+      transport = new StdioClientTransport({
+        command,
+        args: Array.isArray(args) ? args : [],
+        env: {
+          ...process.env,
+          ...(accessToken ? { META_ACCESS_TOKEN: accessToken, ACCESS_TOKEN: accessToken } : {}),
+        },
+      });
+    } else if (cleanTransport === "STREAMABLE_HTTP") {
+      if (!mcpServerUrl) {
+        throw new Error("MCP Server URL is required for Streamable HTTP transport");
+      }
+      const headers = {
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      };
+      transport = new StreamableHTTPClientTransport(new URL(mcpServerUrl), {
+        requestInit: { headers },
+      });
+    } else {
+      // Default: SSEClientTransport
+      if (!mcpServerUrl) {
+        throw new Error("MCP Server URL is required for SSE transport");
+      }
+      const headers = {
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      };
+      transport = new SSEClientTransport(new URL(mcpServerUrl), {
+        eventSourceInit: { headers },
+        requestInit: { headers },
+      });
+    }
+
+    // Initialize official MCP Client
+    const client = new Client(
+      {
+        name: "atelion-meta-mcp-client",
+        version: "1.0.0",
+      },
+      {
+        capabilities: {
+          roots: {},
+          sampling: {},
+        },
+      }
+    );
+
+    // Perform MCP handshake with timeout
     try {
-      const resp = await axios.get(mcpServerUrl, { timeout: 4000 });
-      return { status: "CONNECTED", type: "EXTERNAL_MCP", info: resp.data };
+      const connectPromise = client.connect(transport);
+      await Promise.race([
+        connectPromise,
+        new Promise((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `MCP handshake with ${mcpServerUrl || command} timed out after ${timeoutMs}ms`
+                )
+              ),
+            timeoutMs
+          )
+        ),
+      ]);
+    } catch (connErr) {
+      console.error(
+        `[MetaMcpClient Error] Failed to connect MCP session for act_${cleanAccountId}:`,
+        connErr.message
+      );
+      throw new Error(`MCP Handshake Failed: ${connErr.message}`);
+    }
+
+    // Discover tools dynamically through tools/list (supporting pagination)
+    const discoveredTools = [];
+    let cursor = undefined;
+    try {
+      do {
+        const response = await client.listTools(cursor ? { cursor } : {});
+        if (response?.tools && Array.isArray(response.tools)) {
+          discoveredTools.push(...response.tools);
+        }
+        cursor = response?.nextCursor;
+      } while (cursor);
+    } catch (listErr) {
+      console.error(
+        `[MetaMcpClient Error] tools/list failed for act_${cleanAccountId}:`,
+        listErr.message
+      );
+      try {
+        await client.close();
+      } catch (_) { }
+      throw new Error(`MCP Tool Discovery Failed: ${listErr.message}`);
+    }
+
+    // Register discovered tools in dynamic registry
+    mcpToolRegistry.registerTools(userId, cleanAccountId, {
+      serverUrl: mcpServerUrl,
+      transport: cleanTransport,
+      tools: discoveredTools,
+      status: "CONNECTED",
+    });
+
+    // Save active client in session cache
+    activeClients.set(clientKey, {
+      client,
+      transport,
+      serverUrl: mcpServerUrl || "",
+      transportType: cleanTransport,
+      connectedAt: new Date(),
+      lastUsedAt: new Date(),
+    });
+
+    console.log(
+      `[MetaMcpClient] MCP session established for act_${cleanAccountId} with ${discoveredTools.length} tools discovered.`
+    );
+
+    return {
+      success: true,
+      client,
+      tools: discoveredTools,
+      count: discoveredTools.length,
+      transport: cleanTransport,
+      serverUrl: mcpServerUrl || "",
+    };
+  }
+
+  /**
+   * Get an existing active client or reconnect if needed
+   */
+  static async getOrConnectClient(userId, accountId, credentials = {}) {
+    const cleanAccountId = String(accountId || "").replace(/^act_/, "").trim();
+    const clientKey = `${userId}_${cleanAccountId}`;
+
+    const cached = activeClients.get(clientKey);
+    if (cached?.client) {
+      try {
+        if (typeof cached.client.ping === "function") {
+          await cached.client.ping();
+        }
+        cached.lastUsedAt = new Date();
+        return cached.client;
+      } catch (pingErr) {
+        console.warn(
+          `[MetaMcpClient] Active client ping failed for ${clientKey}, reconnecting:`,
+          pingErr.message
+        );
+        try {
+          await cached.client.close();
+        } catch (_) { }
+        activeClients.delete(clientKey);
+      }
+    }
+
+    // Lookup credentials from DB if not supplied
+    let serverUrl = credentials.mcpServerUrl;
+    let token = credentials.accessToken;
+    let transportType = credentials.transportType || "SSE";
+    let command = credentials.command;
+    let args = credentials.args;
+
+    if (!serverUrl && !command) {
+      const acc = await MetaAccount.findOne({
+        userId,
+        accountId: { $in: [cleanAccountId, `act_${cleanAccountId}`] },
+        isActive: true,
+      });
+      if (acc) {
+        serverUrl = acc.mcpServerUrl;
+        token = token || acc.accessToken;
+        transportType = acc.mcpTransport || transportType;
+        command = acc.mcpCommand;
+        args = acc.mcpArgs;
+      }
+    }
+
+    if (!serverUrl && !command) {
+      throw new Error(
+        `No MCP Server configuration found for Meta account act_${cleanAccountId}`
+      );
+    }
+
+    const session = await this.connectSession({
+      userId,
+      accountId: cleanAccountId,
+      mcpServerUrl: serverUrl,
+      accessToken: token,
+      transportType,
+      command,
+      args,
+    });
+
+    return session.client;
+  }
+
+  /**
+   * Disconnect and close an active MCP session
+   */
+  static async disconnectSession(userId, accountId) {
+    const cleanAccountId = String(accountId || "").replace(/^act_/, "").trim();
+    const clientKey = `${userId}_${cleanAccountId}`;
+
+    const cached = activeClients.get(clientKey);
+    if (cached?.client) {
+      try {
+        await cached.client.close();
+      } catch (_) { }
+      activeClients.delete(clientKey);
+    }
+
+    mcpToolRegistry.clear(userId, cleanAccountId);
+    return { success: true };
+  }
+
+  /**
+   * Validate MCP Server endpoint and connection
+   */
+  static async pingMcpServer(mcpServerUrl, credentials = {}) {
+    if (!mcpServerUrl) return { status: "DISCONNECTED", message: "Server URL missing" };
+
+    try {
+      const url = new URL(mcpServerUrl);
+      const headers = {};
+      if (credentials.accessToken) {
+        headers["Authorization"] = `Bearer ${credentials.accessToken}`;
+      }
+      const resp = await axios.get(url.toString(), {
+        headers,
+        timeout: 5000,
+        validateStatus: () => true, // capture any HTTP status
+      });
+
+      if (resp.status >= 200 && resp.status < 400) {
+        return { status: "REACHABLE", statusCode: resp.status, url: mcpServerUrl };
+      }
+      return { status: "UNAVAILABLE", statusCode: resp.status, url: mcpServerUrl };
     } catch (err) {
-      // Many MCP SSE servers expect specific headers or SSE handshakes
-      return { status: "ACTIVE", type: "EXTERNAL_MCP", url: mcpServerUrl };
+      return { status: "UNREACHABLE", error: err.message, url: mcpServerUrl };
     }
   }
 
@@ -28,6 +306,40 @@ export class MetaMcpClient {
    * Live real-time data & operations Meta MCP execution
    */
   static async executeLiveTool(toolName, args) {
+    // 1. Dynamic MCP Execution Routing:
+    // If the target account is configured with authType === 'MCP_SERVER', route through McpToolExecutor
+    const targetAccountId = args.accountId || args.effectiveAccountId || args.id;
+    if (args.userId && targetAccountId) {
+      try {
+        const cleanAccId = String(targetAccountId).replace(/^act_/, "").trim();
+        const metaAccount = await MetaAccount.findOne({
+          userId: args.userId,
+          accountId: { $in: [cleanAccId, `act_${cleanAccId}`] },
+          isActive: true,
+        }).lean();
+
+        if (metaAccount && metaAccount.authType === "MCP_SERVER") {
+          const { McpToolExecutor } = await import("./McpToolExecutor.js");
+          return await McpToolExecutor.executeTool(toolName, args, {
+            userId: args.userId,
+            accountId: cleanAccId,
+            metaAccount,
+          });
+        }
+      } catch (mcpExecErr) {
+        // Strict requirement: Never silently replace a failed MCP call with direct Graph API call
+        // for an account configured for MCP execution.
+        if (
+          mcpExecErr.message &&
+          (mcpExecErr.message.includes("MCP") || mcpExecErr.message.includes("Security Alert"))
+        ) {
+          throw mcpExecErr;
+        }
+        console.warn("[MetaMcpClient MCP execution route warning]:", mcpExecErr.message);
+        throw mcpExecErr;
+      }
+    }
+
     if (toolName === "verify_meta_campaign") {
       const { campaignId, adSetId, adId, accountId } = args;
       const targetAccId = accountId ? String(accountId).replace(/^act_/, "") : null;
@@ -308,7 +620,11 @@ export class MetaMcpClient {
           // 1. Fetch campaigns from the selected live Meta account
           const campaigns = await MetaApiService.getCampaigns(
             effectiveAccountId,
-            effectiveToken
+            effectiveToken,
+            {
+              limit: 100,
+              sortByCreatedTime: true,
+            }
           );
 
           // 2. Sort campaigns by creation date (newest first)
@@ -661,27 +977,190 @@ export class MetaMcpClient {
         };
       }
 
+
+      case "get_live_adset_ads": {
+        const { adSetId, adSetName } = args;
+
+        const cleanAccountId = String(effectiveAccountId).replace(/^act_/, "");
+        const accountAdSetsUrl = `${META_GRAPH_URL}/act_${cleanAccountId}/adsets`;
+
+        // Fetch every Ad Set belonging to the selected account.
+        const fetchAllPages = async (url, params = {}) => {
+          const results = [];
+          let nextUrl = url;
+          let firstPage = true;
+
+          while (nextUrl) {
+            const response = await axios.get(
+              nextUrl,
+              firstPage
+                ? {
+                  params: {
+                    ...params,
+                    access_token: effectiveToken,
+                    limit: 500,
+                  },
+                  timeout: 30000,
+                }
+                : { timeout: 30000 }
+            );
+
+            results.push(...(response.data?.data || []));
+            nextUrl = response.data?.paging?.next || null;
+            firstPage = false;
+          }
+
+          return results;
+        };
+
+        const accountAdSets = await fetchAllPages(accountAdSetsUrl, {
+          fields: "id,name,status,campaign_id",
+        });
+
+        let matchedAdSet = null;
+
+        if (adSetId) {
+          matchedAdSet = accountAdSets.find(
+            (item) => String(item.id) === String(adSetId).trim()
+          );
+
+          if (!matchedAdSet) {
+            throw new Error(
+              `Ad Set ID "${adSetId}" was not found inside selected Meta account act_${cleanAccountId}.`
+            );
+          }
+        } else if (adSetName) {
+          const matches = accountAdSets.filter(
+            (item) =>
+              String(item.name || "").trim().toLowerCase() ===
+              String(adSetName).trim().toLowerCase()
+          );
+
+          if (matches.length > 1) {
+            throw new Error(
+              `Multiple Ad Sets found with name "${adSetName}". Please provide the exact Ad Set ID.`
+            );
+          }
+
+          if (matches.length === 0) {
+            throw new Error(
+              `Ad Set "${adSetName}" was not found in selected Meta account act_${cleanAccountId}.`
+            );
+          }
+
+          matchedAdSet = matches[0];
+        } else {
+          throw new Error("Provide either adSetId or adSetName.");
+        }
+
+        // Fetch every Ad inside the exact matched Ad Set.
+        const ads = await fetchAllPages(
+          `${META_GRAPH_URL}/${matchedAdSet.id}/ads`,
+          {
+            fields: "id,name,status,effective_status,adset_id,campaign_id",
+          }
+        );
+
+        return {
+          success: true,
+          accountId: `act_${cleanAccountId}`,
+          adSet: {
+            id: matchedAdSet.id,
+            name: matchedAdSet.name,
+            campaignId: matchedAdSet.campaign_id,
+          },
+          ads,
+          totalAds: ads.length,
+          message: `Fetched ${ads.length} Ads from Ad Set "${matchedAdSet.name}".`,
+        };
+      }
+
+
+
+      case "get_live_account_ads": {
+        const cleanAccountId = String(effectiveAccountId).replace(/^act_/, "");
+
+        const response = await axios.get(
+          `${META_GRAPH_URL}/act_${cleanAccountId}/ads`,
+          {
+            params: {
+              access_token: effectiveToken,
+              fields: "id,name,status,effective_status,campaign_id,adset_id",
+              limit: 500,
+            },
+          }
+        );
+
+        return {
+          success: true,
+          accountId: `act_${cleanAccountId}`,
+          ads: response.data?.data || [],
+          totalAds: response.data?.data?.length || 0,
+        };
+      }
+
+
       case "update_meta_ad": {
         const { adId, ad_id, id, name, newName, status } = args;
         const targetAdId = adId || ad_id || id;
         const targetName = name || newName;
-        if (!targetAdId) throw new Error("adId is required to update a Meta ad");
 
-        const updateRes = await MetaApiService.updateAd(targetAdId, effectiveToken, {
-          name: targetName,
-          status,
-        });
+        if (!targetAdId) {
+          throw new Error("adId is required to update a Meta ad");
+        }
+
+        if (targetName !== undefined && !String(targetName).trim()) {
+          throw new Error("New Meta Ad name cannot be empty");
+        }
+
+        const updateRes = await MetaApiService.updateAd(
+          targetAdId,
+          effectiveToken,
+          {
+            name: targetName,
+            status,
+          }
+        );
+
+        // Verify the updated Ad directly from Meta Graph API
+        const verifyRes = await axios.get(
+          `${META_GRAPH_URL}/${targetAdId}`,
+          {
+            params: {
+              access_token: effectiveToken,
+              fields: "id,name",
+            },
+          }
+        );
+
+        const verifiedAd = verifyRes.data;
+
+        if (!verifiedAd?.id) {
+          throw new Error("Meta Ad verification failed: Ad not found.");
+        }
+
+        if (
+          targetName !== undefined &&
+          verifiedAd.name !== String(targetName).trim()
+        ) {
+          throw new Error(
+            `Meta Ad rename verification failed. Expected "${String(targetName).trim()}", but Meta returned "${verifiedAd.name}".`
+          );
+        }
 
         return {
           success: true,
+          verified: true,
           status: "AD_UPDATED",
           adId: targetAdId,
-          name: targetName,
+          name: verifiedAd.name,
           adStatus: status,
           data: updateRes,
-          message: `Meta Ad ${targetAdId} updated successfully with name: "${targetName || "unchanged"}".`,
+          verification: verifiedAd,
+          message: `Meta Ad ${targetAdId} successfully updated and verified with name: "${verifiedAd.name}".`,
         };
       }
+
 
       case "set_meta_targeting": {
         const { adSetId, locations, countries, cities, ageMin = 18, ageMax = 65, genders, interests = [] } = args;
