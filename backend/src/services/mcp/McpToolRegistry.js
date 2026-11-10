@@ -5,6 +5,8 @@
  * partitioned strictly by user and Meta account.
  */
 
+import { resolveOfficialMetaMcpUrl, resolveMetaMcpTransport } from "./metaMcpConfig.js";
+
 class McpToolRegistry {
   constructor() {
     // Key: `${userId}_${cleanAccountId}` -> { serverUrl, transport, tools: Map<toolName, toolDef>, discoveredAt, status }
@@ -26,12 +28,18 @@ class McpToolRegistry {
    * @param {Array<Object>} details.tools - Array of { name, description, inputSchema }
    * @param {string} [details.status]
    */
-  registerTools(userId, accountId, { serverUrl, transport = "SSE", tools = [], status = "CONNECTED" }) {
+  registerTools(userId, accountId, { serverUrl, transport = "STREAMABLE_HTTP", tools = [], status = "CONNECTED" }) {
     if (!userId || !accountId) {
       throw new Error("userId and accountId are required to register MCP tools");
     }
 
-    const key = this._getKey(userId, accountId);
+    const cleanAccountId = String(accountId).replace(/^act_/, "").trim();
+    const key = this._getKey(userId, cleanAccountId);
+    const resolvedUrl = resolveOfficialMetaMcpUrl(serverUrl, {
+      accountId: cleanAccountId,
+      logContext: "McpToolRegistry.registerTools",
+    });
+    const resolvedTransport = resolveMetaMcpTransport(resolvedUrl, transport);
     const toolMap = new Map();
 
     const sanitizedTools = (tools || []).map((t) => {
@@ -49,9 +57,9 @@ class McpToolRegistry {
 
     this.registries.set(key, {
       userId: String(userId),
-      accountId: String(accountId).replace(/^act_/, "").trim(),
-      serverUrl: serverUrl || "",
-      transport,
+      accountId: cleanAccountId,
+      serverUrl: resolvedUrl || "",
+      transport: resolvedTransport,
       tools: toolMap,
       toolList: sanitizedTools,
       discoveredAt: new Date(),
@@ -185,9 +193,15 @@ class McpToolRegistry {
     if (!metaAccount || !metaAccount.userId || !metaAccount.accountId) return;
     if (!metaAccount.discoveredTools || metaAccount.discoveredTools.length === 0) return;
 
+    const resolvedUrl = resolveOfficialMetaMcpUrl(metaAccount.mcpServerUrl, {
+      accountId: metaAccount.accountId,
+      logContext: "McpToolRegistry.loadFromAccount",
+    });
+    const resolvedTransport = resolveMetaMcpTransport(resolvedUrl, metaAccount.mcpTransport);
+
     this.registerTools(metaAccount.userId, metaAccount.accountId, {
-      serverUrl: metaAccount.mcpServerUrl,
-      transport: metaAccount.mcpTransport || "SSE",
+      serverUrl: resolvedUrl,
+      transport: resolvedTransport,
       tools: metaAccount.discoveredTools,
       status: metaAccount.mcpStatus || "CONNECTED",
     });

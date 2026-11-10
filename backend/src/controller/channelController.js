@@ -11,6 +11,7 @@ import mcpToolRegistry from "../services/mcp/McpToolRegistry.js";
 import { GoogleApiService } from "../services/google/googleApiService.js";
 import { GoogleSyncPipeline } from "../services/google/googleSyncPipe.js";
 import { GoogleMcpClient, GOOGLE_MCP_TOOLS } from "../services/mcp/googleMcpClient.js";
+import { resolveOfficialMetaMcpUrl, resolveMetaMcpTransport } from "../services/mcp/metaMcpConfig.js";
 
 // Catalog of tools enabled when Meta Ads channel is connected
 const META_MCP_TOOLS = [
@@ -486,11 +487,13 @@ export class ChannelController {
         });
       }
 
-      const defaultMcpUrl = process.env.META_MCP_SERVER_URL || "https://mcp.facebook.com/ads";
+      const resolvedMcpUrl = resolveOfficialMetaMcpUrl(mcpServerUrl, {
+        logContext: "channelController.getMetaOAuthUrl",
+      });
       const stateObj = {
         userId: req.user._id.toString(),
         timestamp: Date.now(),
-        mcpServerUrl: mcpServerUrl || defaultMcpUrl,
+        mcpServerUrl: resolvedMcpUrl,
       };
       const state = Buffer.from(JSON.stringify(stateObj)).toString("base64");
 
@@ -631,11 +634,17 @@ export class ChannelController {
         console.warn("[Meta Ad Accounts Fetch Warning]:", err.message);
       }
 
+      // Enforce official Meta Ads MCP URL (reject localhost / 127.0.0.1 / stale paths)
+      const cleanResolvedMcpUrl = resolveOfficialMetaMcpUrl(mcpServerUrl, {
+        logContext: "channelController.metaOAuthCallback",
+      });
+      mcpServerUrl = cleanResolvedMcpUrl;
+
       // Cache temporary accounts for selection if needed
       global.tempMetaOauthCache = global.tempMetaOauthCache || {};
       global.tempMetaOauthCache[userId] = {
         accessToken: finalToken,
-        mcpServerUrl: mcpServerUrl || "",
+        mcpServerUrl: cleanResolvedMcpUrl,
         adAccounts: rawAccounts,
       };
 
@@ -671,7 +680,8 @@ export class ChannelController {
               spendCap,
               amountSpent,
               businessName: raw.business_name || null,
-              mcpServerUrl: mcpServerUrl || "",
+              mcpServerUrl: cleanResolvedMcpUrl,
+              mcpTransport: "STREAMABLE_HTTP",
               authType: "OAUTH",
               isActive: isConnected,
               isConnected: isConnected,
@@ -698,7 +708,11 @@ export class ChannelController {
                 accessToken: finalToken,
                 currency,
                 isConnected: isConnected,
-                config: { mcpServerUrl, authType: "OAUTH" },
+                config: {
+                  mcpServerUrl: cleanResolvedMcpUrl,
+                  mcpTransport: "STREAMABLE_HTTP",
+                  authType: "OAUTH",
+                },
               },
             },
             { returnDocument: "after", upsert: true, setDefaultsOnInsert: true }
@@ -719,8 +733,7 @@ export class ChannelController {
 
       const primarySaved = savedAccounts[0] || accountsToSave[0] || {};
       const primaryCleanId = String(primarySaved.accountId || primarySaved.id || "").replace(/^act_/, "").trim();
-      const defaultMcpUrl = process.env.META_MCP_SERVER_URL || "https://mcp.facebook.com/ads";
-      const targetMcpUrl = mcpServerUrl || defaultMcpUrl;
+      const targetMcpUrl = cleanResolvedMcpUrl;
 
       let mcpConnected = false;
       let mcpStatus = "DISCONNECTED";
@@ -864,9 +877,13 @@ export class ChannelController {
         accountId,
       } = req.body;
 
-      const effectiveTransport = String(transportType || "STREAMABLE_HTTP").toUpperCase();
-      const defaultMcpUrl = process.env.META_MCP_SERVER_URL || "https://mcp.facebook.com/ads";
-      const targetMcpUrl = mcpServerUrl || (effectiveTransport !== "STDIO" ? defaultMcpUrl : "");
+      const effectiveTransport = resolveMetaMcpTransport(mcpServerUrl, transportType);
+      const targetMcpUrl = effectiveTransport === "STDIO"
+        ? ""
+        : resolveOfficialMetaMcpUrl(mcpServerUrl, {
+            accountId,
+            logContext: "channelController.connectMetaAccount",
+          });
       const effectiveCommand = command || mcpCommand || "";
       const effectiveArgs = Array.isArray(args) && args.length > 0 ? args : Array.isArray(mcpArgs) ? mcpArgs : [];
 
@@ -1069,15 +1086,18 @@ export class ChannelController {
         });
       }
 
-      const defaultMcpUrl = process.env.META_MCP_SERVER_URL || "https://mcp.facebook.com/ads";
-      const targetMcpUrl = mcpServerUrl || account.mcpServerUrl || defaultMcpUrl;
+      const targetMcpUrl = resolveOfficialMetaMcpUrl(mcpServerUrl || account.mcpServerUrl, {
+        accountId: account.accountId,
+        logContext: "channelController.refreshMetaMcpTools",
+      });
+      const targetTransport = resolveMetaMcpTransport(targetMcpUrl, account.mcpTransport);
 
       const mcpResult = await MetaMcpClient.connectSession({
         userId,
         accountId: account.accountId,
         mcpServerUrl: targetMcpUrl,
         accessToken: account.accessToken,
-        transportType: account.mcpTransport || "STREAMABLE_HTTP",
+        transportType: targetTransport,
         command: account.mcpCommand,
         args: account.mcpArgs,
         timeoutMs: 15000,
@@ -1091,12 +1111,25 @@ export class ChannelController {
       }));
 
       account.mcpServerUrl = targetMcpUrl;
-      account.mcpTransport = "STREAMABLE_HTTP";
+      account.mcpTransport = targetTransport;
       account.discoveredTools = updatedTools;
       account.lastDiscoveredAt = new Date();
       account.mcpStatus = "CONNECTED";
       account.mcpErrorMessage = null;
       await account.save();
+
+      const cleanAccId = String(account.accountId).replace(/^act_/, "").trim();
+      await ConnectedChannel.findOneAndUpdate(
+        { userId, channelId: "meta", accountId: { $in: [cleanAccId, `act_${cleanAccId}`] } },
+        {
+          $set: {
+            "config.mcpServerUrl": targetMcpUrl,
+            "config.mcpTransport": targetTransport,
+            "config.mcpStatus": "CONNECTED",
+            "config.lastDiscoveredAt": new Date(),
+          },
+        }
+      ).catch(() => {});
 
       return res.status(200).json({
         success: true,
@@ -2117,7 +2150,11 @@ export class ChannelController {
         });
       }
 
-      const targetMcpUrl = req.body?.mcpServerUrl || metaAcc.mcpServerUrl || process.env.META_MCP_SERVER_URL || "https://mcp.facebook.com/ads";
+      const targetMcpUrl = resolveOfficialMetaMcpUrl(req.body?.mcpServerUrl || metaAcc.mcpServerUrl, {
+        accountId: rawId,
+        logContext: "channelController.selectMetaAccount",
+      });
+      const targetTransport = resolveMetaMcpTransport(targetMcpUrl, metaAcc.mcpTransport);
 
       let mcpConnected = metaAcc.mcpStatus === "CONNECTED";
       let mcpStatus = metaAcc.mcpStatus || "DISCONNECTED";
@@ -2132,7 +2169,7 @@ export class ChannelController {
             accountId: rawId,
             mcpServerUrl: targetMcpUrl,
             accessToken: metaAcc.accessToken,
-            transportType: metaAcc.mcpTransport || "STREAMABLE_HTTP",
+            transportType: targetTransport,
             timeoutMs: 15000,
           });
 
@@ -2143,7 +2180,7 @@ export class ChannelController {
 
           metaAcc.mcpStatus = "CONNECTED";
           metaAcc.mcpServerUrl = targetMcpUrl;
-          metaAcc.mcpTransport = "STREAMABLE_HTTP";
+          metaAcc.mcpTransport = targetTransport;
           metaAcc.discoveredTools = discoveredTools.map((t) => ({
             name: t.name,
             description: t.description || "",
@@ -2179,6 +2216,7 @@ export class ChannelController {
             isConnected: true,
             config: {
               mcpServerUrl: targetMcpUrl,
+              mcpTransport: targetTransport,
               mcpStatus,
               mcpErrorMessage: mcpError,
             },

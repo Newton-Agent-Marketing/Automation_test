@@ -14,6 +14,13 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import mcpToolRegistry from "./McpToolRegistry.js";
+import {
+  OFFICIAL_META_MCP_ENDPOINT,
+  getOfficialMetaMcpEndpoint,
+  resolveOfficialMetaMcpUrl,
+  resolveMetaMcpTransport,
+  isLocalhostOrPrivateUrl,
+} from "./metaMcpConfig.js";
 
 const META_GRAPH_URL = process.env.META_GRAPH_VERSION
   ? `https://graph.facebook.com/${process.env.META_GRAPH_VERSION}`
@@ -23,6 +30,17 @@ const META_GRAPH_URL = process.env.META_GRAPH_VERSION
 const activeClients = new Map();
 
 export class MetaMcpClient {
+  static getOfficialEndpoint() {
+    return getOfficialMetaMcpEndpoint();
+  }
+
+  static resolveOfficialMcpUrl(candidateUrl, options = {}) {
+    return resolveOfficialMetaMcpUrl(candidateUrl, options);
+  }
+
+  static resolveTransport(serverUrl, candidateTransport) {
+    return resolveMetaMcpTransport(serverUrl, candidateTransport);
+  }
   /**
    * Connect a genuine MCP session using the official @modelcontextprotocol/sdk
    * @param {Object} params
@@ -56,15 +74,23 @@ export class MetaMcpClient {
     if (activeClients.has(clientKey)) {
       try {
         const oldEntry = activeClients.get(clientKey);
-        await oldEntry.client.close();
+        await oldEntry.client?.close?.();
       } catch (_) { }
       activeClients.delete(clientKey);
     }
 
     let transport;
-    const cleanTransport = String(transportType || "STREAMABLE_HTTP").toUpperCase();
-    const defaultMcpUrl = process.env.META_MCP_SERVER_URL || "https://mcp.facebook.com/ads";
-    const effectiveMcpUrl = mcpServerUrl || (cleanTransport !== "STDIO" ? defaultMcpUrl : "");
+    const cleanTransport = resolveMetaMcpTransport(mcpServerUrl, transportType);
+    const effectiveMcpUrl = cleanTransport === "STDIO"
+      ? ""
+      : resolveOfficialMetaMcpUrl(mcpServerUrl, {
+          accountId: cleanAccountId,
+          logContext: "MetaMcpClient.connectSession",
+        });
+
+    console.log(
+      `[MetaMcpClient] Connecting MCP session for act_${cleanAccountId} at endpoint: "${effectiveMcpUrl}" (Transport: ${cleanTransport})`
+    );
 
     if (cleanTransport === "STDIO") {
       if (!command) {
@@ -231,28 +257,46 @@ export class MetaMcpClient {
     const cleanAccountId = String(accountId || "").replace(/^act_/, "").trim();
     const clientKey = `${userId}_${cleanAccountId}`;
 
+    const candidateUrl = credentials.mcpServerUrl;
+    const isStdio = String(credentials.transportType || "").toUpperCase() === "STDIO" || Boolean(credentials.command);
+    const resolvedUrl = isStdio ? "" : resolveOfficialMetaMcpUrl(candidateUrl, {
+      accountId: cleanAccountId,
+      logContext: "MetaMcpClient.getOrConnectClient.cacheCheck",
+    });
+
     const cached = activeClients.get(clientKey);
     if (cached?.client) {
-      try {
-        if (typeof cached.client.ping === "function") {
-          await cached.client.ping();
-        }
-        cached.lastUsedAt = new Date();
-        return cached.client;
-      } catch (pingErr) {
-        console.warn(
-          `[MetaMcpClient] Active client ping failed for ${clientKey}, reconnecting:`,
-          pingErr.message
+      // Validate that cached session endpoint matches resolved URL (prevent stale localhost reuse)
+      if (cached.serverUrl && resolvedUrl && cached.serverUrl !== resolvedUrl) {
+        console.log(
+          `[MetaMcpClient] Active session URL mismatch for ${clientKey} (cached: "${cached.serverUrl}", resolved: "${resolvedUrl}"). Closing stale session.`
         );
         try {
-          await cached.client.close();
+          await cached.client?.close?.();
         } catch (_) { }
         activeClients.delete(clientKey);
+      } else {
+        try {
+          if (typeof cached.client.ping === "function") {
+            await cached.client.ping();
+          }
+          cached.lastUsedAt = new Date();
+          return cached.client;
+        } catch (pingErr) {
+          console.warn(
+            `[MetaMcpClient] Active client ping failed for ${clientKey}, reconnecting:`,
+            pingErr.message
+          );
+          try {
+            await cached.client.close();
+          } catch (_) { }
+          activeClients.delete(clientKey);
+        }
       }
     }
 
     // Lookup credentials from DB if not supplied
-    let serverUrl = credentials.mcpServerUrl;
+    let serverUrl = candidateUrl;
     let token = credentials.accessToken;
     let transportType = credentials.transportType || process.env.META_MCP_TRANSPORT || "STREAMABLE_HTTP";
     let command = credentials.command;
@@ -270,21 +314,35 @@ export class MetaMcpClient {
         transportType = acc.mcpTransport || transportType;
         command = acc.mcpCommand;
         args = acc.mcpArgs;
+
+        // Auto-heal stale URL in DB if detected
+        if (acc.mcpServerUrl && isLocalhostOrPrivateUrl(acc.mcpServerUrl)) {
+          const healedUrl = resolveOfficialMetaMcpUrl(acc.mcpServerUrl, {
+            accountId: cleanAccountId,
+            logContext: "MetaMcpClient.getOrConnectClient.autoHeal",
+          });
+          acc.mcpServerUrl = healedUrl;
+          acc.mcpTransport = "STREAMABLE_HTTP";
+          await acc.save().catch((saveErr) => {
+            console.warn(`[MetaMcpClient] Auto-heal save failed for act_${cleanAccountId}:`, saveErr.message);
+          });
+        }
       }
     }
 
-    if (!serverUrl && !command) {
-      throw new Error(
-        `No MCP Server configuration found for Meta account act_${cleanAccountId}`
-      );
-    }
+    // Always sanitize resolved URL and transport before connecting
+    const effectiveMcpUrl = command ? "" : resolveOfficialMetaMcpUrl(serverUrl, {
+      accountId: cleanAccountId,
+      logContext: "MetaMcpClient.getOrConnectClient",
+    });
+    const effectiveTransport = resolveMetaMcpTransport(effectiveMcpUrl, transportType);
 
     const session = await this.connectSession({
       userId,
       accountId: cleanAccountId,
-      mcpServerUrl: serverUrl,
+      mcpServerUrl: effectiveMcpUrl,
       accessToken: token,
-      transportType,
+      transportType: effectiveTransport,
       command,
       args,
     });

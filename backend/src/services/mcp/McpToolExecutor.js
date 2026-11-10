@@ -8,6 +8,7 @@
 import mcpToolRegistry from "./McpToolRegistry.js";
 import MetaAccount from "../../models/metaAccount.js";
 import McpExecutionLogger from "./McpExecutionLogger.js";
+import { resolveOfficialMetaMcpUrl, resolveMetaMcpTransport } from "./metaMcpConfig.js";
 
 export class McpToolExecutor {
   /**
@@ -175,10 +176,16 @@ export class McpToolExecutor {
     let client = context.mcpClient;
 
     if (!client) {
+      const resolvedMcpUrl = resolveOfficialMetaMcpUrl(metaAccount.mcpServerUrl, {
+        accountId: metaAccount.accountId,
+        logContext: "McpToolExecutor",
+      });
+      const resolvedTransport = resolveMetaMcpTransport(resolvedMcpUrl, metaAccount.mcpTransport);
+
       client = await MetaMcpClient.getOrConnectClient(userId, metaAccount.accountId, {
-        mcpServerUrl: metaAccount.mcpServerUrl,
+        mcpServerUrl: resolvedMcpUrl,
         accessToken: metaAccount.accessToken,
-        transportType: metaAccount.mcpTransport || process.env.META_MCP_TRANSPORT || "STREAMABLE_HTTP",
+        transportType: resolvedTransport,
         command: metaAccount.mcpCommand,
         args: metaAccount.mcpArgs,
       });
