@@ -475,12 +475,26 @@ export class MetaAdsSheetSyncService {
     // --- STEP 5: Fetch Meta Ads Data for Yesterday ---
     const dateRange = this.getYesterdayDateRange(timezone);
     if (typeof onProgress === "function") {
-      onProgress(`sync_meta_ads_to_sheet`, `[Step 5/9] Querying Meta Marketing API for date: ${dateRange.targetDate}...`);
+      onProgress(`sync_meta_ads_to_sheet`, `[Step 5/9] Querying official Meta MCP for date: ${dateRange.targetDate}...`);
     }
 
     let rawInsights = [];
     try {
-      if (metaAccessToken && !metaAccessToken.startsWith("EAAB_simulated")) {
+      const { MetaMcpClient } = await import("../mcp/metaMcpClient.js");
+      const mcpRes = await MetaMcpClient.executeLiveTool("get_live_campaign_insights", {
+        accountId: metaAccountId,
+        userId,
+        timeRange: { since: dateRange.since, until: dateRange.until },
+      });
+      if (mcpRes?.insights?.length > 0) {
+        rawInsights = mcpRes.insights;
+      }
+    } catch (mcpErr) {
+      console.warn(`[metaAdsSheetSyncService MCP Insight Notice]: ${mcpErr.message}`);
+    }
+
+    try {
+      if ((!rawInsights || rawInsights.length === 0) && metaAccessToken && !metaAccessToken.startsWith("EAAB_simulated")) {
         rawInsights = await MetaApiService.getInsights(metaAccountId, metaAccessToken, {
           timeRange: { since: dateRange.since, until: dateRange.until },
           level: "ad",

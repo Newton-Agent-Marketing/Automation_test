@@ -132,14 +132,28 @@ class McpToolRegistry {
         kwList.push(withoutMeta);
       }
     }
+    // Priority 1: Exact name match
     for (const kw of kwList) {
-      const match = tools.find(
-        (t) =>
-          t.name.toLowerCase() === kw ||
-          t.name.toLowerCase().includes(kw) ||
-          (t.description && t.description.toLowerCase().includes(kw))
-      );
-      if (match) return match;
+      const exactMatch = tools.find((t) => t.name.toLowerCase() === kw);
+      if (exactMatch) return exactMatch;
+    }
+
+    // Priority 2: Word boundary or exact token match in tool name
+    for (const kw of kwList) {
+      const nameMatch = tools.find((t) => {
+        const lowerName = t.name.toLowerCase();
+        return (
+          lowerName.split(/[^a-z0-9]+/).includes(kw) ||
+          lowerName.includes(kw)
+        );
+      });
+      if (nameMatch) return nameMatch;
+    }
+
+    // Priority 3: Substring match in description
+    for (const kw of kwList) {
+      const descMatch = tools.find((t) => t.description && t.description.toLowerCase().includes(kw));
+      if (descMatch) return descMatch;
     }
     return null;
   }

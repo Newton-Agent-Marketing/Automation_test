@@ -334,6 +334,30 @@ export class MetaMcpClient {
   }
 
   /**
+   * Helper to extract an array of records from various MCP tool response formats
+   */
+  static extractArrayData(res) {
+    if (!res) return [];
+    if (Array.isArray(res)) return res;
+    if (res.result) {
+      if (Array.isArray(res.result)) return res.result;
+      if (Array.isArray(res.result.data)) return res.result.data;
+      if (Array.isArray(res.result.campaigns)) return res.result.campaigns;
+      if (Array.isArray(res.result.adsets)) return res.result.adsets;
+      if (Array.isArray(res.result.ad_sets)) return res.result.ad_sets;
+      if (Array.isArray(res.result.ads)) return res.result.ads;
+      if (Array.isArray(res.result.insights)) return res.result.insights;
+    }
+    if (Array.isArray(res.data)) return res.data;
+    if (Array.isArray(res.campaigns)) return res.campaigns;
+    if (Array.isArray(res.adsets)) return res.adsets;
+    if (Array.isArray(res.ad_sets)) return res.ad_sets;
+    if (Array.isArray(res.ads)) return res.ads;
+    if (Array.isArray(res.insights)) return res.insights;
+    return [];
+  }
+
+  /**
    * Live real-time Meta MCP Tool Execution
    * Strictly executes through the official Meta Ads MCP Server.
    * Direct Graph API execution and fake IDs are completely removed.
@@ -612,7 +636,12 @@ export class MetaMcpClient {
       }
     }
 
-    // 4. Check MCP status
+    // 4. Ensure discovered tools are registered into dynamic registry for this session
+    if (!mcpToolRegistry.hasTools(userId, cleanAccId) && metaAccount.discoveredTools?.length > 0) {
+      mcpToolRegistry.loadFromAccount(metaAccount);
+    }
+
+    // Check MCP status
     const hasTools =
       mcpToolRegistry.hasTools(userId, cleanAccId) ||
       (metaAccount.discoveredTools && metaAccount.discoveredTools.length > 0);
@@ -623,13 +652,214 @@ export class MetaMcpClient {
       );
     }
 
-    // 5. ALL OTHER META ADS OPERATIONS: Strictly execute via McpToolExecutor on the official Meta MCP Server
-    // Direct Graph API fallback is strictly disabled in the AI Agent path.
     const { McpToolExecutor } = await import("./McpToolExecutor.js");
+
+    // 5. COMPOSITE MCP OPERATION: get_live_campaigns_status
+    // Dynamically queries campaigns & adsets from official Meta MCP server and normalizes hierarchy
+    if (toolName === "get_live_campaigns_status") {
+      const campTool = mcpToolRegistry.findToolByKeyword(userId, cleanAccId, [
+        "campaigns",
+        "get_campaigns",
+        "list_campaigns",
+      ]);
+
+      if (!campTool) {
+        throw new Error(
+          `Meta MCP Tool Not Found: Official Meta MCP campaign listing tool was not discovered for account act_${cleanAccId}. Please reconnect official MCP server.`
+        );
+      }
+
+      const adSetTool = mcpToolRegistry.findToolByKeyword(userId, cleanAccId, [
+        "adsets",
+        "ad_sets",
+        "get_ad_sets",
+        "list_ad_sets",
+      ]);
+
+      const campRes = await McpToolExecutor.executeTool(
+        campTool.name,
+        { account_id: `act_${cleanAccId}` },
+        { userId, accountId: cleanAccId, metaAccount, ...(args.mcpClient ? { mcpClient: args.mcpClient } : {}) }
+      );
+      const rawCampaigns = this.extractArrayData(campRes);
+
+      let rawAdSets = [];
+      if (adSetTool) {
+        try {
+          const adSetRes = await McpToolExecutor.executeTool(
+            adSetTool.name,
+            { account_id: `act_${cleanAccId}` },
+            { userId, accountId: cleanAccId, metaAccount, ...(args.mcpClient ? { mcpClient: args.mcpClient } : {}) }
+          );
+          rawAdSets = this.extractArrayData(adSetRes);
+        } catch (adSetErr) {
+          console.warn(`[MetaMcpClient get_live_campaigns_status AdSet Warning]:`, adSetErr.message);
+        }
+      }
+
+      const normalizedCampaigns = rawCampaigns.map((camp) => {
+        const campId = String(camp.id || camp.campaignId || camp.campaign_id);
+        const campAdSets = rawAdSets.filter(
+          (as) => String(as.campaign_id || as.campaignId) === campId
+        );
+        return {
+          id: campId,
+          name: camp.name || "Untitled Campaign",
+          status: camp.status || camp.effectiveStatus || "PAUSED",
+          effectiveStatus: camp.effective_status || camp.effectiveStatus || camp.status || "PAUSED",
+          objective: camp.objective || "",
+          createdTime: camp.created_time || camp.createdTime || "",
+          adSets: campAdSets.map((as) => ({
+            id: String(as.id || as.adSetId || as.adset_id),
+            name: as.name || "Untitled Ad Set",
+            status: as.status || as.effectiveStatus || "PAUSED",
+            effectiveStatus: as.effective_status || as.effectiveStatus || as.status || "PAUSED",
+          })),
+          totalAdSets: campAdSets.length,
+        };
+      });
+
+      return {
+        status: "LIVE_DATA_FROM_META_MCP",
+        source: "OFFICIAL_META_MCP",
+        accountId: `act_${cleanAccId}`,
+        totalCampaignsReturned: normalizedCampaigns.length,
+        totalAdSetsReturned: rawAdSets.length,
+        campaigns: normalizedCampaigns,
+      };
+    }
+
+    // 6. COMPOSITE MCP OPERATION: get_live_adset_ads
+    // Dynamically queries ads from official Meta MCP server and filters by target ad set if requested
+    if (toolName === "get_live_adset_ads") {
+      const adsTool = mcpToolRegistry.findToolByKeyword(userId, cleanAccId, [
+        "ads",
+        "get_ads",
+        "list_ads",
+      ]);
+
+      if (!adsTool) {
+        throw new Error(
+          `Meta MCP Tool Not Found: Official Meta MCP ads listing tool was not discovered for account act_${cleanAccId}.`
+        );
+      }
+
+      const adsRes = await McpToolExecutor.executeTool(
+        adsTool.name,
+        {
+          account_id: `act_${cleanAccId}`,
+          ...(args.adSetId ? { adset_id: args.adSetId } : {}),
+        },
+        { userId, accountId: cleanAccId, metaAccount, ...(args.mcpClient ? { mcpClient: args.mcpClient } : {}) }
+      );
+
+      let rawAds = this.extractArrayData(adsRes);
+      if (args.adSetId && rawAds.length > 0) {
+        const filtered = rawAds.filter(
+          (a) => String(a.adset_id || a.adSetId) === String(args.adSetId)
+        );
+        if (filtered.length > 0) {
+          rawAds = filtered;
+        }
+      }
+
+      return {
+        status: "LIVE_DATA_FROM_META_MCP",
+        source: "OFFICIAL_META_MCP",
+        accountId: `act_${cleanAccId}`,
+        totalAds: rawAds.length,
+        ads: rawAds.map((a) => ({
+          id: String(a.id || a.adId),
+          name: a.name || "Untitled Ad",
+          status: a.status || a.effective_status || "PAUSED",
+          adSetId: a.adset_id || a.adSetId || null,
+        })),
+      };
+    }
+
+    // 7. COMPOSITE MCP OPERATION: get_live_campaign_insights / get_live_today_insights
+    if (toolName === "get_live_campaign_insights" || toolName === "get_live_today_insights") {
+      const datePreset = args.datePreset || (toolName === "get_live_today_insights" ? "today" : "last_7d");
+      const insightTool = mcpToolRegistry.findToolByKeyword(userId, cleanAccId, [
+        "insights",
+        "get_ad_account_insights",
+        "get_campaign_insights",
+      ]);
+
+      if (!insightTool) {
+        throw new Error(
+          `Meta MCP Tool Not Found: Official Meta MCP insights tool was not discovered for account act_${cleanAccId}.`
+        );
+      }
+
+      const insightRes = await McpToolExecutor.executeTool(
+        insightTool.name,
+        {
+          account_id: `act_${cleanAccId}`,
+          date_preset: datePreset,
+          ...(args.timeRange ? { time_range: args.timeRange } : {}),
+          ...(args.fields ? { fields: args.fields } : {}),
+        },
+        { userId, accountId: cleanAccId, metaAccount, ...(args.mcpClient ? { mcpClient: args.mcpClient } : {}) }
+      );
+
+      const rawRows = this.extractArrayData(insightRes);
+      let totalSpend = 0;
+      let totalImpressions = 0;
+      let totalClicks = 0;
+      let totalConversions = 0;
+      let totalConversionValue = 0;
+
+      for (const row of rawRows) {
+        totalSpend += Number(row.spend || 0);
+        totalImpressions += Number(row.impressions || 0);
+        totalClicks += Number(row.clicks || 0);
+        if (Array.isArray(row.actions)) {
+          for (const a of row.actions) {
+            if (a.action_type === "purchase" || a.action_type === "lead" || a.action_type === "omni_purchase") {
+              totalConversions += Number(a.value || 0);
+            }
+          }
+        }
+        if (Array.isArray(row.action_values)) {
+          for (const av of row.action_values) {
+            if (av.action_type === "purchase" || av.action_type === "omni_purchase") {
+              totalConversionValue += Number(av.value || 0);
+            }
+          }
+        }
+      }
+
+      const ctr = totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0;
+      const cpc = totalClicks > 0 ? totalSpend / totalClicks : 0;
+      const roas = totalSpend > 0 ? totalConversionValue / totalSpend : 0;
+
+      return {
+        status: "LIVE_DATA_FROM_META_MCP",
+        source: "OFFICIAL_META_MCP",
+        accountId: `act_${cleanAccId}`,
+        datePreset,
+        insights: rawRows,
+        summary: {
+          spend: Number(totalSpend.toFixed(2)),
+          impressions: totalImpressions,
+          clicks: totalClicks,
+          ctr: Number(ctr.toFixed(2)),
+          cpc: Number(cpc.toFixed(2)),
+          conversions: totalConversions,
+          conversionValue: Number(totalConversionValue.toFixed(2)),
+          roas: Number(roas.toFixed(2)),
+        },
+      };
+    }
+
+    // 8. ALL OTHER META ADS OPERATIONS: Strictly execute via McpToolExecutor on the official Meta MCP Server
+    // Direct Graph API fallback is strictly disabled in the AI Agent path.
     return await McpToolExecutor.executeTool(toolName, args, {
       userId,
       accountId: cleanAccId,
       metaAccount,
+      ...(args.mcpClient ? { mcpClient: args.mcpClient } : {}),
     });
   }
 }

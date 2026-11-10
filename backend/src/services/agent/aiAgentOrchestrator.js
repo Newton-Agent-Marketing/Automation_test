@@ -321,6 +321,11 @@ export class AiAgentOrchestrator {
    * 2. INTENT UNDERSTANDING & TOOL SELECTION
    * Understands what the user or automation node wants and decides which tool(s) to execute.
    */
+  static planIntent(params = {}) {
+    if (typeof params === "string") return this.classifyIntent(params, {});
+    return this.classifyIntent(params.instruction || "", params.context || {});
+  }
+
   static classifyIntent(instruction = "", context = {}) {
     const text = String(instruction).toLowerCase().trim();
 
@@ -406,12 +411,14 @@ export class AiAgentOrchestrator {
       };
     }
 
-    // META CAMPAIGN SEARCH / LIST / STATUS
+    // META CAMPAIGN SEARCH / LIST / STATUS (e.g. "fetch latest campaign name", "is connected account ki latest campaign batao")
     const isMetaCampaignSearch =
-      /(show|fetch|get|list|display|view|find|search|give|tell|batao|dikhao)/i.test(text) &&
-      /(campaign|campaigns|adset|ad\s*set|adsets|ad\s*sets)/i.test(text) &&
-      /(meta|facebook|campaign|adset|ad\s*set)/i.test(text) &&
-      !/(create|launch|draft|build|setup|publish|make|banao|deploy)/i.test(text);
+      !/(create|launch|draft|build|setup|publish|make|banao|deploy)/i.test(text) &&
+      (
+        /(show|fetch|get|list|display|view|find|search|give|tell|batao|dikhao|nikalo|what|which)\b.*(?:campaign|campaigns|adset|ad\s*set|adsets|ad\s*sets)/i.test(text) ||
+        /(?:campaign|campaigns|adset|ad\s*set|adsets|ad\s*sets).*(?:show|fetch|get|list|display|view|find|search|give|tell|batao|dikhao|nikalo|karo|naam|name)/i.test(text) ||
+        /(?:latest|recent|current|last|active)\s*(?:campaign|campaigns|adset|ad\s*set)/i.test(text)
+      );
 
     if (isMetaCampaignSearch) {
       return {
@@ -716,28 +723,22 @@ export class AiAgentOrchestrator {
       const sheetData = connectedSheetResult || sheetTool?.toolResult;
       const rawRows = sheetData?.rows || [];
 
-      emitStatus("get_live_adset_ads", `Retrieving live Meta Ads for matching on act_${targetAccountId}...`);
+      emitStatus("get_live_adset_ads", `Retrieving live Meta Ads for matching on act_${targetAccountId} via official Meta MCP...`);
       const adsStartTime = Date.now();
       let liveAds = [];
       try {
-        const MetaApiService = (await import("../meta/metaApiService.js")).default;
-        liveAds = await MetaApiService.getAccountAds({
-          accountId: targetAccountId,
-          userId: context.userId,
-        });
-
-        // Filter by target Ad Set if specified in user instruction or campaign preparation sessions
         const explicitAdSetId = DynamicSheetFilter.parseIdFromMessage(instruction, "adset");
         const explicitAdSetName = DynamicSheetFilter.parseNameFromMessage(instruction, "adset");
         const sessionAdSetId = campaignPreparationSessions?.[0]?.adSetId || campaignPreparationSessions?.[0]?.creationJob?.adSetId;
-
         const targetAdSetId = explicitAdSetId || sessionAdSetId;
-        if (targetAdSetId && liveAds.length > 0) {
-          const filteredByAdSet = liveAds.filter((a) => String(a.adset_id) === String(targetAdSetId));
-          if (filteredByAdSet.length > 0) {
-            liveAds = filteredByAdSet;
-          }
-        }
+
+        const mcpAdsRes = await MetaMcpClient.executeLiveTool("get_live_adset_ads", {
+          accountId: targetAccountId,
+          userId: context.userId,
+          adSetId: targetAdSetId || undefined,
+        });
+
+        liveAds = mcpAdsRes?.ads || [];
 
         executedTools.push({
           toolName: "get_live_adset_ads",
@@ -749,7 +750,7 @@ export class AiAgentOrchestrator {
           toolResult: {
             success: true,
             totalAds: liveAds.length,
-            ads: liveAds.map((a) => ({ id: a.id, name: a.name, status: a.status || a.effective_status, adSetId: a.adset_id })),
+            ads: liveAds.map((a) => ({ id: a.id, name: a.name, status: a.status || a.effective_status, adSetId: a.adSetId || a.adset_id })),
           },
           status: "SUCCESS",
           durationMs: Date.now() - adsStartTime,
@@ -1056,6 +1057,37 @@ export class AiAgentOrchestrator {
           toolName: "sync_meta_ads_to_sheet",
           toolArgs: { instruction },
           toolResult: { success: false, error: err.message },
+          status: "FAILED",
+          durationMs: Date.now() - startTime,
+        });
+      }
+    }
+
+    // --- TOOL: get_live_campaigns_status (Official Meta MCP Dynamic Tool Execution) ---
+    if (
+      intentObj.intent === "META_CAMPAIGN_SEARCH" ||
+      intentObj.tools.includes("get_live_campaigns_status")
+    ) {
+      emitStatus("get_live_campaigns_status", `Fetching live Meta campaigns from official Meta MCP for act_${targetAccountId}...`);
+      const startTime = Date.now();
+      try {
+        const metaCampStatus = await MetaMcpClient.executeLiveTool("get_live_campaigns_status", {
+          accountId: targetAccountId,
+          userId: context.userId,
+        });
+
+        executedTools.push({
+          toolName: "get_live_campaigns_status",
+          toolArgs: { accountId: `act_${targetAccountId}` },
+          toolResult: metaCampStatus,
+          status: "SUCCESS",
+          durationMs: Date.now() - startTime,
+        });
+      } catch (campErr) {
+        executedTools.push({
+          toolName: "get_live_campaigns_status",
+          toolArgs: { accountId: `act_${targetAccountId}` },
+          toolResult: { success: false, error: campErr.message },
           status: "FAILED",
           durationMs: Date.now() - startTime,
         });
@@ -1419,6 +1451,39 @@ export class AiAgentOrchestrator {
         break;
       }
 
+      case "META_CAMPAIGN_SEARCH": {
+        const campTool = executedTools.find((t) => t.toolName === "get_live_campaigns_status");
+        if (!campTool || campTool.status !== "SUCCESS") {
+          isPassed = false;
+          status = "failed";
+          failureReason = campTool?.toolResult?.error || "Failed to retrieve live Meta campaigns via official Meta MCP.";
+          checks.push({ name: "Official Meta MCP Tool Call", passed: false, detail: failureReason });
+          break;
+        }
+
+        const campData = campTool.toolResult || {};
+        const campaigns = campData.campaigns || [];
+        checks.push({
+          name: "Meta MCP Connection",
+          passed: true,
+          detail: `Account ${campData.accountId || targetAccountId} via official Meta MCP`,
+        });
+        checks.push({
+          name: "Campaign Discovery",
+          passed: true,
+          detail: `${campaigns.length} live campaign(s) discovered`,
+        });
+
+        verifiedOutputData = {
+          type: "meta_campaign_list",
+          status: "success",
+          source: "OFFICIAL_META_MCP",
+          accountId: campData.accountId,
+          totalCampaigns: campaigns.length,
+          campaigns,
+        };
+        break;
+      }
 
       case "META_ADS_METRICS": {
         const metaTool = executedTools.find(
@@ -2151,6 +2216,38 @@ ${isAutomation ? `> **Node Instruction:** *"${instruction}"*  \n` : ""}> **Targe
 - Successfully transmitted structured creative & budget recommendations into the designated sheet.
 - Written records have been committed to live Google Sheets storage and verified.
 ${isAutomation ? "- Downstream nodes can now reference the confirmed sheet state." : ""}`;
+    }
+
+    // 3.5. Meta Campaign Search / List / Status Response via Official Meta MCP
+    if (intentObj.intent === "META_CAMPAIGN_SEARCH" || executedTools.some((t) => t.toolName === "get_live_campaigns_status")) {
+      const campTool = executedTools.find((t) => t.toolName === "get_live_campaigns_status");
+      const res = campTool?.toolResult || {};
+      const campaigns = res.campaigns || [];
+
+      const campTable = campaigns.map((c, i) => {
+        const adSetSummary = (c.adSets || []).map((as) => `\`${as.name}\` (${as.status})`).join(", ") || "*No Ad Sets*";
+        const statusBadge = c.status === "ACTIVE" ? "🟢 ACTIVE" : "⏸️ PAUSED";
+        return `| **#${i + 1}** | **${c.name}** | \`${c.id}\` | ${statusBadge} | \`${c.objective || "N/A"}\` | ${c.totalAdSets || 0} (${adSetSummary}) |`;
+      }).join("\n");
+
+      return `### 📢 Live Meta Campaigns Status Report
+
+${isAutomation ? `> **Node Instruction:** *"${instruction}"*  \n` : ""}> **Data Source:** **Official Meta MCP Server** (\`https://mcp.facebook.com/ads\`)  
+> **Target Meta Account:** **act_${res.accountId || context.targetMetaAccountId}**  
+> **Total Campaigns:** **${res.totalCampaignsReturned || campaigns.length}**  
+> **Total Ad Sets:** **${res.totalAdSetsReturned || 0}**  
+> **Verification Status:** **✅ LIVE MCP CONFIRMED**  
+
+---
+
+#### 📋 Live Campaigns Hierarchy
+| # | Campaign Name | Campaign ID | Status | Objective | Ad Sets |
+|---|---|---|---|---|---|
+${campTable || "| — | *No campaigns found on this account* | — | — | — | — |"}
+
+---
+
+*All campaign records and ad set structures were fetched directly through the connected official Meta Ads MCP server.*`;
     }
 
     // 4. Explicit Meta Ads Performance Response

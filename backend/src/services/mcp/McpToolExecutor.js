@@ -7,6 +7,7 @@
 
 import mcpToolRegistry from "./McpToolRegistry.js";
 import MetaAccount from "../../models/metaAccount.js";
+import McpExecutionLogger from "./McpExecutionLogger.js";
 
 export class McpToolExecutor {
   /**
@@ -252,6 +253,7 @@ export class McpToolExecutor {
     );
 
     const toolCallArguments = normalizedArgs;
+    const startTime = Date.now();
 
     let mcpResult;
     try {
@@ -264,6 +266,19 @@ export class McpToolExecutor {
         `[McpToolExecutor Error] MCP callTool failed for "${toolName}":`,
         callError.message
       );
+      const executionDuration = Date.now() - startTime;
+      await McpExecutionLogger.logExecution({
+        userId,
+        accountId: cleanAccountId,
+        provider: "META",
+        executionSource: "OFFICIAL_META_MCP",
+        toolName,
+        status: "FAILED",
+        durationMs: executionDuration,
+        args: toolCallArguments,
+        error: callError,
+      });
+
       if (
         callError.message?.includes("expired") ||
         callError.message?.includes("OAuthException") ||
@@ -279,14 +294,39 @@ export class McpToolExecutor {
 
     // 6. Capture actual response
     const parsed = this.parseMcpResponse(mcpResult);
+    const durationMs = Date.now() - startTime;
 
     if (parsed.isError) {
       const errorMsg =
         parsed.text ||
         parsed.data?.message ||
         `MCP Server reported error executing tool "${toolName}"`;
+      
+      await McpExecutionLogger.logExecution({
+        userId,
+        accountId: cleanAccountId,
+        provider: "META",
+        executionSource: "OFFICIAL_META_MCP",
+        toolName,
+        status: "FAILED",
+        durationMs,
+        args: toolCallArguments,
+        error: new Error(errorMsg),
+      });
       throw new Error(`Meta MCP Tool Error [${toolName}]: ${errorMsg}`);
     }
+
+    await McpExecutionLogger.logExecution({
+      userId,
+      accountId: cleanAccountId,
+      provider: "META",
+      executionSource: "OFFICIAL_META_MCP",
+      toolName,
+      status: "SUCCESS",
+      durationMs,
+      args: toolCallArguments,
+      result: parsed.data,
+    });
 
     // 7. Return structured execution results
     return {
