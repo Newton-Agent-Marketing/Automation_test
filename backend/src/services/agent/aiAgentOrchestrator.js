@@ -432,7 +432,8 @@ export class AiAgentOrchestrator {
     // 2. Meta Ads Campaign / Ad Set / Creative Creation (Takes priority over pure sheet fetching)
     const isMetaCreation =
       /(create|launch|draft|build|setup|publish|make|banao|deploy)\s*(?:a\s*)?(?:new\s*)?(?:meta\s*|facebook\s*)?(?:draft\s*)?(campaign|adset|ad\s*set|ad\b|ads\b|creative)/i.test(text) ||
-      /(create|launch|draft|build|setup|publish|make|banao|deploy)\s+.*(?:campaign|adset|ad\s*set|ad\b|ads\b)/i.test(text);
+      /(create|launch|draft|build|setup|publish|make|banao|deploy)\s+.*(?:campaign|adset|ad\s*set|ad\b|ads\b)/i.test(text) ||
+      /(?:campaign|adset|ad\s*set|ad\b|ads\b)\s+.*(?:create|launch|draft|build|setup|publish|make|banao|karo|bana)/i.test(text);
 
     if (isMetaCreation) {
       return {
