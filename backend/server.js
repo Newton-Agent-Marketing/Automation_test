@@ -1,3 +1,9 @@
+import dns from "node:dns";
+// Enforce IPv4-first DNS resolution to prevent 'fetch failed' (ENETUNREACH) on cloud VMs (GCP/AWS)
+if (typeof dns.setDefaultResultOrder === "function") {
+  dns.setDefaultResultOrder("ipv4first");
+}
+
 import "dotenv/config";
 import http from "http";
 import app from "./src/app.js";

@@ -1,4 +1,8 @@
 // src/services/mcp/metaMcpClient.js
+import dns from "node:dns";
+if (typeof dns.setDefaultResultOrder === "function") {
+  dns.setDefaultResultOrder("ipv4first");
+}
 import { MetaLeadCampaignService } from "../meta/metaLeadCampaignService.js";
 import MetaAccount from "../../models/metaAccount.js";
 import MetaCampaign from "../../models/metaCampaign.js";
@@ -132,9 +136,12 @@ export class MetaMcpClient {
         ),
       ]);
     } catch (connErr) {
+      const cause = connErr.cause;
+      const causeDetail = cause ? ` (${cause.code || cause.message || cause})` : "";
+      const fullError = `${connErr.message}${causeDetail}`;
       console.error(
         `[MetaMcpClient Error] Failed to connect MCP session for act_${cleanAccountId}:`,
-        connErr.message
+        fullError
       );
       try {
         await transport.close?.();
@@ -142,7 +149,7 @@ export class MetaMcpClient {
       try {
         await client.close?.();
       } catch (_) { }
-      throw new Error(`MCP Handshake Failed: ${connErr.message}`);
+      throw new Error(`MCP Handshake Failed: ${fullError}`);
     }
 
     // Discover tools dynamically through tools/list (supporting pagination)
