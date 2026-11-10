@@ -6,7 +6,7 @@ import MetaAssetResolver from "./metaAssetResolver.js";
 import { CampaignRouter } from "../data/campaignRouter.js";
 import { cleanPageId } from "../data/fieldMapper.js";
 
-const GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v24.0";
+const GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v21.0";
 const META_GRAPH_URL = `https://graph.facebook.com/${GRAPH_VERSION}`;
 const META_GRAPH_VIDEO_URL = `https://graph-video.facebook.com/${GRAPH_VERSION}`;
 const META_OAUTH_DIALOG_URL = `https://www.facebook.com/${GRAPH_VERSION}/dialog/oauth`;

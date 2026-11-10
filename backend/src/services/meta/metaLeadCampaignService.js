@@ -12,7 +12,7 @@ import { MetaAssetResolver } from "./metaAssetResolver.js";
 
 const META_GRAPH_URL = process.env.META_GRAPH_VERSION
   ? `https://graph.facebook.com/${process.env.META_GRAPH_VERSION}`
-  : "https://graph.facebook.com/v24.0";
+  : "https://graph.facebook.com/v21.0";
 
 export class MetaLeadCampaignService {
   /**

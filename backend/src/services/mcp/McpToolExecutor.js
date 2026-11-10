@@ -131,25 +131,34 @@ export class McpToolExecutor {
     }
 
     const cleanAccountId = String(accountId || "").replace(/^act_/, "").trim();
+    if (!cleanAccountId) {
+      throw new Error(
+        "McpToolExecutor: accountId is required for Meta MCP tool execution to prevent cross-account operations."
+      );
+    }
 
     // 1. Identify selected Meta account and verify account isolation
+    // STRICT RULE: Never fall back to another account if the requested account is missing or invalid
     let metaAccount = context.metaAccount;
     if (!metaAccount) {
-      metaAccount = await MetaAccount.findOne({
-        userId,
-        accountId: { $in: [cleanAccountId, `act_${cleanAccountId}`] },
-        isActive: true,
-      });
-
-      if (!metaAccount) {
-        // Fallback to active account for user
-        metaAccount = await MetaAccount.findOne({ userId, isActive: true });
+      try {
+        metaAccount = await MetaAccount.findOne({
+          userId,
+          accountId: { $in: [cleanAccountId, `act_${cleanAccountId}`] },
+          isActive: true,
+        });
+      } catch (findErr) {
+        if (findErr.name === "CastError") {
+          metaAccount = null;
+        } else {
+          throw findErr;
+        }
       }
     }
 
     if (!metaAccount) {
       throw new Error(
-        `McpToolExecutor: No active Meta account found for user ${userId} with account ID ${cleanAccountId || "(default)"}`
+        `McpToolExecutor: Meta account act_${cleanAccountId} was not found or is not active for user ${userId}. Fallback to other accounts is strictly prohibited.`
       );
     }
 
@@ -168,7 +177,7 @@ export class McpToolExecutor {
       client = await MetaMcpClient.getOrConnectClient(userId, metaAccount.accountId, {
         mcpServerUrl: metaAccount.mcpServerUrl,
         accessToken: metaAccount.accessToken,
-        transportType: metaAccount.mcpTransport || "SSE",
+        transportType: metaAccount.mcpTransport || process.env.META_MCP_TRANSPORT || "STREAMABLE_HTTP",
         command: metaAccount.mcpCommand,
         args: metaAccount.mcpArgs,
       });
@@ -180,36 +189,91 @@ export class McpToolExecutor {
       );
     }
 
-    // 3. Find requested tool in registry
+    // 3. Find requested tool in registry for the selected account
     let toolDef = mcpToolRegistry.getTool(userId, metaAccount.accountId, toolName);
 
-    // If not in memory registry, try loading from account model or fetching tools
+    // If not in memory registry, try loading from account model
     if (!toolDef && metaAccount.discoveredTools && metaAccount.discoveredTools.length > 0) {
       mcpToolRegistry.loadFromAccount(metaAccount);
       toolDef = mcpToolRegistry.getTool(userId, metaAccount.accountId, toolName);
     }
 
-    // 4. Validate arguments against schema
-    if (toolDef?.inputSchema) {
-      this.validateArguments(toolDef.inputSchema, args);
+    // If not found by exact name, try finding by matching keyword in discovered tools
+    if (!toolDef) {
+      const keywordMatch = mcpToolRegistry.findToolByKeyword(userId, metaAccount.accountId, toolName);
+      if (keywordMatch) {
+        toolDef = keywordMatch;
+        console.log(`[McpToolExecutor] Resolved requested action "${toolName}" to discovered tool "${toolDef.name}"`);
+      }
     }
 
-    // 5. Execute tool via MCP tools/call protocol
+    // STRICT RULE: Only permit tools discovered and registered for this specific user & account
+    if (!toolDef) {
+      throw new Error(
+        `McpToolExecutor: Tool "${toolName}" is not registered or available on the connected Meta MCP server for account act_${cleanAccountId}.`
+      );
+    }
+
+    const targetMcpToolName = toolDef.name;
+
+    // 4. Normalize common argument aliases (adId -> ad_id / id, adName -> name)
+    const normalizedArgs = {
+      ...args,
+      ...(cleanAccountId && !args.account_id && !args.ad_account_id ? { account_id: `act_${cleanAccountId}` } : {}),
+    };
+    if (normalizedArgs.adId) {
+      if (!normalizedArgs.ad_id) normalizedArgs.ad_id = normalizedArgs.adId;
+      if (!normalizedArgs.id) normalizedArgs.id = normalizedArgs.adId;
+    }
+    if (normalizedArgs.adSetId) {
+      if (!normalizedArgs.adset_id) normalizedArgs.adset_id = normalizedArgs.adSetId;
+      if (!normalizedArgs.id && (targetMcpToolName.includes("adset") || targetMcpToolName.includes("ad_set"))) {
+        normalizedArgs.id = normalizedArgs.adSetId;
+      }
+    }
+    if (normalizedArgs.campaignId) {
+      if (!normalizedArgs.campaign_id) normalizedArgs.campaign_id = normalizedArgs.campaignId;
+      if (!normalizedArgs.id && targetMcpToolName.includes("campaign")) {
+        normalizedArgs.id = normalizedArgs.campaignId;
+      }
+    }
+    if (normalizedArgs.adName && !normalizedArgs.name) {
+      normalizedArgs.name = normalizedArgs.adName;
+    }
+
+    // 5. Validate arguments against schema
+    if (toolDef.inputSchema) {
+      this.validateArguments(toolDef.inputSchema, normalizedArgs);
+    }
+
+    // 6. Execute tool via MCP tools/call protocol
     console.log(
-      `[McpToolExecutor] Calling tool "${toolName}" on MCP server for act_${cleanAccountId}`
+      `[McpToolExecutor] Calling tool "${targetMcpToolName}" on MCP server for act_${cleanAccountId}`
     );
+
+    const toolCallArguments = normalizedArgs;
 
     let mcpResult;
     try {
       mcpResult = await client.callTool({
-        name: toolName,
-        arguments: args,
+        name: targetMcpToolName,
+        arguments: toolCallArguments,
       });
     } catch (callError) {
       console.error(
         `[McpToolExecutor Error] MCP callTool failed for "${toolName}":`,
         callError.message
       );
+      if (
+        callError.message?.includes("expired") ||
+        callError.message?.includes("OAuthException") ||
+        callError.message?.includes("401") ||
+        callError.message?.includes("Unauthorized")
+      ) {
+        throw new Error(
+          `Meta MCP Authentication Error (${toolName}): Meta session or access token has expired or is unauthorized. Please reconnect your Meta account.`
+        );
+      }
       throw new Error(`MCP Tool Execution Error (${toolName}): ${callError.message}`);
     }
 
@@ -237,3 +301,4 @@ export class McpToolExecutor {
 }
 
 export default McpToolExecutor;
+

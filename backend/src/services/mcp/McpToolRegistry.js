@@ -102,6 +102,49 @@ class McpToolRegistry {
   }
 
   /**
+   * Check if any tools exist for an account
+   * @param {string} userId
+   * @param {string} accountId
+   * @returns {boolean}
+   */
+  hasTools(userId, accountId) {
+    return this.getTools(userId, accountId).length > 0;
+  }
+
+  /**
+   * Find a tool matching a semantic operation or keyword (e.g. "insights", "campaigns", "ads", "budget")
+   * @param {string} userId
+   * @param {string} accountId
+   * @param {string|Array<string>} keywords
+   * @returns {Object|null}
+   */
+  findToolByKeyword(userId, accountId, keywords) {
+    const tools = this.getTools(userId, accountId);
+    if (!tools || tools.length === 0) return null;
+    const rawKwList = Array.isArray(keywords) ? keywords : [keywords];
+    const kwList = [];
+    for (const k of rawKwList) {
+      if (!k) continue;
+      const clean = String(k).toLowerCase().trim();
+      kwList.push(clean);
+      const withoutMeta = clean.replace(/_?meta_?/, "_").replace(/^_+|_+$/g, "");
+      if (withoutMeta && withoutMeta !== clean) {
+        kwList.push(withoutMeta);
+      }
+    }
+    for (const kw of kwList) {
+      const match = tools.find(
+        (t) =>
+          t.name.toLowerCase() === kw ||
+          t.name.toLowerCase().includes(kw) ||
+          (t.description && t.description.toLowerCase().includes(kw))
+      );
+      if (match) return match;
+    }
+    return null;
+  }
+
+  /**
    * Get registry entry details (status, discoveredAt, serverUrl, tool count)
    */
   getRegistryDetails(userId, accountId) {
@@ -147,3 +190,4 @@ class McpToolRegistry {
 
 export const mcpToolRegistry = new McpToolRegistry();
 export default mcpToolRegistry;
+

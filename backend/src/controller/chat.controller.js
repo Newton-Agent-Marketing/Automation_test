@@ -617,6 +617,9 @@ export const runAgentChat = async ({
 
   // Check if user is asking to rename or update an existing ad
   const isAdRenameOrUpdateCmd =
+    (/\b(?:rename|replace|update|change|modify)\b/i.test(userMessage) &&
+      /\b(?:ad|ads|adname|ad\s*name)\b/i.test(userMessage) &&
+      !/\b(?:create|launch|banao|draft|deploy)\s+(?:new\s+)?campaign\b/i.test(userMessage)) ||
     /\b(?:rename\s+.*ad|replace\s+.*ad|update\s+.*ad|change\s+.*ad\s*name)\b/i.test(userMessage) ||
     (/\b(?:adname|ad\s*name)\b/i.test(userMessage) && /\b(?:replace|rename|update)\b/i.test(userMessage));
 

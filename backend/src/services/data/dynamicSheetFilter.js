@@ -363,6 +363,21 @@ export class DynamicSheetFilter {
       };
     }
 
+    // Safeguard: If the prompt is an ad rename/replace action instruction (e.g. "old AdName replace with New AdName in meta ads", "replace old AdName with new AdName"),
+    // it must not be misinterpreted as a spreadsheet row filter condition!
+    const isRenameOrReplaceAction =
+      /\b(?:replace\s+.*with|rename\s+.*to|replace\s+old\s+.*with\s+new|old\s+.*replace\s+with\s+new)\b/i.test(promptMessage) ||
+      (/\b(?:adname|ad\s*name)\b/i.test(promptMessage) && /\b(?:replace|rename|update)\b/i.test(promptMessage));
+    if (isRenameOrReplaceAction) {
+      return {
+        conditions: [],
+        logicalOperator: "AND",
+        explicitColumnRequestedNotMatches: [],
+        isAmbiguous: false,
+        ambiguityReason: null,
+      };
+    }
+
     let text = promptMessage;
 
     // 1. Strip explicit campaign / ad set / ad name declarations FIRST so quoted values with spaces are removed before token splitting

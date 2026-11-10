@@ -86,8 +86,8 @@ const metaAccountSchema = new mongoose.Schema(
     },
     mcpTransport: {
       type: String,
-      enum: ["SSE", "STDIO"],
-      default: "SSE",
+      enum: ["STREAMABLE_HTTP", "SSE", "STDIO"],
+      default: "STREAMABLE_HTTP",
     },
     mcpCommand: {
       type: String,

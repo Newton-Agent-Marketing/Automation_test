@@ -188,6 +188,7 @@ const Channel = () => {
     fetchAccounts,
     connectMeta,
     selectMetaAccount,
+    refreshMetaMcpTools,
     disconnectMeta,
     getGoogleOAuthUrl,
     handleGoogleOAuthCallback,
@@ -203,7 +204,7 @@ const Channel = () => {
   const [tab, setTab] = useState("All Channels");
   const [activeModalChannel, setActiveModalChannel] = useState(null);
   const [metaConnectMode, setMetaConnectMode] = useState("mcp_oauth"); // "mcp_oauth" | "token"
-  const [mcpServerUrl, setMcpServerUrl] = useState("http://localhost:8000/sse");
+  const [mcpServerUrl, setMcpServerUrl] = useState("https://mcp.facebook.com/ads");
   const [accessToken, setAccessToken] = useState("");
   const [developerToken, setDeveloperToken] = useState("");
   const [selectedAccount, setSelectedAccount] = useState("");
@@ -484,6 +485,24 @@ const Channel = () => {
       });
       setNotice(result.message || "Meta MCP Server connected!");
       closeConnectModal();
+      await loadStatus();
+    } catch (err) {
+      setNotice(err?.message || String(err));
+      setOauthStepStatus("");
+    }
+  };
+
+  const onRetryMetaMcp = async (e) => {
+    if (e) e.preventDefault();
+    setNotice("");
+    setOauthStepStatus("Connecting official Meta MCP Server...");
+    try {
+      const result = await refreshMetaMcpTools({
+        accountId: activeMetaAccount?.accountId,
+        mcpServerUrl,
+      });
+      setNotice(result.message || "Official Meta MCP session connected and tools discovered!");
+      setOauthStepStatus("");
       await loadStatus();
     } catch (err) {
       setNotice(err?.message || String(err));
@@ -847,12 +866,18 @@ const Channel = () => {
                       <span className={`status-indicator-circle ${!isAvailable ? "coming-soon" : connected ? "connected" : "disconnected"}`} />
                       <span
                         className="status-indicator-text"
-                        style={!isAvailable ? { color: "#94A3B8" } : connected ? { color: "#059669", fontWeight: 600 } : {}}
+                        style={!isAvailable ? { color: "#94A3B8" } : connected ? { color: item.id === "meta" && activeMetaAccount?.mcpStatus === "ERROR" ? "#D97706" : "#059669", fontWeight: 600 } : {}}
                       >
                         {!isAvailable
                           ? "Coming Soon"
                           : connected
-                          ? `${channelAccounts.length} Active Account${channelAccounts.length > 1 ? "s" : ""}`
+                          ? item.id === "meta"
+                            ? activeMetaAccount?.mcpStatus === "ERROR"
+                              ? "OAuth Active • MCP Error"
+                              : (activeMetaAccount?.mcpStatus === "CONNECTED" || activeMetaAccount?.mcpConnected)
+                              ? `OAuth & MCP Active (${activeMetaAccount?.toolCount || 0} Tools)`
+                              : "OAuth Active • MCP Pending"
+                            : `${channelAccounts.length} Active Account${channelAccounts.length > 1 ? "s" : ""}`
                           : "Disconnected"}
                       </span>
                     </div>
@@ -1052,7 +1077,109 @@ const Channel = () => {
                       Install directly from Newton Apps module
                     </p>
 
-                    {isChannelConnected(activeModalChannel.id) && (
+                    {activeModalChannel.id === "meta" ? (
+                      <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 10, textAlign: "left" }}>
+                        {/* Meta OAuth Status Card */}
+                        <div style={{
+                          padding: "10px 14px",
+                          borderRadius: 10,
+                          border: metaConnected ? "1px solid #BBF7D0" : "1px solid #E2E8F0",
+                          backgroundColor: metaConnected ? "#F0FDF4" : "#F8FAFC",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          fontSize: "12.5px"
+                        }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: "50%",
+                              backgroundColor: metaConnected ? "#16A34A" : "#94A3B8"
+                            }} />
+                            <span style={{ fontWeight: 600, color: metaConnected ? "#15803D" : "#475569" }}>
+                              Meta OAuth: {metaConnected ? `Connected (${activeMetaAccount?.accountName || "Account Ready"})` : "Disconnected"}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Official Meta MCP Server Status Card */}
+                        <div style={{
+                          padding: "10px 14px",
+                          borderRadius: 10,
+                          border: activeMetaAccount?.mcpConnected || activeMetaAccount?.mcpStatus === "CONNECTED"
+                            ? "1px solid #BBF7D0"
+                            : activeMetaAccount?.mcpStatus === "ERROR"
+                            ? "1px solid #FECACA"
+                            : "1px solid #E2E8F0",
+                          backgroundColor: activeMetaAccount?.mcpConnected || activeMetaAccount?.mcpStatus === "CONNECTED"
+                            ? "#F0FDF4"
+                            : activeMetaAccount?.mcpStatus === "ERROR"
+                            ? "#FEF2F2"
+                            : "#F8FAFC",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          fontSize: "12.5px"
+                        }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
+                            <span style={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: "50%",
+                              backgroundColor: activeMetaAccount?.mcpConnected || activeMetaAccount?.mcpStatus === "CONNECTED"
+                                ? "#16A34A"
+                                : activeMetaAccount?.mcpStatus === "ERROR"
+                                ? "#DC2626"
+                                : "#94A3B8",
+                              flexShrink: 0
+                            }} />
+                            <div style={{ overflow: "hidden" }}>
+                              <div style={{
+                                fontWeight: 600,
+                                color: activeMetaAccount?.mcpConnected || activeMetaAccount?.mcpStatus === "CONNECTED"
+                                  ? "#15803D"
+                                  : activeMetaAccount?.mcpStatus === "ERROR"
+                                  ? "#B91C1C"
+                                  : "#475569"
+                              }}>
+                                Official Meta MCP: {activeMetaAccount?.mcpConnected || activeMetaAccount?.mcpStatus === "CONNECTED"
+                                  ? `Connected (${activeMetaAccount?.toolCount || 0} tools discovered)`
+                                  : activeMetaAccount?.mcpStatus === "ERROR"
+                                  ? "Connection Failed"
+                                  : "Disconnected"}
+                              </div>
+                              {activeMetaAccount?.mcpErrorMessage && (
+                                <div style={{ fontSize: "11px", color: "#DC2626", marginTop: 2, wordBreak: "break-word" }}>
+                                  {activeMetaAccount.mcpErrorMessage}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {metaConnected && activeMetaAccount?.mcpStatus !== "CONNECTED" && (
+                            <button
+                              type="button"
+                              onClick={onRetryMetaMcp}
+                              style={{
+                                marginLeft: 8,
+                                padding: "4px 10px",
+                                fontSize: "11.5px",
+                                fontWeight: 600,
+                                backgroundColor: "#FFFFFF",
+                                color: "#2563EB",
+                                border: "1px solid #BFDBFE",
+                                borderRadius: 6,
+                                cursor: "pointer",
+                                flexShrink: 0
+                              }}
+                            >
+                              Retry MCP
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ) : isChannelConnected(activeModalChannel.id) && (
                       <div
                         style={{
                           display: "inline-flex",

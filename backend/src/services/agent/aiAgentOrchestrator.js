@@ -278,6 +278,22 @@ export class AiAgentOrchestrator {
       }
     }
 
+    let targetMetaAccount = null;
+    let metaMcpTools = [];
+    if (targetMetaAccountId && validUserId) {
+      const cleanAccId = String(targetMetaAccountId).replace(/^act_/, "").trim();
+      targetMetaAccount = (metaAccounts || []).find(
+        (a) => String(a.accountId).replace(/^act_/, "").trim() === cleanAccId
+      ) || null;
+      try {
+        const { default: mcpToolRegistry } = await import("../mcp/McpToolRegistry.js");
+        metaMcpTools = mcpToolRegistry.getTools(validUserId, cleanAccId);
+        if ((!metaMcpTools || metaMcpTools.length === 0) && targetMetaAccount?.discoveredTools?.length) {
+          metaMcpTools = targetMetaAccount.discoveredTools;
+        }
+      } catch (_) { }
+    }
+
     return {
       userId: validUserId,
       user,
@@ -286,6 +302,8 @@ export class AiAgentOrchestrator {
       connectedChannels,
       aiContext: aiContextDoc,
       targetMetaAccountId,
+      targetMetaAccount,
+      metaMcpTools: metaMcpTools || [],
       targetGoogleCustomerId,
       allConnectedSheets,
       targetSheet,
@@ -366,11 +384,13 @@ export class AiAgentOrchestrator {
     }
 
 
-    // META AD RENAME USING CONNECTED SHEET
+    // META AD RENAME USING CONNECTED SHEET (Cross-Platform Sheet-to-Meta Orchestration)
     const isMetaAdRename =
+      !isMetaLeadCreation &&
+      !isMetaAdsSheetSync &&
       /(rename|renaming|change|update|replace|edit|modify)/i.test(text) &&
-      /(meta\s*ads?|facebook\s*ads?|ads?\s*name|adname|ad\s*set|adset)/i.test(text) &&
-      /(sheet|spreadsheet|worksheet|excel|connected|adname)/i.test(text);
+      /(meta\s*ads?|facebook\s*ads?|ads?\s*name|adname|ad\s*set|adset|\bads?\b)/i.test(text) &&
+      /(sheet|spreadsheet|worksheet|excel|connected|adname|column|new\s+name|corresponding)/i.test(text);
 
     if (isMetaAdRename) {
       return {
@@ -508,6 +528,21 @@ export class AiAgentOrchestrator {
         requiresTools: true,
         tools: ["fetch_live_meta_ads_mcp", "query_database_metrics"],
         description: "Fetch authentic Meta Ads campaign insights, performance, and unit economics",
+      };
+    }
+
+    // 8b. Meta Ads Management / Operational Action (Pause, Update, Inspect Campaigns/Ad Sets/Delivery via Official Meta MCP)
+    const isMetaOperation =
+      /(?:pause|resume|update|change|inspect|show|list|get|fetch)\s*.*(?:campaign|adset|ad\s*set|meta\s*ad|delivery|insights|performance|budget)/i.test(text) &&
+      /(?:meta|facebook|ad\s*set|adset|campaign)/i.test(text) &&
+      !/(?:create|launch|draft|build|setup|publish)\s*(?:new\s*)?(?:campaign|adset|ad)/i.test(text);
+
+    if (isMetaOperation && (context.targetMetaAccountId || context.metaAccounts?.length > 0)) {
+      return {
+        intent: "META_ADS_OPERATION",
+        requiresTools: true,
+        tools: ["execute_meta_mcp_tool", "fetch_live_meta_ads_mcp"],
+        description: "Execute or inspect Meta Ads operations via official Meta MCP Server",
       };
     }
 
@@ -675,6 +710,289 @@ export class AiAgentOrchestrator {
       }
     }
 
+    // --- TOOL: META_AD_RENAME (Cross-Platform Sheet-to-Meta Ads Orchestration) ---
+    if (intentObj.intent === "META_AD_RENAME" || intentObj.tools.includes("update_meta_ad")) {
+      const sheetTool = executedTools.find((t) => t.toolName === "get_connected_sheet_rows");
+      const sheetData = connectedSheetResult || sheetTool?.toolResult;
+      const rawRows = sheetData?.rows || [];
+
+      emitStatus("get_live_adset_ads", `Retrieving live Meta Ads for matching on act_${targetAccountId}...`);
+      const adsStartTime = Date.now();
+      let liveAds = [];
+      try {
+        const MetaApiService = (await import("../meta/metaApiService.js")).default;
+        liveAds = await MetaApiService.getAccountAds({
+          accountId: targetAccountId,
+          userId: context.userId,
+        });
+
+        // Filter by target Ad Set if specified in user instruction or campaign preparation sessions
+        const explicitAdSetId = DynamicSheetFilter.parseIdFromMessage(instruction, "adset");
+        const explicitAdSetName = DynamicSheetFilter.parseNameFromMessage(instruction, "adset");
+        const sessionAdSetId = campaignPreparationSessions?.[0]?.adSetId || campaignPreparationSessions?.[0]?.creationJob?.adSetId;
+
+        const targetAdSetId = explicitAdSetId || sessionAdSetId;
+        if (targetAdSetId && liveAds.length > 0) {
+          const filteredByAdSet = liveAds.filter((a) => String(a.adset_id) === String(targetAdSetId));
+          if (filteredByAdSet.length > 0) {
+            liveAds = filteredByAdSet;
+          }
+        }
+
+        executedTools.push({
+          toolName: "get_live_adset_ads",
+          toolArgs: {
+            accountId: `act_${targetAccountId}`,
+            adSetId: targetAdSetId || null,
+            adSetName: explicitAdSetName || null,
+          },
+          toolResult: {
+            success: true,
+            totalAds: liveAds.length,
+            ads: liveAds.map((a) => ({ id: a.id, name: a.name, status: a.status || a.effective_status, adSetId: a.adset_id })),
+          },
+          status: "SUCCESS",
+          durationMs: Date.now() - adsStartTime,
+        });
+      } catch (adsErr) {
+        console.warn("[META_AD_RENAME get_live_adset_ads Error]:", adsErr.message);
+        executedTools.push({
+          toolName: "get_live_adset_ads",
+          toolArgs: { accountId: `act_${targetAccountId}` },
+          toolResult: { success: false, error: adsErr.message },
+          status: "FAILED",
+          durationMs: Date.now() - adsStartTime,
+        });
+      }
+
+      // Execute row-by-row matching and renaming
+      emitStatus("update_meta_ad", `Mapping sheet rows to Meta Ads and executing updates...`);
+      const renameStartTime = Date.now();
+      const rowOutcomes = [];
+      let updatedCount = 0;
+      let skippedCount = 0;
+      let failedCount = 0;
+      let matchedCount = 0;
+
+      // Identify target replacement column name from sheet headers or instruction
+      const headers = sheetData?.columns || (rawRows[0] ? Object.keys(rawRows[0].values || rawRows[0]) : []);
+      const normalizeHeader = (h) => String(h || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+      const adNameHeader =
+        headers.find((h) => normalizeHeader(h) === "adname" || normalizeHeader(h) === "newadname") ||
+        headers.find((h) => normalizeHeader(h).includes("adname") || normalizeHeader(h).includes("newname")) ||
+        "AdName";
+
+      const idHeader =
+        headers.find((h) => normalizeHeader(h) === "adid" || normalizeHeader(h) === "metaadid") ||
+        headers.find((h) => normalizeHeader(h) === "creativecode" || normalizeHeader(h) === "code") ||
+        headers.find((h) => normalizeHeader(h) === "nomenclature") ||
+        headers[0];
+
+      for (let i = 0; i < rawRows.length; i++) {
+        const rawRow = rawRows[i];
+        const rowVals = rawRow?.values ? rawRow.values : rawRow;
+        const rowNum = rawRow?.rowNumber || i + 2;
+
+        const idVal = rowVals?.[idHeader] || rowVals?.["Creative Code"] || rowVals?.["creative_code"] || rowVals?.["adId"] || rowVals?.["ad_id"] || rowVals?.["Nomenclature"];
+        const targetNewName = rowVals?.[adNameHeader] || rowVals?.["AdName"] || rowVals?.["adName"] || rowVals?.["New AdName"];
+
+        const cleanIdVal = String(idVal || "").trim();
+        const cleanNewName = String(targetNewName || "").trim();
+
+        if (!cleanIdVal && !cleanNewName) {
+          skippedCount++;
+          rowOutcomes.push({
+            rowNumber: rowNum,
+            identifier: "EMPTY_ROW",
+            matchedAdId: null,
+            currentName: null,
+            newName: null,
+            status: "SKIPPED",
+            reason: "Empty row or missing identifier",
+          });
+          continue;
+        }
+
+        // Match row to existing Meta Ad
+        let matchedAd = null;
+
+        // 1. Exact Meta Ad ID match
+        if (/^\d{10,22}$/.test(cleanIdVal)) {
+          matchedAd = liveAds.find((a) => String(a.id) === cleanIdVal);
+        }
+
+        // 2. Creative Code / Nomenclature match in ad name
+        if (!matchedAd && cleanIdVal) {
+          const lowerId = cleanIdVal.toLowerCase();
+          matchedAd = liveAds.find((a) => {
+            const lowerName = String(a.name || "").toLowerCase();
+            return lowerName.includes(lowerId);
+          });
+        }
+
+        // 3. Fallback match by other columns if present
+        if (!matchedAd) {
+          const altCode = rowVals?.["Creative Code"] || rowVals?.["Nomenclature"];
+          if (altCode) {
+            const lowerAlt = String(altCode).toLowerCase().trim();
+            matchedAd = liveAds.find((a) => String(a.name || "").toLowerCase().includes(lowerAlt));
+          }
+        }
+
+        if (!matchedAd) {
+          skippedCount++;
+          rowOutcomes.push({
+            rowNumber: rowNum,
+            identifier: cleanIdVal || "N/A",
+            matchedAdId: null,
+            currentName: null,
+            newName: cleanNewName || null,
+            status: "UNMATCHED",
+            reason: `No matching Meta Ad found for identifier "${cleanIdVal}" in account act_${targetAccountId}`,
+          });
+          continue;
+        }
+
+        matchedCount++;
+        const currentAdName = matchedAd.name;
+
+        // Check if rename is needed
+        if (!cleanNewName) {
+          skippedCount++;
+          rowOutcomes.push({
+            rowNumber: rowNum,
+            identifier: cleanIdVal,
+            matchedAdId: matchedAd.id,
+            currentName: currentAdName,
+            newName: null,
+            status: "SKIPPED",
+            reason: `Target replacement field "${adNameHeader}" is empty for this row`,
+          });
+          continue;
+        }
+
+        if (currentAdName === cleanNewName) {
+          skippedCount++;
+          rowOutcomes.push({
+            rowNumber: rowNum,
+            identifier: cleanIdVal,
+            matchedAdId: matchedAd.id,
+            currentName: currentAdName,
+            newName: cleanNewName,
+            status: "UNCHANGED",
+            reason: "Meta Ad already has the target name",
+          });
+          continue;
+        }
+
+        // Execute live rename via update_meta_ad tool
+        try {
+          emitStatus("update_meta_ad", `Renaming ad ${matchedAd.id} to "${cleanNewName.slice(0, 30)}..."`);
+          const updateRes = await executeAgentTool("update_meta_ad", {
+            adId: matchedAd.id,
+            name: cleanNewName,
+            accountId: targetAccountId,
+            userId: context.userId,
+          });
+
+          if (updateRes && (updateRes.success || updateRes.updated || updateRes.id || updateRes.data)) {
+            updatedCount++;
+            rowOutcomes.push({
+              rowNumber: rowNum,
+              identifier: cleanIdVal,
+              matchedAdId: matchedAd.id,
+              currentName: currentAdName,
+              newName: cleanNewName,
+              status: "SUCCESS",
+              details: `Renamed Meta Ad ${matchedAd.id} successfully`,
+            });
+          } else {
+            failedCount++;
+            rowOutcomes.push({
+              rowNumber: rowNum,
+              identifier: cleanIdVal,
+              matchedAdId: matchedAd.id,
+              currentName: currentAdName,
+              newName: cleanNewName,
+              status: "FAILED",
+              reason: updateRes?.error || updateRes?.message || "Meta API returned unexpected result",
+            });
+          }
+        } catch (renameErr) {
+          failedCount++;
+          rowOutcomes.push({
+            rowNumber: rowNum,
+            identifier: cleanIdVal,
+            matchedAdId: matchedAd.id,
+            currentName: currentAdName,
+            newName: cleanNewName,
+            status: "FAILED",
+            reason: renameErr.message,
+          });
+        }
+      }
+
+      executedTools.push({
+        toolName: "update_meta_ad",
+        toolArgs: {
+          accountId: `act_${targetAccountId}`,
+          totalRows: rawRows.length,
+          targetColumn: adNameHeader,
+        },
+        toolResult: {
+          success: updatedCount > 0 || (matchedCount > 0 && failedCount === 0),
+          totalRows: rawRows.length,
+          matchedCount,
+          updatedCount,
+          skippedCount,
+          failedCount,
+          rowOutcomes,
+        },
+        status: failedCount === 0 && (updatedCount > 0 || skippedCount > 0) ? "SUCCESS" : failedCount > 0 && updatedCount === 0 ? "FAILED" : "SUCCESS",
+        durationMs: Date.now() - renameStartTime,
+      });
+
+      // Conditional Sheet Write-Back: Only write back if user explicitly requested it in prompt
+      const isWriteBackRequested =
+        /(?:write|update|mark|save)\s*(?:back\s*)?(?:to|in|into)?\s*(?:the\s*)?(?:sheet|spreadsheet)/i.test(instruction);
+
+      if (isWriteBackRequested && context.connectedSheetUrl && updatedCount > 0) {
+        emitStatus("write_connected_sheet_rows", "Updating status in connected sheet...");
+        try {
+          const statusRows = rowOutcomes.map((o) => [
+            o.rowNumber,
+            o.identifier,
+            o.matchedAdId || "N/A",
+            o.status,
+            o.newName || "N/A",
+            new Date().toISOString(),
+          ]);
+          await sheetsService.batchUpdateValues({
+            spreadsheetIdOrUrl: context.connectedSheetUrl,
+            data: [
+              {
+                range: "Sheet1!G1:L" + (statusRows.length + 1),
+                values: [
+                  ["Row #", "Identifier", "Meta Ad ID", "Rename Status", "New Ad Name", "Updated At"],
+                  ...statusRows,
+                ],
+              },
+            ],
+          });
+          executedTools.push({
+            toolName: "write_connected_sheet_rows",
+            toolArgs: { sheetUrl: context.connectedSheetUrl, updatedCount },
+            toolResult: { success: true, updatedCells: statusRows.length * 6 },
+            status: "SUCCESS",
+            durationMs: 50,
+          });
+        } catch (wbErr) {
+          console.warn("[META_AD_RENAME write_connected_sheet_rows Warning]:", wbErr.message);
+        }
+      }
+    }
+
     // --- TOOL: write_connected_sheet_rows ---
     if (intentObj.intent === "GOOGLE_SHEET_WRITE" || intentObj.tools.includes("write_connected_sheet_rows")) {
       emitStatus("write_connected_sheet_rows", "Saving recommendations into Google Sheet...");
@@ -813,6 +1131,61 @@ export class AiAgentOrchestrator {
       }
     }
 
+    // --- TOOL: execute_meta_mcp_tool (Official Meta MCP Dynamic Tool Execution via McpToolSelector) ---
+    if (intentObj.intent === "META_ADS_OPERATION" || intentObj.tools.includes("execute_meta_mcp_tool")) {
+      emitStatus("execute_meta_mcp_tool", `Connecting to official Meta MCP Server for act_${targetAccountId}...`);
+      const startTime = Date.now();
+      try {
+        const { McpToolSelector } = await import("../mcp/McpToolSelector.js");
+        const plan = await McpToolSelector.planExecution(instruction, {
+          userId: context.userId,
+          accountId: targetAccountId,
+          metaAccount: context.targetMetaAccount,
+        });
+
+        if (plan.needsUserInput) {
+          executedTools.push({
+            toolName: "execute_meta_mcp_tool",
+            toolArgs: { instruction, accountId: `act_${targetAccountId}` },
+            toolResult: { needsUserInput: true, message: plan.message, missingFields: plan.missingFields },
+            status: "SUCCESS",
+            durationMs: Date.now() - startTime,
+          });
+        } else if (plan.canExecute) {
+          emitStatus("execute_meta_mcp_tool", `Executing official Meta MCP tool "${plan.selectedTool}"...`);
+          const planResult = await McpToolSelector.executePlan(plan, {
+            userId: context.userId,
+            accountId: targetAccountId,
+            metaAccount: context.targetMetaAccount,
+          });
+
+          executedTools.push({
+            toolName: plan.selectedTool,
+            toolArgs: plan.steps[0]?.arguments || { accountId: `act_${targetAccountId}` },
+            toolResult: planResult.finalResult,
+            status: planResult.success ? "SUCCESS" : "FAILED",
+            durationMs: Date.now() - startTime,
+          });
+        } else {
+          executedTools.push({
+            toolName: "execute_meta_mcp_tool",
+            toolArgs: { instruction, accountId: `act_${targetAccountId}` },
+            toolResult: { success: false, error: plan.message },
+            status: "FAILED",
+            durationMs: Date.now() - startTime,
+          });
+        }
+      } catch (mcpErr) {
+        executedTools.push({
+          toolName: "execute_meta_mcp_tool",
+          toolArgs: { accountId: `act_${targetAccountId}`, instruction },
+          toolResult: { success: false, error: mcpErr.message },
+          status: "FAILED",
+          durationMs: Date.now() - startTime,
+        });
+      }
+    }
+
     // --- TOOL: CAMPAIGN CREATION ---
     if (intentObj.intent === "CAMPAIGN_CREATION") {
       emitStatus("create_meta_campaign", `Preparing Meta campaign creation for act_${targetAccountId}...`);
@@ -935,6 +1308,65 @@ export class AiAgentOrchestrator {
           sampleRows: rows.slice(0, 5),
           fullRows: rows,
           status: "success",
+        };
+        break;
+      }
+
+      case "META_AD_RENAME": {
+        const sheetTool = executedTools.find((t) => t.toolName === "get_connected_sheet_rows");
+        const adsTool = executedTools.find((t) => t.toolName === "get_live_adset_ads");
+        const updateTool = executedTools.find((t) => t.toolName === "update_meta_ad");
+
+        if (!sheetTool || sheetTool.status !== "SUCCESS") {
+          isPassed = false;
+          status = "failed";
+          failureReason = sheetTool?.toolResult?.error || "Failed to retrieve connected sheet rows.";
+          checks.push({ name: "Google Sheets Ingestion", passed: false, detail: failureReason });
+          break;
+        }
+
+        const rawRows = sheetTool.toolResult?.rows || [];
+        checks.push({
+          name: "Sheet Rows Retrieval",
+          passed: true,
+          detail: `Retrieved ${rawRows.length} rows from "${sheetTool.toolResult?.sheetName || "Connected Sheet"}"`,
+        });
+
+        if (!updateTool || !updateTool.toolResult) {
+          isPassed = false;
+          status = "failed";
+          failureReason = "Meta Ad rename execution did not produce valid outcomes.";
+          checks.push({ name: "Meta Ads Rename Pipeline", passed: false, detail: failureReason });
+          break;
+        }
+
+        const res = updateTool.toolResult;
+        checks.push({
+          name: "Live Ad Matching",
+          passed: res.matchedCount > 0,
+          detail: `Matched ${res.matchedCount} of ${res.totalRows} rows to live Meta Ads`,
+        });
+        checks.push({
+          name: "Meta MCP Ad Updates",
+          passed: res.failedCount === 0 || res.updatedCount > 0,
+          detail: `Updated: ${res.updatedCount}, Skipped/Unchanged: ${res.skippedCount}, Failed: ${res.failedCount}`,
+        });
+
+        isPassed = res.failedCount === 0 || res.updatedCount > 0;
+        status = isPassed ? "completed" : "failed";
+        if (!isPassed) {
+          failureReason = `All ad update attempts failed (${res.failedCount} failures). Check Meta MCP connection and account permissions.`;
+        }
+
+        verifiedOutputData = {
+          type: "meta_ad_rename",
+          status: isPassed ? "success" : "failed",
+          totalRows: res.totalRows,
+          matchedCount: res.matchedCount,
+          updatedCount: res.updatedCount,
+          skippedCount: res.skippedCount,
+          failedCount: res.failedCount,
+          rowOutcomes: res.rowOutcomes || [],
         };
         break;
       }
@@ -1664,6 +2096,46 @@ ${logsMarkdown}
 | **Execution Duration** | \`${res.durationMs || 0}ms\` |
 
 *All performance metrics have been appended to the bottom of worksheet **${res.targetTab}** without overwriting existing data.*`;
+    }
+
+    // 2.5. Meta Ad Rename & Sheet-to-Meta Orchestration Response
+    if (intentObj.intent === "META_AD_RENAME") {
+      const updateTool = executedTools.find((t) => t.toolName === "update_meta_ad");
+      const res = updateTool?.toolResult || {};
+      const outcomes = res.rowOutcomes || [];
+
+      const rowsTable = outcomes.map((o) => {
+        const icon = o.status === "SUCCESS" ? "✅" : o.status === "UNCHANGED" ? "ℹ️" : o.status === "UNMATCHED" ? "⚠️" : "❌";
+        return `| **#${o.rowNumber}** | \`${o.identifier || "N/A"}\` | ${o.matchedAdId ? `\`${o.matchedAdId}\`` : "*None found*"} | ${o.currentName ? `\`${o.currentName.length > 35 ? o.currentName.slice(0, 32) + "..." : o.currentName}\`` : "—"} | ${o.newName ? `\`${o.newName.length > 35 ? o.newName.slice(0, 32) + "..." : o.newName}\`` : "—"} | ${icon} **${o.status}** |`;
+      }).join("\n");
+
+      return `### 🎯 Meta Ads Renaming Execution Report
+
+${isAutomation ? `> **Node Instruction:** *"${instruction}"*  \n` : ""}> **Target Meta Account:** **act_${context.targetMetaAccountId}**  
+> **Source Sheet:** **${context.connectedSheetName || "Connected Sheet"}**  
+> **Execution Status:** **${res.updatedCount > 0 ? "✅ COMPLETED" : res.failedCount > 0 ? "❌ FAILED" : "ℹ️ REVIEW COMPLETED"}**
+
+---
+
+#### 📋 Row-by-Row Execution Summary
+| Sheet Row | Identifier | Matching Meta Ad | Current Ad Name | New Ad Name | Status |
+|---|---|---|---|---|---|
+${rowsTable || "| — | — | — | — | — | — |"}
+
+---
+
+#### 📈 Execution Metrics
+| Metric | Count |
+|---|---|
+| **Total Rows Processed** | **${res.totalRows || 0}** |
+| **Ads Matched** | **${res.matchedCount || 0}** |
+| **Ads Renamed Successfully** | **${res.updatedCount || 0}** |
+| **Unchanged / Skipped** | **${res.skippedCount || 0}** |
+| **Failures / Errors** | **${res.failedCount || 0}** |
+
+${outcomes.some((o) => o.reason) ? `\n#### ℹ️ Audit & Discrepancy Notes\n` + outcomes.filter((o) => o.reason).map((o) => `- **Row #${o.rowNumber} (${o.identifier})**: ${o.reason}`).join("\n") : ""}
+
+*All operations performed against the selected Meta Ad Account (\`act_${context.targetMetaAccountId}\`). Unmatched ads were left unaltered to protect existing campaigns.*`;
     }
 
     // 3. Google Sheets Write Response

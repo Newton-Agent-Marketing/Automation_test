@@ -2,7 +2,9 @@
 import axios from "axios";
 import { cleanPageId } from "../data/fieldMapper.js";
 
-const META_GRAPH_URL = "https://graph.facebook.com/v24.0";
+const META_GRAPH_URL = process.env.META_GRAPH_VERSION
+  ? `https://graph.facebook.com/${process.env.META_GRAPH_VERSION}`
+  : "https://graph.facebook.com/v21.0";
 
 /**
  * MetaAssetResolver: Centralized, Shared Dynamic Asset Resolution Service

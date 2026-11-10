@@ -119,6 +119,19 @@ export const selectMetaAccount = createAsyncThunk(
   }
 );
 
+export const refreshMetaMcpTools = createAsyncThunk(
+  "channel/refreshMetaMcpTools",
+  async (payload, { rejectWithValue, dispatch }) => {
+    try {
+      const { data } = await channelApi.refreshMetaMcpTools(payload);
+      dispatch(fetchChannelStatus());
+      return data;
+    } catch (error) {
+      return rejectWithValue(getErrorMessage(error, "Failed to refresh Meta MCP tools"));
+    }
+  }
+);
+
 export const disconnectMetaAccount = createAsyncThunk(
   "channel/disconnectMeta",
   async (payload, { rejectWithValue, dispatch }) => {

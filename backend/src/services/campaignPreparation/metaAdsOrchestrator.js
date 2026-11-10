@@ -1086,7 +1086,8 @@ export class MetaAdsOrchestrator {
 
     try {
       const axios = (await import("axios")).default;
-      const res = await axios.get(`https://graph.facebook.com/v24.0/${metaAdSetId}/ads`, {
+      const graphVer = process.env.META_GRAPH_VERSION || "v21.0";
+      const res = await axios.get(`https://graph.facebook.com/${graphVer}/${metaAdSetId}/ads`, {
         params: {
           access_token: effectiveToken,
           fields: "id,name,status,creative{id,name}",

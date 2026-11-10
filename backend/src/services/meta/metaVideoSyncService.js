@@ -132,7 +132,8 @@ export class MetaVideoSyncService {
         if (cachedId) {
           // Verify on Meta Graph API
           try {
-            const verifyRes = await axios.get(`https://graph.facebook.com/v24.0/${cachedId}`, {
+            const graphVer = process.env.META_GRAPH_VERSION || "v21.0";
+            const verifyRes = await axios.get(`https://graph.facebook.com/${graphVer}/${cachedId}`, {
               params: { access_token: token, fields: "id,status" },
             });
             if (verifyRes.data?.id) {

@@ -10,6 +10,7 @@ export const channelApi = {
   fetchMetaAccounts: (payload) => api.post("/api/channel/meta/fetch-accounts", payload),
   connectMeta: (payload) => api.post("/api/channel/meta/connect", payload),
   selectMetaAccount: (payload) => api.post("/api/channel/meta/accounts/select", payload),
+  refreshMetaMcpTools: (payload) => api.post("/api/channel/meta/mcp-refresh", payload),
   disconnectMeta: (payload) => api.post("/api/channel/meta/disconnect", payload),
   getGoogleOAuthUrl: (params) => api.get("/api/channel/google/oauth-url", { params }),
   googleOAuthCallback: (payload) => api.post("/api/channel/google/oauth-callback", payload),

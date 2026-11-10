@@ -269,8 +269,10 @@ async function runTests() {
     assert(false, "Should have thrown for tool error");
   } catch (err) {
     assert(
-      err.message.includes("Meta MCP Tool Error") || err.message.includes("not found"),
-      `McpToolExecutor properly captured server error without fabricating success: ${err.message}`
+      err.message.includes("Meta MCP Tool Error") ||
+      err.message.includes("not found") ||
+      err.message.includes("not registered or available"),
+      `McpToolExecutor properly captured tool/server error without fabricating success: ${err.message}`
     );
   }
 

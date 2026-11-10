@@ -173,7 +173,21 @@ Hierarchy: Direct / Single Account (No Manager MCC)`;
 
     if (metaAcc) {
       const isLocked = Boolean(lockedMetaAccountId);
-      metaContextText = `${isLocked ? "[STRICT LOCKED META ACCOUNT] " : ""}Account ID: ${metaAcc.accountId} (act_${String(metaAcc.accountId).replace(/^act_/, "")}) | Name: "${metaAcc.accountName}" | Currency: ${metaAcc.currency || "INR"}${metaAcc.isActive ? " | Status: ACTIVE" : " | Status: INACTIVE"}`;
+      const cleanAccId = String(metaAcc.accountId).replace(/^act_/, "");
+      let discoveredMcpTools = [];
+      try {
+        const { default: mcpToolRegistry } = await import("../mcp/McpToolRegistry.js");
+        discoveredMcpTools = mcpToolRegistry.getTools(userId, cleanAccId);
+        if ((!discoveredMcpTools || discoveredMcpTools.length === 0) && metaAcc.discoveredTools?.length) {
+          discoveredMcpTools = metaAcc.discoveredTools;
+        }
+      } catch (_) { }
+
+      const mcpToolsSummary = discoveredMcpTools && discoveredMcpTools.length > 0
+        ? `\nOfficial Meta MCP Server: CONNECTED (${discoveredMcpTools.length} dynamic tools discovered: ${discoveredMcpTools.map((t) => t.name).join(", ")})`
+        : `\nOfficial Meta MCP Server: ${metaAcc.mcpStatus || "DISCONNECTED"}${metaAcc.mcpError ? ` (Error: ${metaAcc.mcpError})` : ""}`;
+
+      metaContextText = `${isLocked ? "[STRICT LOCKED META ACCOUNT] " : ""}Account ID: ${metaAcc.accountId} (act_${cleanAccId}) | Name: "${metaAcc.accountName}" | Currency: ${metaAcc.currency || "INR"}${metaAcc.isActive ? " | Status: ACTIVE" : " | Status: INACTIVE"}${mcpToolsSummary}`;
     } else if (lockedMetaAccountId) {
       metaContextText = `[STRICT LOCKED META ACCOUNT]: act_${String(lockedMetaAccountId).replace(/^act_/, "")} (Not found in user's connected Meta accounts or inactive)`;
     }
@@ -338,11 +352,20 @@ Capabilities & Exact Execution Guidelines:
          Step 3: create_meta_video_ad (if video/driveUrl) or create_meta_ad (if image) (adSetId, name, headline, primaryText, linkUrl, callToAction, accountId) ➔ get adId (CRITICAL: Never stop before creating the ads!)
          Step 4: verify_meta_campaign (campaignId, adSetId, adId, accountId)
      - NEVER create any Meta entity before explicit user approval! Never invent IDs. Always pass real Meta API response IDs.
-     - Renaming / Updating Existing Meta Ads:
-       * When the user asks to rename an ad, update an ad name, or replace old AdName with new AdName:
-         - Use tool "mcp__ads__update_meta_ad" with adId and name (the new AdName).
-         - If the matching ad was identified (e.g. from previous sheet lookup or live ads fetch), directly call update_meta_ad to update its name on Meta Ads!
-         - Report the update clearly to the user with the ad ID and its new name.
+     - Renaming / Updating Existing Meta Ads from Connected Sheet or Direct Instruction:
+       * CRITICAL: You HAVE the tool "mcp__ads__update_meta_ad" specifically to rename and update existing Meta ads. NEVER claim that you have no tool to rename existing ads or that you can only create new ads.
+       * When the user asks to read a sheet and update/rename existing Meta ads, or replace old AdName with new AdName:
+         1. Call "mcp__ads__get_connected_sheet_rows" to fetch the sheet data and inspect columns (e.g. Creative Code, Nomenclature, AdName).
+         2. Fetch live ads using "mcp__ads__fetch_live_meta_ads_mcp" or match the identified ad IDs from previous conversation lookup.
+         3. For each matched ad, call "mcp__ads__update_meta_ad" with adId and name (the new AdName value).
+         4. Only write to the sheet if the user explicitly requests sheet write-back.
+         5. Present a clear row-by-row execution table with ad ID, old name, new name, and verification status.
+     - Official Meta MCP Server Dynamic Tool Execution:
+       * When the user asks for Meta Ads operations (e.g. "Show my Meta campaigns", "Get campaign performance", "Show ad set insights", "Get ad-level metrics", "Create a Meta campaign", "Pause a campaign", "Update an ad set budget", "Get campaign delivery information"):
+         - You have full dynamic access to the official Meta Ads MCP Server (https://mcp.facebook.com/ads).
+         - Call "mcp__ads__list_meta_mcp_tools" to inspect the available tools, their descriptions, and input JSON schemas discovered dynamically from the official Meta MCP session.
+         - Call "mcp__ads__execute_meta_mcp_tool" with toolName and arguments conforming to the discovered tool's input schema to execute the operation on the official Meta MCP server.
+         - Always present authentic MCP results directly to the user. Never fabricate tool results.
 
 5. Structured Error Handling for Known Google Ads API Limitations (CRITICAL):
    - **Limitation A: Developer Token Access (DEVELOPER_TOKEN_ACCESS / ACTION_NOT_PERMITTED)**:
