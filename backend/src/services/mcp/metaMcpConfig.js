@@ -32,8 +32,10 @@ export function isLocalhostOrPrivateUrl(urlStr) {
     lower.includes("0.0.0.0") ||
     lower.includes("::1") ||
     /^(https?:\/\/)?(localhost|127\.0\.0\.1|0\.0\.0\.0|::1)(:\d+)?(\/.*)?$/i.test(lower) ||
+    /^(https?:\/\/)?(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/i.test(lower) ||
     lower.endsWith("/sse") ||
     lower.includes("/sse?") ||
+    lower.includes("/sse/") ||
     lower.startsWith("http://") // Official Meta MCP is strictly HTTPS
   );
 }

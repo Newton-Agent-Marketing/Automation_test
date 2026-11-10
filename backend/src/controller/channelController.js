@@ -1232,6 +1232,11 @@ export class ChannelController {
       const finalTimezone = metaDetails?.timezone_name || timezoneName || "Asia/Kolkata";
       const isConnected = Boolean(cleanId && accessToken && accessToken.trim() !== "");
 
+      const resolvedMcpUrl = mcpServerUrl
+        ? resolveOfficialMetaMcpUrl(mcpServerUrl, { accountId: cleanId, logContext: "channelController.connectMetaAccountByToken" })
+        : "";
+      const resolvedTransport = resolvedMcpUrl ? resolveMetaMcpTransport(resolvedMcpUrl) : "STREAMABLE_HTTP";
+
       const account = await MetaAccount.findOneAndUpdate(
         { accountId: cleanId },
         {
@@ -1246,8 +1251,9 @@ export class ChannelController {
             spendCap: metaDetails?.spend_cap ? Number(metaDetails.spend_cap) / 100 : 0,
             amountSpent: metaDetails?.amount_spent ? Number(metaDetails.amount_spent) / 100 : 0,
             businessName: metaDetails?.business_name || null,
-            mcpServerUrl: mcpServerUrl || "",
-            authType: mcpServerUrl ? "MCP_SERVER" : "TOKEN",
+            mcpServerUrl: resolvedMcpUrl,
+            mcpTransport: resolvedTransport,
+            authType: resolvedMcpUrl ? "MCP_SERVER" : "TOKEN",
             isActive: isConnected,
             isConnected: isConnected,
             syncStatus: "IDLE",
@@ -1270,7 +1276,11 @@ export class ChannelController {
               accessToken,
               currency: finalCurrency,
               isConnected: isConnected,
-              config: { mcpServerUrl },
+              config: {
+                mcpServerUrl: resolvedMcpUrl,
+                mcpTransport: resolvedTransport,
+                authType: resolvedMcpUrl ? "MCP_SERVER" : "TOKEN",
+              },
             },
           },
           { upsert: true, returnDocument: "after" }
