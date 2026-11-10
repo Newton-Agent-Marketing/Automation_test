@@ -128,7 +128,7 @@ app.get(["/", "/channels", "/oauth/callback"], async (req, res) => {
     const successType = isDrive ? "GOOGLE_DRIVE_OAUTH_SUCCESS" : isGoogle ? "GOOGLE_OAUTH_SUCCESS" : "META_OAUTH_SUCCESS";
     const errorType = isDrive ? "GOOGLE_DRIVE_OAUTH_ERROR" : isGoogle ? "GOOGLE_OAUTH_ERROR" : "META_OAUTH_ERROR";
 
-    let cleanFrontendUrl = (process.env.FRONTEND_URL || "").trim();
+    let cleanFrontendUrl = (process.env.FRONTEND_URL || "").trim().replace(/\s+/g, "");
     if (!cleanFrontendUrl) {
       cleanFrontendUrl = "http://localhost:5173";
     }
@@ -136,6 +136,10 @@ app.get(["/", "/channels", "/oauth/callback"], async (req, res) => {
       cleanFrontendUrl = `http://${cleanFrontendUrl}`;
     }
     cleanFrontendUrl = cleanFrontendUrl.replace(/\/+$/, "");
+
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
 
     return res.send(`
       <!DOCTYPE html>
@@ -183,49 +187,35 @@ app.get(["/", "/channels", "/oauth/callback"], async (req, res) => {
             }));
           } catch (_) {}
 
-          let openerNotified = false;
           if (window.opener && !window.opener.closed) {
             try {
               if (code) {
                 window.opener.postMessage({ type: successType, code, state, channel, connected: true }, '*');
                 window.opener.postMessage('oauth-success', '*');
-                openerNotified = true;
               } else if (error) {
                 window.opener.postMessage({ type: errorType, error, channel }, '*');
-                openerNotified = true;
               }
-              setTimeout(() => {
-                try { window.close(); } catch (_) {}
-              }, 800);
             } catch (openerErr) {
               console.warn("[OAuth Callback] Opener postMessage error:", openerErr);
             }
-          }
-
-          if (!openerNotified) {
+            setTimeout(() => {
+              try { window.close(); } catch (_) {}
+            }, 400);
+          } else {
             setTimeout(() => {
               try {
-                let targetUrl = baseFrontendUrl;
-                if (!targetUrl || targetUrl.includes("localhost:5173")) {
-                  if (window.location.port !== "5000" && window.location.port !== "3000") {
-                    targetUrl = window.location.origin;
-                  }
+                let cleanBase = String(baseFrontendUrl || "").trim().replace(/\\s+/g, "");
+                if (!cleanBase || cleanBase.includes("localhost:5173")) {
+                  cleanBase = window.location.origin;
                 }
-                if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
-                  targetUrl = window.location.protocol + "//" + targetUrl;
-                }
-                targetUrl = targetUrl.replace(/\/+$/, "");
-
-                const dest = isDrive
-                  ? targetUrl + "/ai-context?drive_connected=true"
-                  : targetUrl + "/channels" + (window.location.search || "");
-                
-                window.location.replace(dest);
+                cleanBase = cleanBase.replace(/\\/+$/, "");
+                const targetPath = isDrive ? "/ai-context?drive_connected=true" : ("/channels" + (window.location.search || ""));
+                window.location.replace(cleanBase + targetPath);
               } catch (navErr) {
                 console.error("[OAuth Callback Navigation Error]:", navErr);
-                window.location.replace("/channels" + (window.location.search || ""));
+                try { window.location.replace("/channels"); } catch (_) {}
               }
-            }, 1000);
+            }, 800);
           }
         </script>
       </body>
