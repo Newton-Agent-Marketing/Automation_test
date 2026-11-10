@@ -128,6 +128,15 @@ app.get(["/", "/channels", "/oauth/callback"], async (req, res) => {
     const successType = isDrive ? "GOOGLE_DRIVE_OAUTH_SUCCESS" : isGoogle ? "GOOGLE_OAUTH_SUCCESS" : "META_OAUTH_SUCCESS";
     const errorType = isDrive ? "GOOGLE_DRIVE_OAUTH_ERROR" : isGoogle ? "GOOGLE_OAUTH_ERROR" : "META_OAUTH_ERROR";
 
+    let cleanFrontendUrl = (process.env.FRONTEND_URL || "").trim();
+    if (!cleanFrontendUrl) {
+      cleanFrontendUrl = "http://localhost:5173";
+    }
+    if (!cleanFrontendUrl.startsWith("http://") && !cleanFrontendUrl.startsWith("https://")) {
+      cleanFrontendUrl = `http://${cleanFrontendUrl}`;
+    }
+    cleanFrontendUrl = cleanFrontendUrl.replace(/\/+$/, "");
+
     return res.send(`
       <!DOCTYPE html>
       <html>
@@ -153,22 +162,70 @@ app.get(["/", "/channels", "/oauth/callback"], async (req, res) => {
           const successType = ${JSON.stringify(successType)};
           const errorType = ${JSON.stringify(errorType)};
           const isDrive = ${JSON.stringify(isDrive)};
-          const frontendUrl = ${JSON.stringify(process.env.FRONTEND_URL || "http://localhost:5173")};
-          
-          if (window.opener) {
-            if (code) {
-              window.opener.postMessage({ type: successType, code, state, channel: ${JSON.stringify(channel)}, connected: true }, '*');
-              window.opener.postMessage('oauth-success', '*');
-            } else if (error) {
-              window.opener.postMessage({ type: errorType, error, channel: ${JSON.stringify(channel)} }, '*');
+          const channel = ${JSON.stringify(channel)};
+          let baseFrontendUrl = ${JSON.stringify(cleanFrontendUrl)};
+
+          // Cross-window multi-transport dispatch (BroadcastChannel + localStorage + postMessage)
+          try {
+            const bc = new BroadcastChannel("atelion_oauth_channel");
+            bc.postMessage({ type: successType, code, state, channel, connected: Boolean(code), error });
+          } catch (_) {}
+
+          try {
+            localStorage.setItem("atelion_oauth_event", JSON.stringify({
+              type: successType,
+              code,
+              state,
+              channel,
+              connected: Boolean(code),
+              error,
+              timestamp: Date.now()
+            }));
+          } catch (_) {}
+
+          let openerNotified = false;
+          if (window.opener && !window.opener.closed) {
+            try {
+              if (code) {
+                window.opener.postMessage({ type: successType, code, state, channel, connected: true }, '*');
+                window.opener.postMessage('oauth-success', '*');
+                openerNotified = true;
+              } else if (error) {
+                window.opener.postMessage({ type: errorType, error, channel }, '*');
+                openerNotified = true;
+              }
+              setTimeout(() => {
+                try { window.close(); } catch (_) {}
+              }, 800);
+            } catch (openerErr) {
+              console.warn("[OAuth Callback] Opener postMessage error:", openerErr);
             }
-            setTimeout(() => window.close(), 1000);
-          } else {
-            if (isDrive) {
-              window.location.href = frontendUrl + '/ai-context?drive_connected=true';
-            } else {
-              window.location.href = frontendUrl + '/channels' + window.location.search;
-            }
+          }
+
+          if (!openerNotified) {
+            setTimeout(() => {
+              try {
+                let targetUrl = baseFrontendUrl;
+                if (!targetUrl || targetUrl.includes("localhost:5173")) {
+                  if (window.location.port !== "5000" && window.location.port !== "3000") {
+                    targetUrl = window.location.origin;
+                  }
+                }
+                if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
+                  targetUrl = window.location.protocol + "//" + targetUrl;
+                }
+                targetUrl = targetUrl.replace(/\/+$/, "");
+
+                const dest = isDrive
+                  ? targetUrl + "/ai-context?drive_connected=true"
+                  : targetUrl + "/channels" + (window.location.search || "");
+                
+                window.location.replace(dest);
+              } catch (navErr) {
+                console.error("[OAuth Callback Navigation Error]:", navErr);
+                window.location.replace("/channels" + (window.location.search || ""));
+              }
+            }, 1000);
           }
         </script>
       </body>

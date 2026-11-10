@@ -428,23 +428,67 @@ const Channel = () => {
         }
       };
 
-      // Step 3: Listen for OAuth code message from popup window
+      // Step 3: Multi-channel listener (postMessage + BroadcastChannel + localStorage)
+      let exchangeStarted = false;
+      let bc = null;
+
+      const cleanupListeners = () => {
+        window.removeEventListener("message", onMessageReceived);
+        window.removeEventListener("storage", onStorageReceived);
+        if (bc) {
+          try { bc.close(); } catch (_) {}
+          bc = null;
+        }
+      };
+
+      const handleAuthSuccess = async (authCode, authState) => {
+        if (exchangeStarted) return;
+        exchangeStarted = true;
+        cleanupListeners();
+        if (authPopup && !authPopup.closed) {
+          try { authPopup.close(); } catch (_) {}
+        }
+        await completeOAuthExchange(authCode, authState);
+      };
+
       const onMessageReceived = async (event) => {
         if (event.data?.type === "META_OAUTH_SUCCESS" && event.data.code) {
           console.log("[Frontend Meta OAuth] postMessage received from OAuth popup window!", event.data);
-          window.removeEventListener("message", onMessageReceived);
-          if (authPopup && !authPopup.closed) authPopup.close();
-          await completeOAuthExchange(event.data.code, event.data.state);
+          await handleAuthSuccess(event.data.code, event.data.state);
         }
       };
       window.addEventListener("message", onMessageReceived);
+
+      try {
+        bc = new BroadcastChannel("atelion_oauth_channel");
+        bc.onmessage = async (event) => {
+          if (event.data?.type === "META_OAUTH_SUCCESS" && event.data.code) {
+            console.log("[Frontend Meta OAuth] BroadcastChannel message received!", event.data);
+            await handleAuthSuccess(event.data.code, event.data.state);
+          }
+        };
+      } catch (_) {}
+
+      const onStorageReceived = async (e) => {
+        if (e.key === "atelion_oauth_event" && e.newValue) {
+          try {
+            const data = JSON.parse(e.newValue);
+            if (data?.type === "META_OAUTH_SUCCESS" && data.code) {
+              console.log("[Frontend Meta OAuth] Storage event received!", data);
+              localStorage.removeItem("atelion_oauth_event");
+              await handleAuthSuccess(data.code, data.state);
+            }
+          } catch (_) {}
+        }
+      };
+      window.addEventListener("storage", onStorageReceived);
 
       // Step 4: Fallback polling if postMessage blocked by cross-origin
       const pollTimer = setInterval(async () => {
         try {
           if (!authPopup || authPopup.closed) {
             clearInterval(pollTimer);
-            window.removeEventListener("message", onMessageReceived);
+            cleanupListeners();
             setOauthStepStatus("");
             return;
           }
@@ -452,14 +496,11 @@ const Channel = () => {
           const currentUrl = authPopup.location?.href;
           if (currentUrl && currentUrl.includes("code=")) {
             clearInterval(pollTimer);
-            window.removeEventListener("message", onMessageReceived);
             const popupParams = new URLSearchParams(authPopup.location.search);
             const authCode = popupParams.get("code");
             const authState = popupParams.get("state");
-            authPopup.close();
-
             if (authCode) {
-              await completeOAuthExchange(authCode, authState);
+              await handleAuthSuccess(authCode, authState);
             }
           }
         } catch (crossOriginErr) {
