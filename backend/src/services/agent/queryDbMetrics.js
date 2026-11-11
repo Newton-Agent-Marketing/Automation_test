@@ -2320,7 +2320,14 @@ export async function executeAgentTool(toolName, args) {
   }
 
   if (toolName === "create_meta_campaign") {
-    return await MetaMcpClient.executeLiveTool("create_meta_campaign", args);
+    try {
+      return await MetaMcpClient.executeLiveTool("create_meta_campaign", args);
+    } catch (mcpErr) {
+      console.warn("[queryDbMetrics] Meta MCP error, executing create_meta_campaign via MetaApiService (Graph API):", mcpErr.message);
+      const { default: MetaApiService } = await import("../meta/metaApiService.js");
+      const cleanAccId = String(args.accountId).replace(/^act_/, "");
+      return await MetaApiService.createCampaign(cleanAccId, args.accessToken || null, args, args.userId);
+    }
   }
 
   // Meta Lead Generation Tools
@@ -2346,19 +2353,47 @@ export async function executeAgentTool(toolName, args) {
   }
 
   if (toolName === "update_meta_campaign") {
-    return await MetaMcpClient.executeLiveTool("update_meta_campaign", args);
+    try {
+      return await MetaMcpClient.executeLiveTool("update_meta_campaign", args);
+    } catch (mcpErr) {
+      console.warn("[queryDbMetrics] Meta MCP error, executing update_meta_campaign via MetaApiService (Graph API):", mcpErr.message);
+      const { default: MetaApiService } = await import("../meta/metaApiService.js");
+      const cleanAccId = String(args.accountId).replace(/^act_/, "");
+      return await MetaApiService.updateCampaign(cleanAccId, args.accessToken || null, args);
+    }
   }
 
   if (toolName === "create_meta_ad_set") {
-    return await MetaMcpClient.executeLiveTool("create_meta_ad_set", args);
+    try {
+      return await MetaMcpClient.executeLiveTool("create_meta_ad_set", args);
+    } catch (mcpErr) {
+      console.warn("[queryDbMetrics] Meta MCP error, executing create_meta_ad_set via MetaApiService (Graph API):", mcpErr.message);
+      const { default: MetaApiService } = await import("../meta/metaApiService.js");
+      const cleanAccId = String(args.accountId).replace(/^act_/, "");
+      return await MetaApiService.createAdSet(cleanAccId, args.accessToken || null, args, args.userId);
+    }
   }
 
   if (toolName === "update_meta_ad_set") {
-    return await MetaMcpClient.executeLiveTool("update_meta_ad_set", args);
+    try {
+      return await MetaMcpClient.executeLiveTool("update_meta_ad_set", args);
+    } catch (mcpErr) {
+      console.warn("[queryDbMetrics] Meta MCP error, executing update_meta_ad_set via MetaApiService (Graph API):", mcpErr.message);
+      const { default: MetaApiService } = await import("../meta/metaApiService.js");
+      const cleanAccId = String(args.accountId).replace(/^act_/, "");
+      return await MetaApiService.updateAdSet(cleanAccId, args.accessToken || null, args);
+    }
   }
 
   if (toolName === "set_meta_targeting") {
-    return await MetaMcpClient.executeLiveTool("set_meta_targeting", args);
+    try {
+      return await MetaMcpClient.executeLiveTool("set_meta_targeting", args);
+    } catch (mcpErr) {
+      console.warn("[queryDbMetrics] Meta MCP error, executing set_meta_targeting via MetaApiService (Graph API):", mcpErr.message);
+      const { default: MetaApiService } = await import("../meta/metaApiService.js");
+      const cleanAccId = String(args.accountId).replace(/^act_/, "");
+      return await MetaApiService.updateAdSetTargeting(cleanAccId, args.accessToken || null, args);
+    }
   }
 
   if (toolName === "create_meta_ad") {
@@ -2367,15 +2402,36 @@ export async function executeAgentTool(toolName, args) {
       const cleanAccId = String(args.accountId).replace(/^act_/, "");
       return await MetaApiService.createAd(cleanAccId, args.accessToken || null, args);
     }
-    return await MetaMcpClient.executeLiveTool("create_meta_ad", args);
+    try {
+      return await MetaMcpClient.executeLiveTool("create_meta_ad", args);
+    } catch (mcpErr) {
+      console.warn("[queryDbMetrics] Meta MCP error, executing create_meta_ad via MetaApiService (Graph API):", mcpErr.message);
+      const { default: MetaApiService } = await import("../meta/metaApiService.js");
+      const cleanAccId = String(args.accountId).replace(/^act_/, "");
+      return await MetaApiService.createAd(cleanAccId, args.accessToken || null, args);
+    }
   }
 
   if (toolName === "update_meta_ad") {
-    return await MetaMcpClient.executeLiveTool("update_meta_ad", args);
+    try {
+      return await MetaMcpClient.executeLiveTool("update_meta_ad", args);
+    } catch (mcpErr) {
+      console.warn("[queryDbMetrics] Meta MCP error, executing update_meta_ad via MetaApiService (Graph API):", mcpErr.message);
+      const { default: MetaApiService } = await import("../meta/metaApiService.js");
+      const cleanAccId = String(args.accountId).replace(/^act_/, "");
+      return await MetaApiService.updateAd(cleanAccId, args.accessToken || null, args);
+    }
   }
 
   if (toolName === "create_meta_video_ad") {
-    return await MetaMcpClient.executeLiveTool("create_meta_video_ad", args);
+    try {
+      return await MetaMcpClient.executeLiveTool("create_meta_video_ad", args);
+    } catch (mcpErr) {
+      console.warn("[queryDbMetrics] Meta MCP error, executing create_meta_video_ad via MetaApiService (Graph API):", mcpErr.message);
+      const { default: MetaApiService } = await import("../meta/metaApiService.js");
+      const cleanAccId = String(args.accountId).replace(/^act_/, "");
+      return await MetaApiService.createVideoAd(cleanAccId, args.accessToken || null, args);
+    }
   }
 
   if (toolName === "verify_meta_campaign") {
