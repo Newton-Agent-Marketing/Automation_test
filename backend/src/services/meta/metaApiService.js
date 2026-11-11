@@ -1647,7 +1647,10 @@ export class MetaApiService {
   static async createAdSet(
     accountId,
     accessToken,
-    {
+    params = {},
+    callerUserId = null
+  ) {
+    const {
       campaignId,
       name,
       dailyBudget,
@@ -1680,8 +1683,14 @@ export class MetaApiService {
       campaignObjective,
       destination_type,
       destinationType,
-    } = {}
-  ) {
+      userId = null,
+    } = params;
+
+    const cleanId = String(accountId || "").startsWith("act_") ? accountId : `act_${accountId}`;
+    const cleanTargetRaw = cleanId.replace(/^act_/, "");
+    const effectiveUserId = callerUserId || userId || params.userId || null;
+    accessToken = await this.resolveOAuthToken(cleanId, effectiveUserId, accessToken);
+
     // --- 1. LIVE META CAMPAIGN VALIDATION CHECK ---
     const campaignUrl = `${META_GRAPH_URL}/${campaignId}`;
     console.log(`[Meta Campaign Validation Check] campaign_id: ${campaignId}`);
@@ -1772,9 +1781,6 @@ export class MetaApiService {
       throw new Error("Selected campaign is archived. Please select an active campaign.");
     }
 
-    const cleanId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
-    const cleanTargetRaw = cleanId.replace(/^act_/, "");
-    accessToken = await this.resolveOAuthToken(cleanId, params.userId, accessToken);
     if (liveCampaign?.account_id) {
       const campAccRaw = String(liveCampaign.account_id).replace(/^act_/, "");
       if (campAccRaw !== cleanTargetRaw) {

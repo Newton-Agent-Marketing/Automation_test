@@ -294,6 +294,7 @@ export class MetaAdsOrchestrator {
           status: "PAUSED",
           accountId: targetAccountId,
           userId,
+          accessToken: effectiveToken,
         });
 
         metaCampaignId = campRes.data?.campaignId || campRes.campaignId || campRes.id;
@@ -357,6 +358,7 @@ export class MetaAdsOrchestrator {
             status: "PAUSED",
             accountId: targetAccountId,
             userId,
+            accessToken: effectiveToken,
             objective,
             appId,
             objectStoreUrl,
