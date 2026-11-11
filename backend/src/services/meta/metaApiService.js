@@ -3068,13 +3068,7 @@ export class MetaApiService {
       video_filtering: { enroll_status: "OPT_IN" },
     };
 
-    if (hasMultiPlacementImages) {
-      creativeParams.degrees_of_freedom_spec = JSON.stringify({
-        creative_features_spec: {
-          standard_enhancements: { enroll_status: "OPT_OUT" },
-        },
-      });
-    } else {
+    if (!hasMultiPlacementImages) {
       creativeParams.degrees_of_freedom_spec = JSON.stringify({
         degrees_of_freedom_type: "USER_ENROLLED",
         creative_features_spec: fullCreativeFeaturesSpec,
@@ -3178,23 +3172,27 @@ export class MetaApiService {
       }
       // Attempt 2: Retry with exact core spec keys without non-standard keys
       try {
-        creativeParams.degrees_of_freedom_spec = JSON.stringify({
-          degrees_of_freedom_type: "USER_ENROLLED",
-          creative_features_spec: {
-            advantage_plus_creative: { enroll_status: "OPT_IN" },
-            text_optimizations: { enroll_status: "OPT_IN" },
-            inline_comment: { enroll_status: "OPT_IN" },
-            enhance_cta: {
-              enroll_status: "OPT_IN",
-              customizations: {
-                text_extraction: {
-                  enroll_status: "OPT_IN",
+        if (!hasMultiPlacementImages) {
+          creativeParams.degrees_of_freedom_spec = JSON.stringify({
+            degrees_of_freedom_type: "USER_ENROLLED",
+            creative_features_spec: {
+              advantage_plus_creative: { enroll_status: "OPT_IN" },
+              text_optimizations: { enroll_status: "OPT_IN" },
+              inline_comment: { enroll_status: "OPT_IN" },
+              enhance_cta: {
+                enroll_status: "OPT_IN",
+                customizations: {
+                  text_extraction: {
+                    enroll_status: "OPT_IN",
+                  },
                 },
               },
+              image_touchups: { enroll_status: "OPT_IN" },
             },
-            image_touchups: { enroll_status: "OPT_IN" },
-          },
-        });
+          });
+        } else {
+          delete creativeParams.degrees_of_freedom_spec;
+        }
         console.log("[Final Creative Payload (Retry 2)]:", {
           creativeUrl,
           creativeParams: { ...creativeParams, access_token: "[REDACTED]" },
@@ -3212,25 +3210,29 @@ export class MetaApiService {
         }
         // Attempt 3: Core text, comment & CTA fallback with USER_ENROLLED
         try {
-          creativeParams.degrees_of_freedom_spec = JSON.stringify({
-            degrees_of_freedom_type: "USER_ENROLLED",
-            creative_features_spec: {
-              advantage_plus_creative: { enroll_status: "OPT_IN" },
-              text_optimizations: { enroll_status: "OPT_IN" },
-              inline_comment: { enroll_status: "OPT_IN" },
-              enhance_cta: {
-                enroll_status: "OPT_IN",
-                customizations: {
-                  text_extraction: {
-                    enroll_status: "OPT_IN",
+          if (!hasMultiPlacementImages) {
+            creativeParams.degrees_of_freedom_spec = JSON.stringify({
+              degrees_of_freedom_type: "USER_ENROLLED",
+              creative_features_spec: {
+                advantage_plus_creative: { enroll_status: "OPT_IN" },
+                text_optimizations: { enroll_status: "OPT_IN" },
+                inline_comment: { enroll_status: "OPT_IN" },
+                enhance_cta: {
+                  enroll_status: "OPT_IN",
+                  customizations: {
+                    text_extraction: {
+                      enroll_status: "OPT_IN",
+                    },
                   },
                 },
+                image_touchups: { enroll_status: "OPT_IN" },
+                video_auto_crop: { enroll_status: "OPT_IN" },
+                video_filtering: { enroll_status: "OPT_IN" },
               },
-              image_touchups: { enroll_status: "OPT_IN" },
-              video_auto_crop: { enroll_status: "OPT_IN" },
-              video_filtering: { enroll_status: "OPT_IN" },
-            },
-          });
+            });
+          } else {
+            delete creativeParams.degrees_of_freedom_spec;
+          }
           const retryRes3 = await axios.post(creativeUrl, null, { params: creativeParams });
           console.log("[Meta Image Creative Attempt 3 Success Response]:", retryRes3.data);
           creativeId = retryRes3.data?.id;
@@ -4306,13 +4308,7 @@ export class MetaApiService {
       video_filtering: { enroll_status: "OPT_IN" },
     };
 
-    if (hasMultiPlacementImages) {
-      creativeParams.degrees_of_freedom_spec = JSON.stringify({
-        creative_features_spec: {
-          standard_enhancements: { enroll_status: "OPT_OUT" },
-        },
-      });
-    } else {
+    if (!hasMultiPlacementImages) {
       creativeParams.degrees_of_freedom_spec = JSON.stringify({
         degrees_of_freedom_type: "USER_ENROLLED",
         creative_features_spec: fullCreativeFeaturesSpec,
