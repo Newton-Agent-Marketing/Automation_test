@@ -1862,8 +1862,12 @@ export class MetaApiService {
     }
 
     if (!effectiveIgId && !targeting.publisher_platforms) {
-      targetingObj.publisher_platforms = ["facebook", "audience_network", "messenger"];
+      targetingObj.publisher_platforms = ["facebook"];
       targetingObj.facebook_positions = ["feed", "story"];
+    } else if (effectiveIgId && !targeting.publisher_platforms) {
+      targetingObj.publisher_platforms = ["facebook", "instagram"];
+      targetingObj.facebook_positions = ["feed", "story"];
+      targetingObj.instagram_positions = ["stream", "story"];
     } else if (targeting.publisher_platforms) {
       targetingObj.publisher_platforms = targeting.publisher_platforms;
       if (targeting.facebook_positions) targetingObj.facebook_positions = targeting.facebook_positions;
@@ -3445,6 +3449,64 @@ export class MetaApiService {
 
         if (hasMultiPlacementImages && isAdUncoverableErr) {
           try {
+            // First Attempt: Incompatible Ad Set Placements (e.g. audience_network / messenger targeting).
+            // Align Ad Set targeting strictly to Facebook feed & story so PAC rules match 100%.
+            if (adSetId) {
+              try {
+                console.log(`[Meta PAC Ad Set Alignment]: Aligning Ad Set ${adSetId} targeting to Feed & Story for PAC creative ${creativeId}...`);
+                const adSetUrl = `${META_GRAPH_URL}/${adSetId}`;
+                const curAdSet = await axios.get(adSetUrl, {
+                  params: { access_token: accessToken, fields: "targeting" },
+                  timeout: 5000,
+                }).catch(() => null);
+                const curTargeting = curAdSet?.data?.targeting || {};
+                curTargeting.publisher_platforms = ["facebook", ...(effectiveInstagramUserId ? ["instagram"] : [])];
+                curTargeting.facebook_positions = ["feed", "story"];
+                if (effectiveInstagramUserId) {
+                  curTargeting.instagram_positions = ["stream", "story"];
+                } else {
+                  delete curTargeting.instagram_positions;
+                }
+
+                await axios.post(adSetUrl, null, {
+                  params: {
+                    targeting: JSON.stringify(curTargeting),
+                    access_token: accessToken,
+                  },
+                  timeout: 5000,
+                });
+
+                console.log(`[Meta PAC Ad Set Alignment]: Ad Set ${adSetId} aligned. Retrying ad creation with PAC creative ${creativeId}...`);
+                let pacRetryRes;
+                try {
+                  pacRetryRes = await axios.post(adUrl, null, { params: payload });
+                } catch (pacErr) {
+                  if (payload.tracking_specs) {
+                    const retryNoTracking = { ...payload };
+                    delete retryNoTracking.tracking_specs;
+                    pacRetryRes = await axios.post(adUrl, null, { params: retryNoTracking });
+                  } else {
+                    throw pacErr;
+                  }
+                }
+
+                console.log(`[Meta PAC Ad Set Alignment]: ✅ PAC Ad created successfully after Ad Set alignment!`, pacRetryRes.data);
+                return {
+                  ...pacRetryRes.data,
+                  creativeId,
+                  pageId: effectivePageId,
+                  pixelId: effectivePixelId,
+                  urlTags: cleanUrlTags,
+                  imageHash: feedPlacementHash,
+                  imageHashes: [feedPlacementHash, storyPlacementHash].filter(Boolean),
+                  multiImages: candidateMultiImages,
+                  placementCustomization: true,
+                };
+              } catch (alignErr) {
+                console.warn("[Meta PAC Ad Set Alignment Notice]:", alignErr.response?.data?.error?.message || alignErr.message);
+              }
+            }
+
             console.warn(`[Meta Ad Creation Fallback]: Creative ${creativeId} resulted in uncoverable ad creation error (subcode 2446485). Deploying standard creative fallback...`);
 
             const fallbackLinkData = {
