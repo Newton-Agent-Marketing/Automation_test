@@ -3062,8 +3062,6 @@ export class MetaApiService {
         },
       },
       image_touchups: { enroll_status: "OPT_IN" },
-      image_template: { enroll_status: "OPT_IN" },
-      image_animation: { enroll_status: "OPT_IN" },
       video_auto_crop: { enroll_status: "OPT_IN" },
       video_filtering: { enroll_status: "OPT_IN" },
     };
@@ -3185,7 +3183,6 @@ export class MetaApiService {
               },
             },
             image_touchups: { enroll_status: "OPT_IN" },
-            image_template: { enroll_status: "OPT_IN" },
             video_auto_crop: { enroll_status: "OPT_IN" },
             video_filtering: { enroll_status: "OPT_IN" },
           },
