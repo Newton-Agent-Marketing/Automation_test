@@ -3004,13 +3004,7 @@ export class MetaApiService {
       video_filtering: { enroll_status: "OPT_IN" },
     };
 
-    if (hasMultiPlacementImages) {
-      creativeParams.degrees_of_freedom_spec = JSON.stringify({
-        creative_features_spec: {
-          standard_enhancements: { enroll_status: "OPT_OUT" },
-        },
-      });
-    } else {
+    if (!hasMultiPlacementImages) {
       creativeParams.degrees_of_freedom_spec = JSON.stringify({
         degrees_of_freedom_type: "USER_ENROLLED",
         creative_features_spec: fullCreativeFeaturesSpec,
@@ -4181,13 +4175,7 @@ export class MetaApiService {
       video_filtering: { enroll_status: "OPT_IN" },
     };
 
-    if (hasMultiPlacementImages) {
-      creativeParams.degrees_of_freedom_spec = JSON.stringify({
-        creative_features_spec: {
-          standard_enhancements: { enroll_status: "OPT_OUT" },
-        },
-      });
-    } else {
+    if (!hasMultiPlacementImages) {
       creativeParams.degrees_of_freedom_spec = JSON.stringify({
         degrees_of_freedom_type: "USER_ENROLLED",
         creative_features_spec: fullCreativeFeaturesSpec,
