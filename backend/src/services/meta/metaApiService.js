@@ -2861,6 +2861,7 @@ export class MetaApiService {
 
       const assetFeedSpec = {
         ad_formats: ["SINGLE_IMAGE"],
+        call_to_action_types: [effectiveCta],
         images: [
           {
             hash: feedPlacementHash,
@@ -2886,11 +2887,19 @@ export class MetaApiService {
         asset_customization_rules: [
           {
             customization_spec: {
-              publisher_platforms: ["facebook", "instagram", "messenger"],
+              publisher_platforms: ["facebook", "instagram"],
               facebook_positions: ["story"],
               instagram_positions: ["story", "reels"],
             },
             image_label: { name: "story_placement" },
+          },
+          {
+            customization_spec: {
+              publisher_platforms: ["facebook", "instagram", "audience_network", "messenger"],
+              facebook_positions: ["feed"],
+              instagram_positions: ["stream"],
+            },
+            image_label: { name: "feed_placement" },
           },
           {
             customization_spec: {},
@@ -2989,10 +2998,18 @@ export class MetaApiService {
       video_filtering: { enroll_status: "OPT_IN" },
     };
 
-    creativeParams.degrees_of_freedom_spec = JSON.stringify({
-      degrees_of_freedom_type: "USER_ENROLLED",
-      creative_features_spec: fullCreativeFeaturesSpec,
-    });
+    if (hasMultiPlacementImages) {
+      creativeParams.degrees_of_freedom_spec = JSON.stringify({
+        creative_features_spec: {
+          standard_enhancements: { enroll_status: "OPT_OUT" },
+        },
+      });
+    } else {
+      creativeParams.degrees_of_freedom_spec = JSON.stringify({
+        degrees_of_freedom_type: "USER_ENROLLED",
+        creative_features_spec: fullCreativeFeaturesSpec,
+      });
+    }
 
     console.log("[Meta Image Creative Page ID Audit]:", {
       pageIdReceivedFromSheet: pageId || "None",
@@ -4158,10 +4175,18 @@ export class MetaApiService {
       video_filtering: { enroll_status: "OPT_IN" },
     };
 
-    creativeParams.degrees_of_freedom_spec = JSON.stringify({
-      degrees_of_freedom_type: "USER_ENROLLED",
-      creative_features_spec: fullCreativeFeaturesSpec,
-    });
+    if (hasMultiPlacementImages) {
+      creativeParams.degrees_of_freedom_spec = JSON.stringify({
+        creative_features_spec: {
+          standard_enhancements: { enroll_status: "OPT_OUT" },
+        },
+      });
+    } else {
+      creativeParams.degrees_of_freedom_spec = JSON.stringify({
+        degrees_of_freedom_type: "USER_ENROLLED",
+        creative_features_spec: fullCreativeFeaturesSpec,
+      });
+    }
 
     console.log("[Meta Video Creative Page ID Audit]:", {
       pageIdReceivedFromSheet: pageId || "None",
