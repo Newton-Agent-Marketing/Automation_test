@@ -2935,6 +2935,7 @@ export class MetaApiService {
       effectiveImageHash = feedPlacementHash;
 
       const assetFeedSpec = {
+        optimization_type: "PLACEMENT",
         ad_formats: ["SINGLE_IMAGE"],
         call_to_action_types: [effectiveCta],
         images: [
@@ -2968,19 +2969,9 @@ export class MetaApiService {
             priority: 1,
           },
           {
-            customization_spec: {
-              publisher_platforms: ["facebook", ...(effectiveInstagramUserId ? ["instagram"] : [])],
-              facebook_positions: ["feed"],
-              ...(effectiveInstagramUserId ? { instagram_positions: ["stream"] } : {}),
-            },
-            image_label: { name: "feed_placement" },
-            priority: 2,
-          },
-          {
             customization_spec: {},
             image_label: { name: "feed_placement" },
-            is_default: true,
-            priority: 3,
+            priority: 2,
           },
         ],
 
@@ -3071,6 +3062,8 @@ export class MetaApiService {
         },
       },
       image_touchups: { enroll_status: "OPT_IN" },
+      image_template: { enroll_status: "OPT_IN" },
+      image_animation: { enroll_status: "OPT_IN" },
       video_auto_crop: { enroll_status: "OPT_IN" },
       video_filtering: { enroll_status: "OPT_IN" },
     };
@@ -3175,29 +3168,28 @@ export class MetaApiService {
         delete objectStorySpec.instagram_user_id;
         creativeParams.object_story_spec = JSON.stringify(objectStorySpec);
       }
-      // Attempt 2: Retry with exact core spec keys without non-standard keys
+      // Attempt 2: Retry with core spec keys without experimental keys
       try {
-        if (!hasMultiPlacementImages) {
-          creativeParams.degrees_of_freedom_spec = JSON.stringify({
-            degrees_of_freedom_type: "USER_ENROLLED",
-            creative_features_spec: {
-              advantage_plus_creative: { enroll_status: "OPT_IN" },
-              text_optimizations: { enroll_status: "OPT_IN" },
-              inline_comment: { enroll_status: "OPT_IN" },
-              enhance_cta: {
-                enroll_status: "OPT_IN",
-                customizations: {
-                  text_extraction: {
-                    enroll_status: "OPT_IN",
-                  },
+        creativeParams.degrees_of_freedom_spec = JSON.stringify({
+          degrees_of_freedom_type: "USER_ENROLLED",
+          creative_features_spec: {
+            advantage_plus_creative: { enroll_status: "OPT_IN" },
+            text_optimizations: { enroll_status: "OPT_IN" },
+            inline_comment: { enroll_status: "OPT_IN" },
+            enhance_cta: {
+              enroll_status: "OPT_IN",
+              customizations: {
+                text_extraction: {
+                  enroll_status: "OPT_IN",
                 },
               },
-              image_touchups: { enroll_status: "OPT_IN" },
             },
-          });
-        } else {
-          delete creativeParams.degrees_of_freedom_spec;
-        }
+            image_touchups: { enroll_status: "OPT_IN" },
+            image_template: { enroll_status: "OPT_IN" },
+            video_auto_crop: { enroll_status: "OPT_IN" },
+            video_filtering: { enroll_status: "OPT_IN" },
+          },
+        });
         console.log("[Final Creative Payload (Retry 2)]:", {
           creativeUrl,
           creativeParams: { ...creativeParams, access_token: "[REDACTED]" },
@@ -3215,36 +3207,31 @@ export class MetaApiService {
         }
         // Attempt 3: Core text, comment & CTA fallback with USER_ENROLLED
         try {
-          if (!hasMultiPlacementImages) {
-            creativeParams.degrees_of_freedom_spec = JSON.stringify({
-              degrees_of_freedom_type: "USER_ENROLLED",
-              creative_features_spec: {
-                advantage_plus_creative: { enroll_status: "OPT_IN" },
-                text_optimizations: { enroll_status: "OPT_IN" },
-                inline_comment: { enroll_status: "OPT_IN" },
-                enhance_cta: {
-                  enroll_status: "OPT_IN",
-                  customizations: {
-                    text_extraction: {
-                      enroll_status: "OPT_IN",
-                    },
+          creativeParams.degrees_of_freedom_spec = JSON.stringify({
+            degrees_of_freedom_type: "USER_ENROLLED",
+            creative_features_spec: {
+              advantage_plus_creative: { enroll_status: "OPT_IN" },
+              text_optimizations: { enroll_status: "OPT_IN" },
+              inline_comment: { enroll_status: "OPT_IN" },
+              enhance_cta: {
+                enroll_status: "OPT_IN",
+                customizations: {
+                  text_extraction: {
+                    enroll_status: "OPT_IN",
                   },
                 },
-                image_touchups: { enroll_status: "OPT_IN" },
-                video_auto_crop: { enroll_status: "OPT_IN" },
-                video_filtering: { enroll_status: "OPT_IN" },
               },
-            });
-          } else {
-            delete creativeParams.degrees_of_freedom_spec;
-          }
+              image_touchups: { enroll_status: "OPT_IN" },
+              video_auto_crop: { enroll_status: "OPT_IN" },
+              video_filtering: { enroll_status: "OPT_IN" },
+            },
+          });
           const retryRes3 = await axios.post(creativeUrl, null, { params: creativeParams });
           console.log("[Meta Image Creative Attempt 3 Success Response]:", retryRes3.data);
           creativeId = retryRes3.data?.id;
         } catch (retryErr3) {
           console.warn("[Meta Image Creative Attempt 3 Warning]:", retryErr3.response?.data?.error || retryErr3.message);
-          const metaErr = retryErr3.response?.data?.error || retryEr
-          r2.response?.data?.error || err.response?.data?.error;
+          const metaErr = retryErr3.response?.data?.error || retryErr2.response?.data?.error || err.response?.data?.error;
           const msg = metaErr ? `[${metaErr.code}]: ${metaErr.message || metaErr.error_user_msg}` : retryErr3.message;
           throw new Error(`Meta Ad Creative Creation Failed: ${msg}`);
         }
