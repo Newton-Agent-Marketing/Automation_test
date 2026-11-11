@@ -3072,12 +3072,10 @@ export class MetaApiService {
       video_filtering: { enroll_status: "OPT_IN" },
     };
 
-    if (!hasMultiPlacementImages) {
-      creativeParams.degrees_of_freedom_spec = JSON.stringify({
-        degrees_of_freedom_type: "USER_ENROLLED",
-        creative_features_spec: fullCreativeFeaturesSpec,
-      });
-    }
+    creativeParams.degrees_of_freedom_spec = JSON.stringify({
+      degrees_of_freedom_type: "USER_ENROLLED",
+      creative_features_spec: fullCreativeFeaturesSpec,
+    });
 
     console.log("[Meta Image Creative Page ID Audit]:", {
       pageIdReceivedFromSheet: pageId || "None",
@@ -3536,6 +3534,10 @@ export class MetaApiService {
             const fallbackCreativeParams = {
               name: this.formatCreativeName(`${name || "Ad"} Standard`, "Creative"),
               object_story_spec: JSON.stringify(fallbackStorySpec),
+              degrees_of_freedom_spec: JSON.stringify({
+                degrees_of_freedom_type: "USER_ENROLLED",
+                creative_features_spec: fullCreativeFeaturesSpec,
+              }),
               access_token: accessToken,
             };
             if (cleanLinkUrl) fallbackCreativeParams.link_url = cleanLinkUrl;
@@ -4472,12 +4474,10 @@ export class MetaApiService {
       video_filtering: { enroll_status: "OPT_IN" },
     };
 
-    if (!hasMultiPlacementImages) {
-      creativeParams.degrees_of_freedom_spec = JSON.stringify({
-        degrees_of_freedom_type: "USER_ENROLLED",
-        creative_features_spec: fullCreativeFeaturesSpec,
-      });
-    }
+    creativeParams.degrees_of_freedom_spec = JSON.stringify({
+      degrees_of_freedom_type: "USER_ENROLLED",
+      creative_features_spec: fullCreativeFeaturesSpec,
+    });
 
     console.log("[Meta Video Creative Page ID Audit]:", {
       pageIdReceivedFromSheet: pageId || "None",
