@@ -440,7 +440,7 @@ export class MetaAdsOrchestrator {
       // Step 3: Row-by-Row Media (Video & Image) Download & Meta Upload with DB Persistence (Stage 4)
       const previewAds = session.preview?.adDetails || [];
       emit(4, `Pre-processing & downloading media assets for ${previewAds.length} ad rows...`);
-      const effectiveToken = await MetaApiService.resolveOAuthToken(targetAccountId, userId, null);
+      effectiveToken = await MetaApiService.resolveOAuthToken(targetAccountId, userId, effectiveToken);
 
       // Pre-fetch existing videoIds and imageHashes from MetaUploadedMedia model and MongoDB sessions
       const dbVideoMap = new Map();
