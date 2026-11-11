@@ -505,7 +505,7 @@ export class MetaMcpClient {
       throw new Error("McpToolExecutor Security Alert: Cross-user tool execution is strictly prohibited.");
     }
 
-    if (args.accessToken && (!metaAccount.accessToken || metaAccount.accessToken.startsWith("EAAB_simulated"))) {
+    if (args.accessToken) {
       metaAccount.accessToken = args.accessToken;
     }
 
@@ -1133,7 +1133,8 @@ export class MetaMcpClient {
         }
       }
 
-      const metaResult = await MetaApiService.createCampaign(cleanAccId, metaAccount.accessToken, {
+      const effectiveToken = args.accessToken || metaAccount.accessToken;
+      const metaResult = await MetaApiService.createCampaign(cleanAccId, effectiveToken, {
         name,
         objective,
         dailyBudget: effectiveDailyBudget,
@@ -1141,6 +1142,7 @@ export class MetaMcpClient {
         status,
         specialAdCategories,
         isSkadnetworkAttribution: isSkadnetworkAttribution || is_skadnetwork_attribution,
+        accessToken: effectiveToken,
       }, userId);
 
       if (metaResult?.id) {
@@ -1303,7 +1305,8 @@ export class MetaMcpClient {
         }
       }
 
-      const res = await MetaApiService.createAdSet(cleanAccId, metaAccount.accessToken, {
+      const effectiveToken = args.accessToken || metaAccount.accessToken;
+      const res = await MetaApiService.createAdSet(cleanAccId, effectiveToken, {
         campaignId,
         name: name || `AdSet_${Date.now()}`,
         dailyBudget: effectiveAdSetBudget,
@@ -1324,6 +1327,8 @@ export class MetaMcpClient {
         destination_type: args.destination_type || args.destinationType || null,
         promotedObject,
         objective: args.objective || args.campaignObjective,
+        userId,
+        accessToken: effectiveToken,
       }, userId);
 
       if (res?.id) {

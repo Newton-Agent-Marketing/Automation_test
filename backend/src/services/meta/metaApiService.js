@@ -1647,7 +1647,10 @@ export class MetaApiService {
   static async createAdSet(
     accountId,
     accessToken,
-    {
+    params = {},
+    callerUserId = null
+  ) {
+    const {
       campaignId,
       name,
       dailyBudget,
@@ -1680,8 +1683,16 @@ export class MetaApiService {
       campaignObjective,
       destination_type,
       destinationType,
-    } = {}
-  ) {
+      userId = null,
+    } = params;
+
+    const effectiveUserId = callerUserId || userId || params.userId || null;
+    const cleanId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
+    const cleanTargetRaw = cleanId.replace(/^act_/, "");
+
+    // Early token resolution so campaign lookup and adset creation have a guaranteed authentic token
+    accessToken = await this.resolveOAuthToken(cleanId, effectiveUserId, accessToken);
+
     // --- 1. LIVE META CAMPAIGN VALIDATION CHECK ---
     const campaignUrl = `${META_GRAPH_URL}/${campaignId}`;
     console.log(`[Meta Campaign Validation Check] campaign_id: ${campaignId}`);
@@ -1772,9 +1783,6 @@ export class MetaApiService {
       throw new Error("Selected campaign is archived. Please select an active campaign.");
     }
 
-    const cleanId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
-    const cleanTargetRaw = cleanId.replace(/^act_/, "");
-    accessToken = await this.resolveOAuthToken(cleanId, params.userId, accessToken);
     if (liveCampaign?.account_id) {
       const campAccRaw = String(liveCampaign.account_id).replace(/^act_/, "");
       if (campAccRaw !== cleanTargetRaw) {
@@ -2623,9 +2631,10 @@ export class MetaApiService {
       });
     }
 
+    const effectiveUserId = params.userId || params.callerUserId || null;
     const cleanId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
     const cleanTargetRaw = cleanId.replace(/^act_/, "");
-    accessToken = await this.resolveOAuthToken(cleanId, params.userId, accessToken);
+    accessToken = await this.resolveOAuthToken(cleanId, effectiveUserId, accessToken);
 
     // Early validation: Verify Ad Set belongs to the selected Meta account before creating creative
     if (adSetId && accessToken && !accessToken.startsWith("EAAB_simulated")) {

@@ -126,6 +126,11 @@ export class MetaAdsOrchestrator {
     }
 
     let effectiveToken = accountDoc.accessToken || accountDoc.oauthToken;
+    try {
+      effectiveToken = await MetaApiService.resolveOAuthToken(targetAccountId, userId, effectiveToken);
+    } catch (tokenResolveErr) {
+      console.warn("[MetaAdsOrchestrator Stage 1]: resolveOAuthToken notice:", tokenResolveErr.message);
+    }
     if (!effectiveToken) {
       throw new Error(`Selected Meta Ad Account "act_${cleanAccId}" has missing or invalid credentials. Please reconnect the account.`);
     }
@@ -294,6 +299,7 @@ export class MetaAdsOrchestrator {
           status: "PAUSED",
           accountId: targetAccountId,
           userId,
+          accessToken: effectiveToken,
         });
 
         metaCampaignId = campRes.data?.campaignId || campRes.campaignId || campRes.id;
@@ -357,6 +363,7 @@ export class MetaAdsOrchestrator {
             status: "PAUSED",
             accountId: targetAccountId,
             userId,
+            accessToken: effectiveToken,
             objective,
             appId,
             objectStoreUrl,
