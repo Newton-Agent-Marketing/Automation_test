@@ -726,6 +726,50 @@ export class MetaAdsOrchestrator {
             }
           }
 
+          // If less than 2 assets, check if the source sheet has a folder link for this row
+          if (rowAssets.length < 2 && session.source?.rows) {
+            const rawRow = session.source.rows.find((r) => (r._rowNumber || r.rowNumber || r.sourceRow) === rowNo) || session.source.rows[i];
+            const vals = rawRow?.values || rawRow || {};
+            const creativeCell = vals.creative || vals.Creative || vals.media || vals.Media || vals["Media / Creative"] || vals["Creative Asset"] || null;
+            if (creativeCell && typeof creativeCell === "string" && (creativeCell.includes("/folders/") || /^[a-zA-Z0-9_-]{25,60}$/.test(creativeCell.trim()))) {
+              try {
+                const dlFolder = await driveService.downloadCreative(creativeCell, null, "image");
+                if (Array.isArray(dlFolder?.allFolderAssets) && dlFolder.allFolderAssets.length > 1) {
+                  rowAssets = dlFolder.allFolderAssets;
+                  emit(4, `Row #${rowNo}: Discovered Drive folder from source sheet with ${rowAssets.length} assets.`);
+                }
+              } catch (_) {}
+            }
+          }
+
+          // If still less than 2 assets, check if primary file has a parent folder in Google Drive containing siblings (e.g. 1:1 and 9:16)
+          if (rowAssets.length < 2 && adConfig.creative) {
+            const primaryId = driveService.extractFileId(adConfig.creative);
+            if (primaryId) {
+              try {
+                const meta = await driveService.getFileMetadata(primaryId);
+                if (meta?.mimeType === "application/vnd.google-apps.folder") {
+                  const items = await driveService.listFolderContents(primaryId);
+                  const validImgs = (items || []).filter((it) => it.isImage || !it.isVideo);
+                  if (validImgs.length > 1) {
+                    rowAssets = validImgs;
+                    emit(4, `Row #${rowNo}: Resolved Drive folder with ${rowAssets.length} image assets.`);
+                  }
+                } else if (meta?.parents && meta.parents.length > 0) {
+                  const parentFolderId = meta.parents[0];
+                  const siblingItems = await driveService.listFolderContents(parentFolderId);
+                  const siblingImgs = (siblingItems || []).filter((it) => it.isImage || !it.isVideo);
+                  if (siblingImgs.length > 1) {
+                    rowAssets = siblingImgs;
+                    emit(4, `Row #${rowNo}: Detected parent Drive folder "${parentFolderId}" with ${siblingImgs.length} images.`);
+                  }
+                }
+              } catch (metaErr) {
+                console.warn(`[MetaAdsOrchestrator] Parent folder lookup warning:`, metaErr.message);
+              }
+            }
+          }
+
           // If still single asset or no folder, ensure we have at least the primary asset
           if (rowAssets.length === 0 && adConfig.creative) {
             rowAssets = [

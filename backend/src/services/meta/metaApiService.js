@@ -2750,6 +2750,40 @@ export class MetaApiService {
               }
             }
           }
+        } else if (candidateMultiImages.length < 2 && dl?.fileId) {
+          try {
+            const { default: driveService } = await import("../../google/driveService.js");
+            const fileMeta = await driveService.getFileMetadata(dl.fileId);
+            if (fileMeta?.parents && fileMeta.parents.length > 0) {
+              const parentItems = await driveService.listFolderContents(fileMeta.parents[0]);
+              const siblingImages = (parentItems || []).filter((a) => a.isImage || !a.isVideo);
+              if (siblingImages.length > 1) {
+                for (const sib of siblingImages) {
+                  const sibDl = await driveService.downloadFile(sib.id, sib.name);
+                  if (sibDl?.filePath && fs.existsSync(sibDl.filePath)) {
+                    const upRes = await this.uploadAdImage(cleanId, accessToken, { filePath: sibDl.filePath });
+                    if (upRes?.hash) {
+                      const roleInfo = this.classifyImagePlacementRole({ filePath: sibDl.filePath, fileName: sib.name });
+                      if (!candidateMultiImages.some((c) => c.hash === String(upRes.hash))) {
+                        candidateMultiImages.push({
+                          hash: String(upRes.hash),
+                          url: upRes.url || null,
+                          role: roleInfo.role,
+                          ratio: roleInfo.ratio,
+                          width: roleInfo.width,
+                          height: roleInfo.height,
+                          filePath: sibDl.filePath,
+                          fileName: sib.name,
+                        });
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } catch (sibErr) {
+            console.warn("[Meta Image Ad Sibling Ingestion Notice]:", sibErr.message);
+          }
         }
       }
 
@@ -2826,6 +2860,7 @@ export class MetaApiService {
       effectiveImageHash = feedPlacementHash;
 
       const assetFeedSpec = {
+        ad_formats: ["SINGLE_IMAGE"],
         images: [
           {
             hash: feedPlacementHash,
@@ -2850,16 +2885,17 @@ export class MetaApiService {
         ],
         asset_customization_rules: [
           {
-            customization_spec: {},
-            image_label: { name: "feed_placement" },
-          },
-          {
             customization_spec: {
               publisher_platforms: ["facebook", "instagram", "messenger"],
-              facebook_positions: ["story", "facebook_reels"],
+              facebook_positions: ["story"],
               instagram_positions: ["story", "reels"],
             },
             image_label: { name: "story_placement" },
+          },
+          {
+            customization_spec: {},
+            image_label: { name: "feed_placement" },
+            is_default: true,
           },
         ],
       };
