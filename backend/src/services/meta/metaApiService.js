@@ -2965,6 +2965,7 @@ export class MetaApiService {
               ...(effectiveInstagramUserId ? { instagram_positions: ["story", "reels"] } : {}),
             },
             image_label: { name: "story_placement" },
+            priority: 1,
           },
           {
             customization_spec: {
@@ -2973,11 +2974,13 @@ export class MetaApiService {
               ...(effectiveInstagramUserId ? { instagram_positions: ["stream"] } : {}),
             },
             image_label: { name: "feed_placement" },
+            priority: 2,
           },
           {
             customization_spec: {},
             image_label: { name: "feed_placement" },
             is_default: true,
+            priority: 3,
           },
         ],
 
@@ -3399,13 +3402,23 @@ export class MetaApiService {
               timeout: 5000,
             }).catch(() => null);
             const curTargeting = curAdSet?.data?.targeting || {};
-            curTargeting.publisher_platforms = ["facebook", "audience_network", "messenger"];
-            curTargeting.facebook_positions = ["feed", "story"];
-            delete curTargeting.instagram_positions;
+            const cleanTargetingUpdate = {
+              geo_locations: {
+                countries: curTargeting.geo_locations?.countries || ["IN"],
+                ...(curTargeting.geo_locations?.cities ? { cities: curTargeting.geo_locations.cities } : {}),
+              },
+              age_min: curTargeting.age_min || 18,
+              age_max: curTargeting.age_max || 65,
+              publisher_platforms: ["facebook"],
+              facebook_positions: ["feed", "story"],
+            };
+            if (Array.isArray(curTargeting.genders) && curTargeting.genders.length === 1) {
+              cleanTargetingUpdate.genders = curTargeting.genders;
+            }
 
             await axios.post(adSetUrl, null, {
               params: {
-                targeting: JSON.stringify(curTargeting),
+                targeting: JSON.stringify(cleanTargetingUpdate),
                 access_token: accessToken,
               },
               timeout: 5000,
@@ -3458,17 +3471,24 @@ export class MetaApiService {
                   timeout: 5000,
                 }).catch(() => null);
                 const curTargeting = curAdSet?.data?.targeting || {};
-                curTargeting.publisher_platforms = ["facebook", ...(effectiveInstagramUserId ? ["instagram"] : [])];
-                curTargeting.facebook_positions = ["feed", "story"];
-                if (effectiveInstagramUserId) {
-                  curTargeting.instagram_positions = ["stream", "story"];
-                } else {
-                  delete curTargeting.instagram_positions;
+                const cleanTargetingUpdate = {
+                  geo_locations: {
+                    countries: curTargeting.geo_locations?.countries || ["IN"],
+                    ...(curTargeting.geo_locations?.cities ? { cities: curTargeting.geo_locations.cities } : {}),
+                  },
+                  age_min: curTargeting.age_min || 18,
+                  age_max: curTargeting.age_max || 65,
+                  publisher_platforms: ["facebook", ...(effectiveInstagramUserId ? ["instagram"] : [])],
+                  facebook_positions: ["feed", "story"],
+                  ...(effectiveInstagramUserId ? { instagram_positions: ["stream", "story"] } : {}),
+                };
+                if (Array.isArray(curTargeting.genders) && curTargeting.genders.length === 1) {
+                  cleanTargetingUpdate.genders = curTargeting.genders;
                 }
 
                 await axios.post(adSetUrl, null, {
                   params: {
-                    targeting: JSON.stringify(curTargeting),
+                    targeting: JSON.stringify(cleanTargetingUpdate),
                     access_token: accessToken,
                   },
                   timeout: 5000,
@@ -4782,13 +4802,23 @@ export class MetaApiService {
               timeout: 5000,
             }).catch(() => null);
             const curTargeting = curAdSet?.data?.targeting || {};
-            curTargeting.publisher_platforms = ["facebook", "audience_network", "messenger"];
-            curTargeting.facebook_positions = ["feed", "story"];
-            delete curTargeting.instagram_positions;
+            const cleanTargetingUpdate = {
+              geo_locations: {
+                countries: curTargeting.geo_locations?.countries || ["IN"],
+                ...(curTargeting.geo_locations?.cities ? { cities: curTargeting.geo_locations.cities } : {}),
+              },
+              age_min: curTargeting.age_min || 18,
+              age_max: curTargeting.age_max || 65,
+              publisher_platforms: ["facebook"],
+              facebook_positions: ["feed", "story"],
+            };
+            if (Array.isArray(curTargeting.genders) && curTargeting.genders.length === 1) {
+              cleanTargetingUpdate.genders = curTargeting.genders;
+            }
 
             await axios.post(adSetUrl, null, {
               params: {
-                targeting: JSON.stringify(curTargeting),
+                targeting: JSON.stringify(cleanTargetingUpdate),
                 access_token: accessToken,
               },
               timeout: 5000,
