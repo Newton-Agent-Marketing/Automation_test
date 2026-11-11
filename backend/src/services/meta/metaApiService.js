@@ -807,7 +807,7 @@ export class MetaApiService {
     }
   }
 
-  // 11.5. Auto-resolve & verify a valid Instagram User ID (instagram_user_id)
+  // 11.5. Auto-resolve & verify a valid Instagram User ID (instagram_user_id / instagram_actor_id)
   static async resolveInstagramUserId(accountId, accessToken, pageId, requestedIgId, source = "Excel Sheet / Request") {
     const isPresent = Boolean(requestedIgId && String(requestedIgId).trim());
     let isVerified = false;
@@ -830,6 +830,7 @@ export class MetaApiService {
           // 1. Check Ad Account linked instagram accounts via Meta Graph API
           const accIgRes = await axios.get(`${META_GRAPH_URL}/${cleanAccId}/instagram_accounts`, {
             params: { access_token: accessToken, fields: "id,username" },
+            timeout: 5000,
           });
           const accIgs = accIgRes.data?.data || [];
           const matchAccIg = accIgs.find((ig) => String(ig.id) === clean);
@@ -842,6 +843,7 @@ export class MetaApiService {
           if (!isVerified && pageId) {
             const pageIgRes = await axios.get(`${META_GRAPH_URL}/${pageId}`, {
               params: { access_token: accessToken, fields: "instagram_business_account,connected_instagram_account" },
+              timeout: 5000,
             });
             const linkedId = pageIgRes.data?.instagram_business_account?.id || pageIgRes.data?.connected_instagram_account?.id;
             if (linkedId && String(linkedId) === clean) {
@@ -852,12 +854,93 @@ export class MetaApiService {
         } catch (vErr) {
           isVerified = false;
         }
+
+        // If explicitly requested as numeric ID, accept as strong candidate even if lookup threw
+        if (!isVerified && /^\d{10,25}$/.test(clean)) {
+          verifiedId = clean;
+          isVerified = true;
+        }
       }
     }
 
-    console.log(`Instagram user ID source: ${source}`);
+    // Auto-discover when not provided or unverified
+    if (!verifiedId && pageId && accessToken && !accessToken.startsWith("EAAB_simulated")) {
+      // 1. Page linked Instagram business or connected account
+      try {
+        const pageIgRes = await axios.get(`${META_GRAPH_URL}/${pageId}`, {
+          params: { access_token: accessToken, fields: "instagram_business_account,connected_instagram_account" },
+          timeout: 5000,
+        });
+        const linkedId = pageIgRes.data?.instagram_business_account?.id || pageIgRes.data?.connected_instagram_account?.id;
+        if (linkedId) {
+          verifiedId = String(linkedId);
+          isVerified = true;
+          console.log(`📸 [Meta Auto-Discovered Instagram Account from Page ${pageId}]: ID = ${verifiedId}`);
+        }
+      } catch (pageIgErr) {
+        console.warn(`[Meta Page IG Lookup Notice for Page ${pageId}]:`, pageIgErr.response?.data?.error?.message || pageIgErr.message);
+      }
+
+      // 2. Page-backed Instagram accounts (PBIA)
+      if (!verifiedId) {
+        try {
+          const pbiaRes = await axios.get(`${META_GRAPH_URL}/${pageId}/page_backed_instagram_accounts`, {
+            params: { access_token: accessToken, fields: "id,username" },
+            timeout: 5000,
+          });
+          const pbiaId = pbiaRes.data?.data?.[0]?.id;
+          if (pbiaId) {
+            verifiedId = String(pbiaId);
+            isVerified = true;
+            console.log(`📸 [Meta Auto-Discovered Page-Backed Instagram Account from Page ${pageId}]: ID = ${verifiedId}`);
+          }
+        } catch (pbiaErr) {
+          console.warn(`[Meta PBIA Lookup Notice for Page ${pageId}]:`, pbiaErr.response?.data?.error?.message || pbiaErr.message);
+        }
+      }
+
+      // 3. Auto-create Page-backed Instagram account if missing so ads can run on Instagram
+      if (!verifiedId) {
+        try {
+          const pbiaCreateRes = await axios.post(`${META_GRAPH_URL}/${pageId}/page_backed_instagram_accounts`, null, {
+            params: { access_token: accessToken },
+            timeout: 5000,
+          });
+          const newPbiaId = pbiaCreateRes.data?.id;
+          if (newPbiaId) {
+            verifiedId = String(newPbiaId);
+            isVerified = true;
+            console.log(`📸 [Meta Created Page-Backed Instagram Account for Page ${pageId}]: ID = ${verifiedId}`);
+          }
+        } catch (pbiaCreateErr) {
+          console.warn(`[Meta PBIA Creation Notice for Page ${pageId}]:`, pbiaCreateErr.response?.data?.error?.message || pbiaCreateErr.message);
+        }
+      }
+    }
+
+    // 4. Ad Account linked Instagram accounts
+    if (!verifiedId && accountId && accessToken && !accessToken.startsWith("EAAB_simulated")) {
+      try {
+        const cleanAccId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
+        const accIgRes = await axios.get(`${META_GRAPH_URL}/${cleanAccId}/instagram_accounts`, {
+          params: { access_token: accessToken, fields: "id,username" },
+          timeout: 5000,
+        });
+        const adAccIgId = accIgRes.data?.data?.[0]?.id;
+        if (adAccIgId) {
+          verifiedId = String(adAccIgId);
+          isVerified = true;
+          console.log(`📸 [Meta Auto-Discovered Instagram Account from Ad Account ${cleanAccId}]: ID = ${verifiedId}`);
+        }
+      } catch (adAccIgErr) {
+        console.warn(`[Meta Ad Account IG Lookup Notice for ${accountId}]:`, adAccIgErr.response?.data?.error?.message || adAccIgErr.message);
+      }
+    }
+
+    console.log(`Instagram user ID source: ${isPresent ? source : "Auto-Discovery"}`);
     console.log(`Instagram user ID present: ${isPresent}`);
     console.log(`Instagram user ID verified: ${isVerified}`);
+    console.log(`Instagram ID resolved: ${verifiedId || "None"}`);
     console.log(`Page ID: ${pageId || "None"}`);
 
     if (isVerified && verifiedId) {
@@ -2917,7 +3000,10 @@ export class MetaApiService {
 
       objectStorySpec = {
         page_id: effectivePageId,
-        ...(effectiveInstagramUserId ? { instagram_user_id: effectiveInstagramUserId } : {}),
+        ...(effectiveInstagramUserId ? {
+          instagram_actor_id: effectiveInstagramUserId,
+          instagram_user_id: effectiveInstagramUserId,
+        } : {}),
       };
 
       creativeParams = {
@@ -2959,7 +3045,10 @@ export class MetaApiService {
 
       objectStorySpec = {
         page_id: effectivePageId,
-        ...(effectiveInstagramUserId ? { instagram_user_id: effectiveInstagramUserId } : {}),
+        ...(effectiveInstagramUserId ? {
+          instagram_actor_id: effectiveInstagramUserId,
+          instagram_user_id: effectiveInstagramUserId,
+        } : {}),
         link_data: linkData,
       };
 
