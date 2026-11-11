@@ -1894,6 +1894,18 @@ export class MetaApiService {
       targetingObj.genders = targeting.genders;
     }
 
+    // Platform Placements: If only Facebook Page is provided (no Instagram ID), target Facebook placements.
+    // If both Page and Instagram are available, target both Facebook and Instagram.
+    const candidateIgId = params.instagramId || params.instagramActorId || params.instagram_user_id || params.instagram_actor_id || targeting.instagramId || targeting.instagramActorId;
+    if (!candidateIgId && !targeting.publisher_platforms) {
+      targetingObj.publisher_platforms = ["facebook", "audience_network", "messenger"];
+      targetingObj.facebook_positions = ["feed", "story"];
+    } else if (targeting.publisher_platforms) {
+      targetingObj.publisher_platforms = targeting.publisher_platforms;
+      if (targeting.facebook_positions) targetingObj.facebook_positions = targeting.facebook_positions;
+      if (targeting.instagram_positions) targetingObj.instagram_positions = targeting.instagram_positions;
+    }
+
     // Resolve valid interest objects if provided
     if (targeting.interests?.length > 0) {
       const validInterests = [];
@@ -2976,17 +2988,17 @@ export class MetaApiService {
         asset_customization_rules: [
           {
             customization_spec: {
-              publisher_platforms: ["facebook", "instagram"],
+              publisher_platforms: ["facebook", ...(effectiveInstagramUserId ? ["instagram"] : [])],
               facebook_positions: ["story"],
-              instagram_positions: ["story", "reels"],
+              ...(effectiveInstagramUserId ? { instagram_positions: ["story", "reels"] } : {}),
             },
             image_label: { name: "story_placement" },
           },
           {
             customization_spec: {
-              publisher_platforms: ["facebook", "instagram", "audience_network", "messenger"],
+              publisher_platforms: ["facebook", ...(effectiveInstagramUserId ? ["instagram"] : []), "audience_network", "messenger"],
               facebook_positions: ["feed"],
-              instagram_positions: ["stream"],
+              ...(effectiveInstagramUserId ? { instagram_positions: ["stream"] } : {}),
             },
             image_label: { name: "feed_placement" },
           },
@@ -3399,6 +3411,48 @@ export class MetaApiService {
             };
           } catch (retryErr) {
             // continue to error handling
+          }
+        }
+
+        const isInstagramMissingErr = initialMetaErr?.error_subcode === 1772103 || errMsg.includes("instagram account is missing");
+        if (isInstagramMissingErr && adSetId) {
+          try {
+            console.warn(`[Meta Ad Creation Notice]: Instagram account is missing for this Page. Updating Ad Set ${adSetId} to Facebook-only placements and retrying ad creation...`);
+            const adSetUrl = `${META_GRAPH_URL}/${adSetId}`;
+            const curAdSet = await axios.get(adSetUrl, {
+              params: { access_token: accessToken, fields: "targeting" },
+              timeout: 5000,
+            }).catch(() => null);
+            const curTargeting = curAdSet?.data?.targeting || {};
+            curTargeting.publisher_platforms = ["facebook", "audience_network", "messenger"];
+            curTargeting.facebook_positions = ["feed", "story"];
+            delete curTargeting.instagram_positions;
+
+            await axios.post(adSetUrl, null, {
+              params: {
+                targeting: JSON.stringify(curTargeting),
+                access_token: accessToken,
+              },
+              timeout: 5000,
+            });
+
+            console.log(`[Meta Ad Creation Notice]: Ad Set ${adSetId} updated to Facebook-only placements. Retrying ad creation now...`);
+            const retryPayload = { ...payload };
+            delete retryPayload.tracking_specs;
+            const retryRes = await axios.post(adUrl, null, { params: retryPayload });
+            return {
+              ...retryRes.data,
+              creativeId,
+              pageId: effectivePageId,
+              pixelId: effectivePixelId,
+              urlTags: cleanUrlTags,
+              imageHash: hasMultiPlacementImages ? feedPlacementHash : effectiveImageHash,
+              imageHashes: hasMultiPlacementImages ? [feedPlacementHash, storyPlacementHash] : (effectiveImageHash ? [effectiveImageHash] : []),
+              multiImages: hasMultiPlacementImages ? candidateMultiImages : [],
+              placementCustomization: hasMultiPlacementImages,
+            };
+          } catch (igRetryErr) {
+            console.warn("[Meta Ad Creation Instagram Retry Warning]:", igRetryErr.response?.data?.error || igRetryErr.message);
           }
         }
 
