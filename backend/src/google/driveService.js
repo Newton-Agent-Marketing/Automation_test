@@ -651,24 +651,24 @@ class DriveService {
       }
     }
 
-    // Selection Policy based on user instruction / request count
+    // Selection Policy: process all eligible files in the folder (ensuring both/multiple images are processed)
     let selectedFiles = [];
     const instLower = (userInstruction || "").toLowerCase();
 
-    if (instLower.includes("all images") || instLower.includes("all creatives") || instLower.includes("process all") || instLower.includes("upload all")) {
-      selectedFiles = eligibleFiles;
+    if (instLower.includes("only 1 image") || instLower.includes("single image") || instLower.includes("first image")) {
+      const preferred = eligibleFiles.find((f) => {
+        const n = f.name.toLowerCase();
+        return n.includes("1200x1200") || n.includes("square") || n.includes("1:1") || n.includes("main") || n.includes("feed");
+      });
+      selectedFiles = [preferred || eligibleFiles[0]];
     } else if (instLower.includes("2 images") || instLower.includes("two images") || instLower.includes("both images")) {
       if (eligibleFiles.length < 2) {
         console.warn(`[DriveService Warning] User requested 2 images, but folder "${folderName}" contains only ${eligibleFiles.length} valid image(s). Processing available images.`);
       }
       selectedFiles = eligibleFiles.slice(0, 2);
     } else {
-      // Default: Select 1 verified image/media file
-      const preferred = eligibleFiles.find((f) => {
-        const n = f.name.toLowerCase();
-        return n.includes("1200x1200") || n.includes("square") || n.includes("1:1") || n.includes("main") || n.includes("feed");
-      });
-      selectedFiles = [preferred || eligibleFiles[0]];
+      // Default: Select all eligible image/media files in the folder (e.g. 2 images) so all assets are ingested
+      selectedFiles = eligibleFiles;
     }
 
     console.log(`📂 [DriveService Diagnostics] Selected ${selectedFiles.length} asset(s) from folder "${folderName}":`, selectedFiles.map(f => `"${f.name}" (${f.id})`));
@@ -718,7 +718,9 @@ class DriveService {
       console.log(`[DriveService] downloadFile: Detected folder URL "${driveLinkOrId}". Resolving media asset via processDriveLink (expectedMediaType: ${expectedMediaType || "ALL"})...`);
       const folderRes = await this.processDriveLink(driveLinkOrId, expectedMediaType);
       if (folderRes?.assets && folderRes.assets.length > 0) {
-        return folderRes.assets[0];
+        const primary = folderRes.assets[0];
+        primary.allFolderAssets = folderRes.assets;
+        return primary;
       }
       throw new Error(`Google Drive folder contains no accessible image or video files.`);
     }
@@ -790,7 +792,9 @@ class DriveService {
           console.log(`[DriveService] downloadFile: File ID "${fileId}" is a folder. Resolving media asset via processDriveLink...`);
           const folderRes = await this.processDriveLink(fileId);
           if (folderRes?.assets && folderRes.assets.length > 0) {
-            return folderRes.assets[0];
+            const primary = folderRes.assets[0];
+        primary.allFolderAssets = folderRes.assets;
+        return primary;
           }
           throw new Error(`Google Drive folder "${meta.name || fileId}" contains no accessible image or video files.`);
         }
@@ -1071,7 +1075,9 @@ class DriveService {
           });
           if (matched) return matched;
         }
-        return folderRes.assets[0];
+        const primary = folderRes.assets[0];
+        primary.allFolderAssets = folderRes.assets;
+        return primary;
       }
     }
     return this.downloadFile(driveLinkOrId, destinationFilename, expectedMediaType);

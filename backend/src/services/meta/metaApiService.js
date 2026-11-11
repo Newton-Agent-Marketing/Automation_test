@@ -3396,6 +3396,21 @@ export class MetaApiService {
     let buffer = imageBuffer;
     let fileName = "thumbnail.png";
 
+    // Intercept Google Drive URLs or Smart Chip filenames: Download binary image file via Google Drive OAuth before uploading to Meta
+    if (fileUrl && (!filePath || !fs.existsSync(filePath))) {
+      if (fileUrl.includes("drive.google.com") || fileUrl.includes("docs.google.com") || /^[a-zA-Z0-9_-]{25,60}$/.test(fileUrl.trim())) {
+        try {
+          const { default: driveService } = await import("../../google/driveService.js");
+          const dlInfo = await driveService.downloadCreative(fileUrl, null, "image");
+          if (dlInfo?.filePath && fs.existsSync(dlInfo.filePath)) {
+            filePath = dlInfo.filePath;
+          }
+        } catch (dlErr) {
+          console.warn("[Meta Image Upload] Auto-downloading Google Drive image warning:", dlErr.message);
+        }
+      }
+    }
+
     if (!buffer && filePath && fs.existsSync(filePath)) {
       const { default: driveService } = await import("../../google/driveService.js");
       const magic = driveService.inspectFileMagicBytes(filePath);

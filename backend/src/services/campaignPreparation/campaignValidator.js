@@ -569,7 +569,29 @@ export class CampaignValidator {
       let mediaStatus = "VALID";
       let resolvedDriveAssets = [];
 
-      if (!mediaRef) {
+      // Collect all candidate media URLs (multiple URLs from Smart Chips, separate columns, or comma-separated values)
+      const candidateMediaList = [];
+      const seenMedia = new Set();
+      (driveUrls || []).forEach((u) => {
+        if (u && !seenMedia.has(u)) {
+          seenMedia.add(u);
+          candidateMediaList.push(u);
+        }
+      });
+      [
+        smartChipVal && String(smartChipVal).trim() !== "" ? String(smartChipVal).trim() : null,
+        this.getFieldValue(vals, "driveUrl"),
+        directImageUrl,
+        directVideoUrl,
+        mediaRef,
+      ].forEach((u) => {
+        if (u && !seenMedia.has(u)) {
+          seenMedia.add(u);
+          candidateMediaList.push(u);
+        }
+      });
+
+      if (candidateMediaList.length === 0 && !mediaRef) {
         missingMediaRows.push(rowNo);
         mediaIssues.push({
           rowNumber: rowNo,
@@ -577,61 +599,73 @@ export class CampaignValidator {
           message: "No creative media URL (Google Drive link or direct media URL) specified.",
           blocking: true,
         });
-      } else if (typeof mediaRef === "string" && (mediaRef.includes("drive.google.com") || mediaRef.includes("docs.google.com"))) {
-        // Test Google Drive accessibility
-        const fileId = driveService.extractFileId(mediaRef);
-        if (!fileId) {
-          mediaIssues.push({
-            rowNumber: rowNo,
-            url: mediaRef,
-            message: "Invalid Google Drive link format.",
-            blocking: true,
-          });
-        } else {
-          try {
-            let meta = null;
-            try {
-              meta = await driveService.getFileMetadata(fileId);
-            } catch (mErr) {}
+      } else {
+        // Resolve each candidate media URL (inspect Drive folders, files, or direct URLs)
+        for (const candUrl of candidateMediaList) {
+          if (typeof candUrl === "string" && (candUrl.includes("drive.google.com") || candUrl.includes("docs.google.com") || /^[a-zA-Z0-9_-]{25,60}$/.test(candUrl.trim()))) {
+            const fileId = driveService.extractFileId(candUrl);
+            if (!fileId) {
+              mediaIssues.push({
+                rowNumber: rowNo,
+                url: candUrl,
+                message: "Invalid Google Drive link format.",
+                blocking: true,
+              });
+            } else {
+              try {
+                let meta = null;
+                try {
+                  meta = await driveService.getFileMetadata(fileId);
+                } catch (mErr) {}
 
-            const isFolder = mediaRef.includes("/folders/") || meta?.mimeType === "application/vnd.google-apps.folder";
+                const isFolder = candUrl.includes("/folders/") || meta?.mimeType === "application/vnd.google-apps.folder";
 
-            if (isFolder) {
-              const folderItems = await driveService.listFolderContents(fileId);
-              const validMedia = (folderItems || []).filter((item) => item.isImage || item.isVideo);
-              if (!validMedia || validMedia.length === 0) {
+                if (isFolder) {
+                  const folderItems = await driveService.listFolderContents(fileId);
+                  const validMedia = (folderItems || []).filter((item) => item.isImage || item.isVideo);
+                  if (!validMedia || validMedia.length === 0) {
+                    mediaIssues.push({
+                      rowNumber: rowNo,
+                      url: candUrl,
+                      message: "Google Drive folder is empty or contains no supported image/video creative files.",
+                      blocking: true,
+                    });
+                  } else {
+                    validMedia.forEach((vm) => {
+                      if (!resolvedDriveAssets.some((ra) => ra.fileId === vm.fileId || ra.id === vm.id)) {
+                        resolvedDriveAssets.push(vm);
+                      }
+                    });
+                  }
+                } else {
+                  // Single file check: inspect metadata to auto-detect video vs image
+                  let detectedType = creativeType;
+                  if (meta?.mimeType?.startsWith("video/") || /\.(mp4|mov|avi|webm|m4v|mkv)$/i.test(meta?.name || "")) {
+                    detectedType = "VIDEO";
+                  } else if (meta?.mimeType?.startsWith("image/") || /\.(png|jpg|jpeg|webp)$/i.test(meta?.name || "")) {
+                    detectedType = "IMAGE";
+                  }
+                  if (!resolvedDriveAssets.some((ra) => ra.fileId === fileId)) {
+                    resolvedDriveAssets.push({ fileId, url: candUrl, type: detectedType, name: meta?.name });
+                  }
+                }
+              } catch (driveErr) {
                 mediaIssues.push({
                   rowNumber: rowNo,
-                  url: mediaRef,
-                  message: "Google Drive folder is empty or contains no supported image/video creative files.",
+                  url: candUrl,
+                  message: `Inaccessible Google Drive asset: ${driveErr.message}. Please check folder/file sharing permissions.`,
                   blocking: true,
                 });
-              } else {
-                resolvedDriveAssets = validMedia;
               }
-            } else {
-              // Single file check: inspect metadata to auto-detect video vs image
-              let detectedType = creativeType;
-              if (meta?.mimeType?.startsWith("video/") || /\.(mp4|mov|avi|webm|m4v|mkv)$/i.test(meta?.name || "")) {
-                detectedType = "VIDEO";
-              } else if (meta?.mimeType?.startsWith("image/") || /\.(png|jpg|jpeg|webp)$/i.test(meta?.name || "")) {
-                detectedType = "IMAGE";
-              }
-              resolvedDriveAssets = [{ fileId, url: mediaRef, type: detectedType, name: meta?.name }];
             }
-          } catch (driveErr) {
-            mediaIssues.push({
-              rowNumber: rowNo,
-              url: mediaRef,
-              message: `Inaccessible Google Drive asset: ${driveErr.message}. Please check folder/file sharing permissions.`,
-              blocking: true,
-            });
+          } else if (typeof candUrl === "string" && candUrl.startsWith("http")) {
+            // Direct image or video URL check
+            const directIsVid = /\.(mp4|mov|avi|webm|m4v|mkv)($|\?)/i.test(candUrl);
+            if (!resolvedDriveAssets.some((ra) => ra.url === candUrl)) {
+              resolvedDriveAssets.push({ url: candUrl, type: directIsVid ? "VIDEO" : creativeType });
+            }
           }
         }
-      } else {
-        // Direct image or video URL check
-        const directIsVid = /\.(mp4|mov|avi|webm|m4v|mkv)($|\?)/i.test(mediaRef);
-        resolvedDriveAssets = [{ url: mediaRef, type: directIsVid ? "VIDEO" : creativeType }];
       }
 
       const rowAppId =
@@ -675,35 +709,84 @@ export class CampaignValidator {
         });
       }
 
-      adLevelRows.push({
-        sourceRow: rowNo,
-        adName,
-        pageId,
-        instagramId: rowInstagramId,
-        appId: rowAppId,
-        pixelId: pixelId || this.getFieldValue(vals, "pixelId") || vals.pixel_id || null,
-        creativeType: resolvedDriveAssets[0]?.type || creativeType,
-        creative: mediaRef,
-        resolvedDriveAssets,
-        primaryText,
-        headline,
-        description: this.getFieldValue(vals, "description") || "",
-        destination,
-        displayLink: rowDisplayLink,
-        urlTags: (() => {
-          const raw =
-            this.getFieldValue(vals, "urlTags") ||
-            vals.url_parameter ||
-            vals["URL Parameter"] ||
-            vals["URL Parameters"] ||
-            vals.url_tags ||
-            vals.url_parameters ||
-            null;
-          return raw ? String(raw).trim().replace(/^\?/, "") : null;
-        })(),
-        cta: this.getFieldValue(vals, "cta") || (isAppPromotion ? "DOWNLOAD" : "BOOK_NOW"),
-        status: adIssues.some((issue) => issue.rowNumber === rowNo) ? "INVALID" : "READY",
-      });
+      if (resolvedDriveAssets && resolvedDriveAssets.length > 1) {
+        resolvedDriveAssets.forEach((asset, assetIdx) => {
+          const suffix = ` - Creative ${assetIdx + 1}`;
+          const currentAdName = `${adName}${suffix}`;
+          const assetUrl = asset.url || asset.webViewLink || (asset.fileId || asset.id ? `https://drive.google.com/file/d/${asset.fileId || asset.id}/view` : mediaRef);
+
+          adLevelRows.push({
+            sourceRow: rowNo,
+            adName: currentAdName,
+            pageId,
+            instagramId: rowInstagramId,
+            appId: rowAppId,
+            pixelId: pixelId || this.getFieldValue(vals, "pixelId") || vals.pixel_id || null,
+            creativeType: asset.type || creativeType,
+            creative: assetUrl,
+            assetId: asset.fileId || asset.id || null,
+            assetName: asset.name || asset.fileName || null,
+            creativeIndex: assetIdx + 1,
+            totalCreativesInRow: resolvedDriveAssets.length,
+            resolvedDriveAssets,
+            primaryText,
+            headline,
+            description: this.getFieldValue(vals, "description") || "",
+            destination,
+            displayLink: rowDisplayLink,
+            urlTags: (() => {
+              const raw =
+                this.getFieldValue(vals, "urlTags") ||
+                vals.url_parameter ||
+                vals["URL Parameter"] ||
+                vals["URL Parameters"] ||
+                vals.url_tags ||
+                vals.url_parameters ||
+                null;
+              return raw ? String(raw).trim().replace(/^\?/, "") : null;
+            })(),
+            cta: this.getFieldValue(vals, "cta") || (isAppPromotion ? "DOWNLOAD" : "BOOK_NOW"),
+            status: adIssues.some((issue) => issue.rowNumber === rowNo) ? "INVALID" : "READY",
+          });
+        });
+      } else {
+        const singleAsset = resolvedDriveAssets[0];
+        const assetUrl = singleAsset?.url || singleAsset?.webViewLink || (singleAsset?.fileId || singleAsset?.id ? `https://drive.google.com/file/d/${singleAsset.fileId || singleAsset.id}/view` : mediaRef);
+
+        adLevelRows.push({
+          sourceRow: rowNo,
+          adName,
+          pageId,
+          instagramId: rowInstagramId,
+          appId: rowAppId,
+          pixelId: pixelId || this.getFieldValue(vals, "pixelId") || vals.pixel_id || null,
+          creativeType: singleAsset?.type || creativeType,
+          creative: assetUrl,
+          assetId: singleAsset?.fileId || singleAsset?.id || null,
+          assetName: singleAsset?.name || singleAsset?.fileName || null,
+          creativeIndex: 1,
+          totalCreativesInRow: 1,
+          resolvedDriveAssets,
+          primaryText,
+          headline,
+          description: this.getFieldValue(vals, "description") || "",
+          destination,
+          displayLink: rowDisplayLink,
+          urlTags: (() => {
+            const raw =
+              this.getFieldValue(vals, "urlTags") ||
+              vals.url_parameter ||
+              vals["URL Parameter"] ||
+              vals["URL Parameters"] ||
+              vals.url_tags ||
+              vals.url_parameters ||
+              null;
+            return raw ? String(raw).trim().replace(/^\?/, "") : null;
+          })(),
+          cta: this.getFieldValue(vals, "cta") || (isAppPromotion ? "DOWNLOAD" : "BOOK_NOW"),
+          status: adIssues.some((issue) => issue.rowNumber === rowNo) ? "INVALID" : "READY",
+        });
+      }
     }
 
     // Aggregate Missing Fields

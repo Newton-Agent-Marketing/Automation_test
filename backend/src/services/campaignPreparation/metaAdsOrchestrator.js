@@ -162,8 +162,13 @@ export class MetaAdsOrchestrator {
     let metaAdSetId = session.creationJob.metaAdSetId;
     let adResults = session.creationJob.adResults || [];
 
-    // Helper: Find existing result for row
-    const findAdResult = (sourceRow) => adResults.find((r) => String(r.sourceRow) === String(sourceRow));
+    // Helper: Find existing result for row and ad name
+    const findAdResult = (sourceRow, adName = null) =>
+      adResults.find(
+        (r) =>
+          String(r.sourceRow) === String(sourceRow) &&
+          (!adName || r.adName === adName)
+      );
 
     // Extract Ad Set configuration and asset settings at outer scope so available across all steps
     const adSetDetails = session.preview?.adSetDetails || [];
@@ -505,7 +510,7 @@ export class MetaAdsOrchestrator {
       for (let i = 0; i < previewAds.length; i++) {
         const adConfig = previewAds[i];
         const rowNo = adConfig.sourceRow || (i + 2);
-        let existingRes = findAdResult(rowNo);
+        let existingRes = findAdResult(rowNo, adConfig.adName);
 
         if (!existingRes) {
           existingRes = {
@@ -733,10 +738,11 @@ export class MetaAdsOrchestrator {
                 (!targetImgFileId && fs.statSync(localFilePath).size > 500)
               );
 
+              let currentDlInfo = null;
               if (!isPathMatchingAsset) {
-                const dlInfo = await driveService.downloadCreative(adConfig.creative, null, "image");
-                if (dlInfo?.filePath && fs.existsSync(dlInfo.filePath)) {
-                  localFilePath = dlInfo.filePath;
+                currentDlInfo = await driveService.downloadCreative(adConfig.creative, null, "image");
+                if (currentDlInfo?.filePath && fs.existsSync(currentDlInfo.filePath)) {
+                  localFilePath = currentDlInfo.filePath;
                   adConfig.imageFilePath = localFilePath;
                 }
               }
@@ -781,6 +787,52 @@ export class MetaAdsOrchestrator {
                     metaResponse: imgUpRes,
                     status: "READY",
                   });
+
+                  // If this folder contained multiple images (e.g. 2 images), ensure all folder assets are uploaded to Meta Ads
+                  if (Array.isArray(currentDlInfo?.allFolderAssets) && currentDlInfo.allFolderAssets.length > 1) {
+                    for (let faIdx = 1; faIdx < currentDlInfo.allFolderAssets.length; faIdx++) {
+                      const extraAsset = currentDlInfo.allFolderAssets[faIdx];
+                      if (extraAsset?.filePath && fs.existsSync(extraAsset.filePath)) {
+                        try {
+                          emit(4, `Row #${rowNo}: Uploading additional image #${faIdx + 1} ("${extraAsset.fileName}") to Meta Ads Manager...`);
+                          const extraUpRes = await MetaApiService.uploadAdImage(targetAccountId, effectiveToken, {
+                            filePath: extraAsset.filePath,
+                            userId,
+                            sourceRow: rowNo,
+                            rowNo,
+                            adName: `${adConfig.adName} - Creative ${faIdx + 1}`,
+                          });
+                          if (extraUpRes?.hash) {
+                            emit(4, `✅ Row #${rowNo}: Uploaded additional Meta Image Hash ${extraUpRes.hash} ("${extraAsset.fileName}").`);
+                            if (extraAsset.id) dbImageMap.set(`file_${extraAsset.id}`, String(extraUpRes.hash));
+                            if (extraAsset.url) dbImageMap.set(extraAsset.url, String(extraUpRes.hash));
+                            await MetaUploadedMedia.recordMedia({
+                              userId,
+                              accountId: targetAccountId,
+                              mediaType: "IMAGE",
+                              metaMediaId: String(extraUpRes.hash),
+                              imageHash: String(extraUpRes.hash),
+                              sourceRow: rowNo,
+                              rowNumber: rowNo,
+                              adName: `${adConfig.adName} - Creative ${faIdx + 1}`,
+                              sourceUrl: extraAsset.url || extraAsset.webViewLink || adConfig.creative,
+                              fileId: extraAsset.id || null,
+                              localFilePath: extraAsset.filePath,
+                              campaignName: session.campaignName,
+                              adSetName: session.adSetName,
+                              sessionId: session.sessionId,
+                              conversationId: session.conversationId,
+                              spreadsheetId: session.source?.spreadsheetId,
+                              metaResponse: extraUpRes,
+                              status: "READY",
+                            });
+                          }
+                        } catch (extraUpErr) {
+                          console.warn(`[MetaAdsOrchestrator] Extra folder image upload warning:`, extraUpErr.message);
+                        }
+                      }
+                    }
+                  }
 
                   if (session.preview?.adDetails?.[i]) {
                     session.preview.adDetails[i].imageHash = String(rowImgHash);
@@ -1106,7 +1158,7 @@ export class MetaAdsOrchestrator {
       for (let i = 0; i < previewAds.length; i++) {
         const p = previewAds[i];
         const rowNo = p.sourceRow || (i + 2);
-        let r = adResults.find((x) => String(x.sourceRow) === String(rowNo));
+        let r = adResults.find((x) => String(x.sourceRow) === String(rowNo) && (!p.adName || x.adName === p.adName));
         if (!r) {
           r = {
             sourceRow: rowNo,

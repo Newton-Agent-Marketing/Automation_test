@@ -319,14 +319,17 @@ class SheetsService {
             cells.forEach((cellItem, cIdx) => {
               let hLink = cellItem.hyperlink || null;
 
-              // 1. Extract Smart Chip / rich-text links from textFormatRuns
+              // 1. Extract Smart Chip / rich-text links from textFormatRuns (supporting multiple smart chips in one cell)
               if (!hLink && Array.isArray(cellItem.textFormatRuns)) {
+                const runUris = [];
                 for (const run of cellItem.textFormatRuns) {
                   const runUri = run.format?.link?.uri || run.link?.uri;
                   if (runUri && (runUri.includes("drive.google.com") || runUri.includes("docs.google.com") || runUri.length >= 25)) {
-                    hLink = runUri;
-                    break;
+                    if (!runUris.includes(runUri)) runUris.push(runUri);
                   }
+                }
+                if (runUris.length > 0) {
+                  hLink = runUris.join(", ");
                 }
               }
 
@@ -341,9 +344,9 @@ class SheetsService {
               if (!hLink) {
                 const strVal = cellItem.formattedValue || cellItem.userEnteredValue?.stringValue || cellItem.effectiveValue?.stringValue;
                 if (strVal && typeof strVal === "string" && (strVal.includes("drive.google.com") || strVal.includes("docs.google.com"))) {
-                  const driveMatch = strVal.match(/https?:\/\/(?:drive|docs)\.google\.com\/[^\s"',;}\\]+/i);
-                  if (driveMatch) {
-                    hLink = driveMatch[0];
+                  const driveMatches = strVal.match(/https?:\/\/(?:drive|docs)\.google\.com\/[^\s"',;}\\]+/gi);
+                  if (driveMatches && driveMatches.length > 0) {
+                    hLink = Array.from(new Set(driveMatches)).join(", ");
                   }
                 }
               }
