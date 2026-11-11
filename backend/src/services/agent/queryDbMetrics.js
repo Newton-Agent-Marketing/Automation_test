@@ -2365,7 +2365,7 @@ export async function executeAgentTool(toolName, args) {
     if (args.multiImages?.length > 1 || args.imageHashes?.length > 1 || args.placementCustomization) {
       const { default: MetaApiService } = await import("../meta/metaApiService.js");
       const cleanAccId = String(args.accountId).replace(/^act_/, "");
-      return await MetaApiService.createAd(cleanAccId, null, args);
+      return await MetaApiService.createAd(cleanAccId, args.accessToken || null, args);
     }
     return await MetaMcpClient.executeLiveTool("create_meta_ad", args);
   }

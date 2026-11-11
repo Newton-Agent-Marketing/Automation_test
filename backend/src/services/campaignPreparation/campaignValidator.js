@@ -741,6 +741,9 @@ export class CampaignValidator {
           totalCreativesInRow: resolvedDriveAssets.length,
           resolvedDriveAssets,
           multiImageAssets: resolvedDriveAssets,
+          driveFolderUrl: (mediaRef && typeof mediaRef === "string" && mediaRef.includes("/folders/"))
+            ? mediaRef
+            : (candidateMediaList.find((c) => typeof c === "string" && c.includes("/folders/")) || null),
           isPlacementAssetCustomization: true,
           primaryText,
           headline,

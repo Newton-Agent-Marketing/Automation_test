@@ -1774,6 +1774,7 @@ export class MetaApiService {
 
     const cleanId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
     const cleanTargetRaw = cleanId.replace(/^act_/, "");
+    accessToken = await this.resolveOAuthToken(cleanId, params.userId, accessToken);
     if (liveCampaign?.account_id) {
       const campAccRaw = String(liveCampaign.account_id).replace(/^act_/, "");
       if (campAccRaw !== cleanTargetRaw) {
@@ -2449,9 +2450,11 @@ export class MetaApiService {
       if (Buffer.isBuffer(filePathOrBuffer)) {
         buffer = filePathOrBuffer;
       } else if (typeof filePathOrBuffer === "string" && fs.existsSync(filePathOrBuffer)) {
+        const stats = fs.statSync(filePathOrBuffer);
+        const readLen = Math.min(stats.size, 131072);
         const fd = fs.openSync(filePathOrBuffer, "r");
-        buffer = Buffer.alloc(4096);
-        fs.readSync(fd, buffer, 0, 4096, 0);
+        buffer = Buffer.alloc(readLen);
+        fs.readSync(fd, buffer, 0, readLen, 0);
         fs.closeSync(fd);
       }
       if (!buffer || buffer.length < 24) return null;
@@ -2476,6 +2479,7 @@ export class MetaApiService {
           }
           const marker = buffer[offset + 1];
           if (marker === 0xd9 || marker === 0xda) break;
+          if (offset + 4 > buffer.length) break;
           const len = buffer.readUInt16BE(offset + 2);
           if (
             (marker >= 0xc0 && marker <= 0xc3) ||
@@ -2487,6 +2491,7 @@ export class MetaApiService {
             const width = buffer.readUInt16BE(offset + 7);
             return { width, height, format: "jpg" };
           }
+          if (len < 2) break;
           offset += 2 + len;
         }
       }
@@ -2620,6 +2625,7 @@ export class MetaApiService {
 
     const cleanId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
     const cleanTargetRaw = cleanId.replace(/^act_/, "");
+    accessToken = await this.resolveOAuthToken(cleanId, params.userId, accessToken);
 
     // Early validation: Verify Ad Set belongs to the selected Meta account before creating creative
     if (adSetId && accessToken && !accessToken.startsWith("EAAB_simulated")) {
@@ -2805,6 +2811,13 @@ export class MetaApiService {
     if (hasMultiPlacementImages) {
       let feedImg = candidateMultiImages.find((img) => img.role === "FEED");
       let storyImg = candidateMultiImages.find((img) => img.role === "STORY" && img !== feedImg);
+      if (!feedImg || !storyImg) {
+        const sorted = [...candidateMultiImages].sort((a, b) => (Number(a.ratio || 1) - Number(b.ratio || 1)));
+        storyImg = sorted[0];
+        feedImg = sorted[sorted.length - 1];
+        if (storyImg) storyImg.role = "STORY";
+        if (feedImg) feedImg.role = "FEED";
+      }
       if (!feedImg) feedImg = candidateMultiImages[0];
       if (!storyImg) storyImg = candidateMultiImages.find((img) => img !== feedImg) || candidateMultiImages[1] || candidateMultiImages[0];
 
@@ -2837,11 +2850,7 @@ export class MetaApiService {
         ],
         asset_customization_rules: [
           {
-            customization_spec: {
-              publisher_platforms: ["facebook", "instagram", "audience_network", "messenger"],
-              facebook_positions: ["feed", "marketplace", "video_feeds", "search"],
-              instagram_positions: ["stream", "explore", "profile_feed", "search"],
-            },
+            customization_spec: {},
             image_label: { name: "feed_placement" },
           },
           {
@@ -2866,10 +2875,9 @@ export class MetaApiService {
         asset_feed_spec: JSON.stringify(assetFeedSpec),
         access_token: accessToken,
       };
-      if (cleanLinkUrl) creativeParams.link_url = cleanLinkUrl;
       if (cleanUrlTags) creativeParams.url_tags = cleanUrlTags;
 
-      console.log(`[Meta PAC AdCreative] Configured Placement Asset Customization for 1 Ad: Feed Hash: ${feedPlacementHash}, Story Hash: ${storyPlacementHash}`);
+      console.log(`[Meta PAC AdCreative] Configured Placement Asset Customization for 1 Ad: Feed Hash: ${feedPlacementHash}, Story/Reels Hash: ${storyPlacementHash}`);
     } else {
       const linkData = {
         link: cleanLinkUrl,
@@ -3846,6 +3854,7 @@ export class MetaApiService {
     } = params;
     const cleanId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
     const cleanTargetRaw = cleanId.replace(/^act_/, "");
+    accessToken = await this.resolveOAuthToken(cleanId, params.userId, accessToken);
 
     // Early validation: Verify Ad Set belongs to the selected Meta account before creating video creative
     if (adSetId && accessToken && !accessToken.startsWith("EAAB_simulated")) {
