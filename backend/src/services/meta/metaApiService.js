@@ -892,6 +892,23 @@ export class MetaApiService {
       }
     }
 
+    // Auto-discover linked Instagram account from Ad Account if not verified yet
+    if (!isVerified && accountId) {
+      try {
+        const cleanAccId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
+        const accIgRes = await axios.get(`${META_GRAPH_URL}/${cleanAccId}/instagram_accounts`, {
+          params: { access_token: accessToken, fields: "id,username" },
+          timeout: 5000,
+        }).catch(() => null);
+        const accIgs = accIgRes?.data?.data || [];
+        if (accIgs.length > 0 && accIgs[0]?.id) {
+          isVerified = true;
+          verifiedId = String(accIgs[0].id);
+          console.log(`[Meta Auto-Discovered Instagram Account from Ad Account]: ${accIgs[0].username || "IG"} (ID: ${verifiedId})`);
+        }
+      } catch (_) {}
+    }
+
     console.log(`Instagram user ID source: ${source}`);
     console.log(`Instagram user ID present: ${isPresent}`);
     console.log(`Instagram user ID verified: ${isVerified}`);
@@ -1862,12 +1879,10 @@ export class MetaApiService {
     }
 
     if (!effectiveIgId && !targeting.publisher_platforms) {
-      targetingObj.publisher_platforms = ["facebook"];
-      targetingObj.facebook_positions = ["feed", "story"];
+      // No Instagram: Target Facebook & Audience Network & Messenger without restricting positions so Right Column, Reels, Marketplace, and Feeds are all included
+      targetingObj.publisher_platforms = ["facebook", "audience_network", "messenger"];
     } else if (effectiveIgId && !targeting.publisher_platforms) {
-      targetingObj.publisher_platforms = ["facebook", "instagram"];
-      targetingObj.facebook_positions = ["feed", "story"];
-      targetingObj.instagram_positions = ["stream", "story"];
+      // Instagram available: Omit publisher_platforms so Meta enables Advantage+ Placements across all Meta platforms (FB, IG, Audience Network, Messenger)
     } else if (targeting.publisher_platforms) {
       targetingObj.publisher_platforms = targeting.publisher_platforms;
       if (targeting.facebook_positions) targetingObj.facebook_positions = targeting.facebook_positions;
@@ -2962,7 +2977,7 @@ export class MetaApiService {
           {
             customization_spec: {
               publisher_platforms: ["facebook", ...(effectiveInstagramUserId ? ["instagram"] : [])],
-              facebook_positions: ["story"],
+              facebook_positions: ["story", "facebook_reels", "facebook_reels_overlay"],
               ...(effectiveInstagramUserId ? { instagram_positions: ["story", "reels"] } : {}),
             },
             image_label: { name: "story_placement" },
@@ -3393,8 +3408,7 @@ export class MetaApiService {
               },
               age_min: curTargeting.age_min || 18,
               age_max: curTargeting.age_max || 65,
-              publisher_platforms: ["facebook"],
-              facebook_positions: ["feed", "story"],
+              publisher_platforms: ["facebook", "audience_network", "messenger"],
             };
             if (Array.isArray(curTargeting.genders) && curTargeting.genders.length === 1) {
               cleanTargetingUpdate.genders = curTargeting.genders;
@@ -3463,8 +3477,6 @@ export class MetaApiService {
                   age_min: curTargeting.age_min || 18,
                   age_max: curTargeting.age_max || 65,
                   publisher_platforms: ["facebook", ...(effectiveInstagramUserId ? ["instagram"] : [])],
-                  facebook_positions: ["feed", "story"],
-                  ...(effectiveInstagramUserId ? { instagram_positions: ["stream", "story"] } : {}),
                 };
                 if (Array.isArray(curTargeting.genders) && curTargeting.genders.length === 1) {
                   cleanTargetingUpdate.genders = curTargeting.genders;
@@ -4793,8 +4805,7 @@ export class MetaApiService {
               },
               age_min: curTargeting.age_min || 18,
               age_max: curTargeting.age_max || 65,
-              publisher_platforms: ["facebook"],
-              facebook_positions: ["feed", "story"],
+              publisher_platforms: ["facebook", "audience_network", "messenger"],
             };
             if (Array.isArray(curTargeting.genders) && curTargeting.genders.length === 1) {
               cleanTargetingUpdate.genders = curTargeting.genders;
