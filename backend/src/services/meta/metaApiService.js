@@ -2439,6 +2439,119 @@ export class MetaApiService {
   }
 
   // 15. Create Ad Creative & Ad on Meta Ads
+  /**
+   * Zero-dependency native image dimension reader
+   * Extracts { width, height, format } from PNG, JPEG, GIF, and WebP buffers/files
+   */
+  static inspectImageDimensions(filePathOrBuffer) {
+    try {
+      let buffer = null;
+      if (Buffer.isBuffer(filePathOrBuffer)) {
+        buffer = filePathOrBuffer;
+      } else if (typeof filePathOrBuffer === "string" && fs.existsSync(filePathOrBuffer)) {
+        const fd = fs.openSync(filePathOrBuffer, "r");
+        buffer = Buffer.alloc(4096);
+        fs.readSync(fd, buffer, 0, 4096, 0);
+        fs.closeSync(fd);
+      }
+      if (!buffer || buffer.length < 24) return null;
+
+      // 1. PNG
+      if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+        return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20), format: "png" };
+      }
+
+      // 2. GIF
+      if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) {
+        return { width: buffer.readUInt16LE(6), height: buffer.readUInt16LE(8), format: "gif" };
+      }
+
+      // 3. JPEG
+      if (buffer[0] === 0xff && buffer[1] === 0xd8) {
+        let offset = 2;
+        while (offset < buffer.length - 8) {
+          if (buffer[offset] !== 0xff) {
+            offset++;
+            continue;
+          }
+          const marker = buffer[offset + 1];
+          if (marker === 0xd9 || marker === 0xda) break;
+          const len = buffer.readUInt16BE(offset + 2);
+          if (
+            (marker >= 0xc0 && marker <= 0xc3) ||
+            (marker >= 0xc5 && marker <= 0xc7) ||
+            (marker >= 0xc9 && marker <= 0xcb) ||
+            (marker >= 0xcd && marker <= 0xcf)
+          ) {
+            const height = buffer.readUInt16BE(offset + 5);
+            const width = buffer.readUInt16BE(offset + 7);
+            return { width, height, format: "jpg" };
+          }
+          offset += 2 + len;
+        }
+      }
+
+      // 4. WebP
+      if (buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") {
+        const subChunk = buffer.toString("ascii", 12, 16);
+        if (subChunk === "VP8X" && buffer.length >= 30) {
+          const width = 1 + buffer.readUIntLE(24, 3);
+          const height = 1 + buffer.readUIntLE(27, 3);
+          return { width, height, format: "webp" };
+        }
+        if (subChunk === "VP8L" && buffer.length >= 25) {
+          const b0 = buffer[21];
+          const b1 = buffer[22];
+          const b2 = buffer[23];
+          const b3 = buffer[24];
+          const width = 1 + (((b1 & 0x3f) << 8) | b0);
+          const height = 1 + (((b3 & 0x0f) << 10) | (b2 << 2) | ((b1 & 0xc0) >> 6));
+          return { width, height, format: "webp" };
+        }
+        if (subChunk === "VP8 " && buffer.length >= 30) {
+          const width = buffer.readUInt16LE(26) & 0x3fff;
+          const height = buffer.readUInt16LE(28) & 0x3fff;
+          return { width, height, format: "webp" };
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /**
+   * Classify image asset role for placement:
+   * FEED (1:1 / square or horizontal) vs STORY (9:16 / vertical)
+   */
+  static classifyImagePlacementRole({ filePath, buffer, fileName, width, height } = {}) {
+    let w = width;
+    let h = height;
+    if ((!w || !h) && (filePath || buffer)) {
+      const dims = this.inspectImageDimensions(filePath || buffer);
+      if (dims) {
+        w = dims.width;
+        h = dims.height;
+      }
+    }
+
+    if (w && h) {
+      const ratio = w / h;
+      if (ratio < 0.85 || h > w * 1.15) {
+        return { role: "STORY", width: w, height: h, ratio };
+      }
+      return { role: "FEED", width: w, height: h, ratio };
+    }
+
+    const n = String(fileName || filePath || "").toLowerCase();
+    if (n.includes("story") || n.includes("reel") || n.includes("vertical") || n.includes("9x16") || n.includes("9_16") || n.includes("1080x1920")) {
+      return { role: "STORY", width: null, height: null, ratio: 9 / 16 };
+    }
+    if (n.includes("feed") || n.includes("square") || n.includes("1x1") || n.includes("1_1") || n.includes("1080x1080") || n.includes("1200x1200")) {
+      return { role: "FEED", width: null, height: null, ratio: 1.0 };
+    }
+
+    return { role: "UNKNOWN", width: null, height: null, ratio: null };
+  }
+
   static async createAd(
     accountId,
     accessToken,
@@ -2568,9 +2681,18 @@ export class MetaApiService {
     // Resolve Image Hash or Upload local image / Google Drive image asset to Meta /adimages
     let effectiveImageHash = params.imageHash || params.hash || null;
     let effectiveImageUrl = imageUrl || null;
+    let candidateMultiImages = Array.isArray(params.multiImages) ? [...params.multiImages] : [];
+
+    if (Array.isArray(params.imageHashes) && params.imageHashes.length > 0 && candidateMultiImages.length === 0) {
+      candidateMultiImages = params.imageHashes.map((h, idx) => {
+        const hashStr = typeof h === "string" ? h : h.hash;
+        const role = (typeof h === "object" && h.role) ? h.role : (idx === 0 ? "FEED" : "STORY");
+        return { hash: hashStr, role };
+      });
+    }
 
     const targetImg = imageUrl || driveUrl || params.image || params.creativeUrl;
-    if (!effectiveImageHash && targetImg) {
+    if ((!effectiveImageHash || candidateMultiImages.length < 2) && targetImg) {
       let localPath = null;
       if (typeof targetImg === "string" && fs.existsSync(targetImg)) {
         localPath = targetImg;
@@ -2595,9 +2717,37 @@ export class MetaApiService {
             localPath = dl.filePath;
           }
         }
+
+        // If Google Drive folder contains multiple images (e.g. 2 images: 1 Feed, 1 Story), upload all images for PAC
+        if (Array.isArray(dl?.allFolderAssets) && dl.allFolderAssets.length > 1 && candidateMultiImages.length < 2) {
+          const folderImages = dl.allFolderAssets.filter((a) => a.isImage || !a.isVideo);
+          for (const imgAsset of folderImages) {
+            const assetPath = imgAsset.filePath;
+            if (assetPath && fs.existsSync(assetPath)) {
+              try {
+                const upRes = await this.uploadAdImage(cleanId, accessToken, { filePath: assetPath });
+                if (upRes?.hash) {
+                  const roleInfo = this.classifyImagePlacementRole({ filePath: assetPath, fileName: imgAsset.fileName });
+                  candidateMultiImages.push({
+                    hash: String(upRes.hash),
+                    url: upRes.url || null,
+                    role: roleInfo.role,
+                    ratio: roleInfo.ratio,
+                    width: roleInfo.width,
+                    height: roleInfo.height,
+                    filePath: assetPath,
+                    fileName: imgAsset.fileName || path.basename(assetPath),
+                  });
+                }
+              } catch (upErr) {
+                console.warn("[Meta Image Ad Multi-Upload Warning]:", upErr.message);
+              }
+            }
+          }
+        }
       }
 
-      if (localPath && fs.existsSync(localPath)) {
+      if (localPath && fs.existsSync(localPath) && !effectiveImageHash) {
         try {
           console.log(`[Meta Image Ad] Uploading local image asset "${localPath}" to Meta /adimages...`);
           const imgUpRes = await this.uploadAdImage(cleanId, accessToken, { filePath: localPath });
@@ -2605,6 +2755,19 @@ export class MetaApiService {
             effectiveImageHash = imgUpRes.hash;
             if (imgUpRes.url) effectiveImageUrl = imgUpRes.url;
             console.log(`[Meta Image Ad Upload Success]: Image Hash = ${effectiveImageHash}`);
+            if (candidateMultiImages.length === 0) {
+              const r = this.classifyImagePlacementRole({ filePath: localPath });
+              candidateMultiImages.push({
+                hash: imgUpRes.hash,
+                url: imgUpRes.url || null,
+                role: r.role,
+                ratio: r.ratio,
+                width: r.width,
+                height: r.height,
+                filePath: localPath,
+                fileName: path.basename(localPath),
+              });
+            }
           }
         } catch (upErr) {
           console.error("[Meta Image Ad Upload Failure]:", upErr.message);
@@ -2630,48 +2793,125 @@ export class MetaApiService {
 
     // Step 1: Create Ad Creative
     const creativeUrl = `${META_GRAPH_URL}/${cleanId}/adcreatives`;
-    const linkData = {
-      link: cleanLinkUrl,
-      call_to_action: {
-        type: effectiveCta,
-        value: {
-          link: cleanLinkUrl,
-          ...(cleanDisplayLink ? { link_caption: cleanDisplayLink } : {}),
-        },
-      },
-    };
-
-    if (cleanPrimaryText) linkData.message = cleanPrimaryText;
-    if (cleanHeadline) {
-      const origBytes = Buffer.byteLength(cleanHeadline, "utf8");
-      linkData.name = this.truncateToMaxBytes(cleanHeadline, 250);
-      if (origBytes > 250) {
-        console.log(`[Meta Image Creative Headline Enforced]: Truncated headline from ${origBytes} bytes to ${Buffer.byteLength(linkData.name, "utf8")} bytes to comply with Meta 255-byte limit.`);
-      }
-    }
-    if (cleanDescription) linkData.description = cleanDescription;
-    if (effectiveImageHash) {
-      linkData.image_hash = effectiveImageHash;
-    } else if (effectiveImageUrl) {
-      linkData.picture = effectiveImageUrl;
-    }
-    if (cleanDisplayLink) linkData.caption = this.truncateToMaxBytes(cleanDisplayLink, 250);
-
-    const objectStorySpec = {
-      page_id: effectivePageId,
-      ...(effectiveInstagramUserId ? { instagram_user_id: effectiveInstagramUserId } : {}),
-      link_data: linkData,
-    };
-
     const cleanUrlTags = urlTags ? String(urlTags).trim().replace(/^\?/, "") : null;
 
-    const creativeParams = {
-      name: this.formatCreativeName(name, "Creative"),
-      object_story_spec: JSON.stringify(objectStorySpec),
-      access_token: accessToken,
-    };
-    if (cleanLinkUrl) creativeParams.link_url = cleanLinkUrl;
-    if (cleanUrlTags) creativeParams.url_tags = cleanUrlTags;
+    // Detect Placement Asset Customization (PAC) when 2 or more images with distinct aspect ratios/placements exist
+    const hasMultiPlacementImages = candidateMultiImages.length >= 2;
+    let creativeParams = {};
+    let objectStorySpec = {};
+    let feedPlacementHash = effectiveImageHash;
+    let storyPlacementHash = null;
+
+    if (hasMultiPlacementImages) {
+      let feedImg = candidateMultiImages.find((img) => img.role === "FEED");
+      let storyImg = candidateMultiImages.find((img) => img.role === "STORY" && img !== feedImg);
+      if (!feedImg) feedImg = candidateMultiImages[0];
+      if (!storyImg) storyImg = candidateMultiImages.find((img) => img !== feedImg) || candidateMultiImages[1] || candidateMultiImages[0];
+
+      feedPlacementHash = feedImg.hash;
+      storyPlacementHash = storyImg.hash;
+      effectiveImageHash = feedPlacementHash;
+
+      const assetFeedSpec = {
+        images: [
+          {
+            hash: feedPlacementHash,
+            adlabels: [{ name: "feed_placement" }],
+          },
+          {
+            hash: storyPlacementHash,
+            adlabels: [{ name: "story_placement" }],
+          },
+        ],
+        bodies: cleanPrimaryText ? [{ text: cleanPrimaryText }] : [],
+        titles: cleanHeadline ? [{ text: this.truncateToMaxBytes(cleanHeadline, 250) }] : [],
+        descriptions: cleanDescription ? [{ text: cleanDescription }] : [],
+        link_urls: [
+          {
+            website_url: cleanLinkUrl,
+            ...(cleanDisplayLink ? { display_url: cleanDisplayLink } : {}),
+            call_to_action: {
+              type: effectiveCta,
+            },
+          },
+        ],
+        asset_customization_rules: [
+          {
+            customization_spec: {
+              publisher_platforms: ["facebook", "instagram", "audience_network", "messenger"],
+              facebook_positions: ["feed", "marketplace", "video_feeds", "search"],
+              instagram_positions: ["stream", "explore", "profile_feed", "search"],
+            },
+            image_label: { name: "feed_placement" },
+          },
+          {
+            customization_spec: {
+              publisher_platforms: ["facebook", "instagram", "messenger"],
+              facebook_positions: ["story", "facebook_reels"],
+              instagram_positions: ["story", "reels"],
+            },
+            image_label: { name: "story_placement" },
+          },
+        ],
+      };
+
+      objectStorySpec = {
+        page_id: effectivePageId,
+        ...(effectiveInstagramUserId ? { instagram_user_id: effectiveInstagramUserId } : {}),
+      };
+
+      creativeParams = {
+        name: this.formatCreativeName(name, "Creative"),
+        object_story_spec: JSON.stringify(objectStorySpec),
+        asset_feed_spec: JSON.stringify(assetFeedSpec),
+        access_token: accessToken,
+      };
+      if (cleanLinkUrl) creativeParams.link_url = cleanLinkUrl;
+      if (cleanUrlTags) creativeParams.url_tags = cleanUrlTags;
+
+      console.log(`[Meta PAC AdCreative] Configured Placement Asset Customization for 1 Ad: Feed Hash: ${feedPlacementHash}, Story Hash: ${storyPlacementHash}`);
+    } else {
+      const linkData = {
+        link: cleanLinkUrl,
+        call_to_action: {
+          type: effectiveCta,
+          value: {
+            link: cleanLinkUrl,
+            ...(cleanDisplayLink ? { link_caption: cleanDisplayLink } : {}),
+          },
+        },
+      };
+
+      if (cleanPrimaryText) linkData.message = cleanPrimaryText;
+      if (cleanHeadline) {
+        const origBytes = Buffer.byteLength(cleanHeadline, "utf8");
+        linkData.name = this.truncateToMaxBytes(cleanHeadline, 250);
+        if (origBytes > 250) {
+          console.log(`[Meta Image Creative Headline Enforced]: Truncated headline from ${origBytes} bytes to ${Buffer.byteLength(linkData.name, "utf8")} bytes to comply with Meta 255-byte limit.`);
+        }
+      }
+      if (cleanDescription) linkData.description = cleanDescription;
+      if (effectiveImageHash) {
+        linkData.image_hash = effectiveImageHash;
+      } else if (effectiveImageUrl) {
+        linkData.picture = effectiveImageUrl;
+      }
+      if (cleanDisplayLink) linkData.caption = this.truncateToMaxBytes(cleanDisplayLink, 250);
+
+      objectStorySpec = {
+        page_id: effectivePageId,
+        ...(effectiveInstagramUserId ? { instagram_user_id: effectiveInstagramUserId } : {}),
+        link_data: linkData,
+      };
+
+      creativeParams = {
+        name: this.formatCreativeName(name, "Creative"),
+        object_story_spec: JSON.stringify(objectStorySpec),
+        access_token: accessToken,
+      };
+      if (cleanLinkUrl) creativeParams.link_url = cleanLinkUrl;
+      if (cleanUrlTags) creativeParams.url_tags = cleanUrlTags;
+    }
 
     const parseBoolean = (val) => {
       if (val === true || val === 1 || val === "1") return true;
@@ -2747,6 +2987,10 @@ export class MetaApiService {
         callToAction: effectiveCta,
         linkUrl: cleanLinkUrl,
         displayLink: cleanDisplayLink,
+        imageHash: hasMultiPlacementImages ? feedPlacementHash : effectiveImageHash,
+        imageHashes: hasMultiPlacementImages ? [feedPlacementHash, storyPlacementHash] : (effectiveImageHash ? [effectiveImageHash] : []),
+        multiImages: hasMultiPlacementImages ? candidateMultiImages : [],
+        placementCustomization: hasMultiPlacementImages,
         trackingSpecs: simTrackingSpecs,
         pixelId: pixelId || null,
         appId: appId || applicationId || null,
@@ -2972,7 +3216,17 @@ export class MetaApiService {
     return await this.withRateLimitRetry(async () => {
       try {
         const response = await axios.post(adUrl, null, { params: payload });
-        return { ...response.data, creativeId, pageId: effectivePageId, pixelId: effectivePixelId, urlTags: cleanUrlTags, imageHash: effectiveImageHash };
+        return {
+          ...response.data,
+          creativeId,
+          pageId: effectivePageId,
+          pixelId: effectivePixelId,
+          urlTags: cleanUrlTags,
+          imageHash: hasMultiPlacementImages ? feedPlacementHash : effectiveImageHash,
+          imageHashes: hasMultiPlacementImages ? [feedPlacementHash, storyPlacementHash] : (effectiveImageHash ? [effectiveImageHash] : []),
+          multiImages: hasMultiPlacementImages ? candidateMultiImages : [],
+          placementCustomization: hasMultiPlacementImages,
+        };
       } catch (error) {
         const initialMetaErr = error.response?.data?.error;
         const errMsg = (initialMetaErr?.message || initialMetaErr?.error_user_msg || error.message || "").toLowerCase();
@@ -2984,7 +3238,15 @@ export class MetaApiService {
             const retryPayload = { ...payload };
             delete retryPayload.tracking_specs;
             const retryRes = await axios.post(adUrl, null, { params: retryPayload });
-            return { ...retryRes.data, creativeId, pageId: effectivePageId, imageHash: effectiveImageHash };
+            return {
+              ...retryRes.data,
+              creativeId,
+              pageId: effectivePageId,
+              imageHash: hasMultiPlacementImages ? feedPlacementHash : effectiveImageHash,
+              imageHashes: hasMultiPlacementImages ? [feedPlacementHash, storyPlacementHash] : (effectiveImageHash ? [effectiveImageHash] : []),
+              multiImages: hasMultiPlacementImages ? candidateMultiImages : [],
+              placementCustomization: hasMultiPlacementImages,
+            };
           } catch (retryErr) {
             // continue to error handling
           }

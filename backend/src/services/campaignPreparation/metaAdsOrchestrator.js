@@ -788,24 +788,70 @@ export class MetaAdsOrchestrator {
                     status: "READY",
                   });
 
-                  // If this folder contained multiple images (e.g. 2 images), ensure all folder assets are uploaded to Meta Ads
-                  if (Array.isArray(currentDlInfo?.allFolderAssets) && currentDlInfo.allFolderAssets.length > 1) {
-                    for (let faIdx = 1; faIdx < currentDlInfo.allFolderAssets.length; faIdx++) {
-                      const extraAsset = currentDlInfo.allFolderAssets[faIdx];
-                      if (extraAsset?.filePath && fs.existsSync(extraAsset.filePath)) {
+                  // Detect and collect all placement images for this row (e.g. 2 images: 1 Feed, 1 Story)
+                  const uploadedMulti = [];
+                  const feedRole = MetaApiService.classifyImagePlacementRole({ filePath: localFilePath, fileName: path.basename(localFilePath) });
+                  uploadedMulti.push({
+                    hash: String(rowImgHash),
+                    url: imgUpRes?.url || null,
+                    role: feedRole.role,
+                    ratio: feedRole.ratio,
+                    width: feedRole.width,
+                    height: feedRole.height,
+                    filePath: localFilePath,
+                    fileName: path.basename(localFilePath),
+                    assetId: targetImgFileId || null,
+                  });
+
+                  // If this row has multiple images (from Drive folder or multiImageAssets), ensure all are uploaded to Meta Ads
+                  const candidateExtraAssets = (Array.isArray(adConfig.multiImageAssets) && adConfig.multiImageAssets.length > 1)
+                    ? adConfig.multiImageAssets.slice(1)
+                    : (Array.isArray(currentDlInfo?.allFolderAssets) && currentDlInfo.allFolderAssets.length > 1)
+                      ? currentDlInfo.allFolderAssets.slice(1)
+                      : [];
+
+                  if (candidateExtraAssets.length > 0) {
+                    for (let faIdx = 0; faIdx < candidateExtraAssets.length; faIdx++) {
+                      const extraAsset = candidateExtraAssets[faIdx];
+                      let extraFilePath = extraAsset?.filePath;
+                      if (!extraFilePath || !fs.existsSync(extraFilePath)) {
                         try {
-                          emit(4, `Row #${rowNo}: Uploading additional image #${faIdx + 1} ("${extraAsset.fileName}") to Meta Ads Manager...`);
+                          const extraDl = await driveService.downloadCreative(extraAsset.url || extraAsset.fileId || extraAsset.id || extraAsset.webViewLink, null, "image");
+                          if (extraDl?.filePath && fs.existsSync(extraDl.filePath)) {
+                            extraFilePath = extraDl.filePath;
+                          }
+                        } catch (extraDlErr) {
+                          console.warn(`[MetaAdsOrchestrator] Extra asset download notice:`, extraDlErr.message);
+                        }
+                      }
+
+                      if (extraFilePath && fs.existsSync(extraFilePath)) {
+                        try {
+                          emit(4, `Row #${rowNo}: Uploading placement image #${faIdx + 2} ("${extraAsset.fileName || path.basename(extraFilePath)}") to Meta Ads Manager...`);
                           const extraUpRes = await MetaApiService.uploadAdImage(targetAccountId, effectiveToken, {
-                            filePath: extraAsset.filePath,
+                            filePath: extraFilePath,
                             userId,
                             sourceRow: rowNo,
                             rowNo,
-                            adName: `${adConfig.adName} - Creative ${faIdx + 1}`,
+                            adName: `${adConfig.adName} - Placement ${faIdx + 2}`,
                           });
                           if (extraUpRes?.hash) {
-                            emit(4, `✅ Row #${rowNo}: Uploaded additional Meta Image Hash ${extraUpRes.hash} ("${extraAsset.fileName}").`);
+                            const roleInfo = MetaApiService.classifyImagePlacementRole({ filePath: extraFilePath, fileName: extraAsset.fileName || path.basename(extraFilePath) });
+                            emit(4, `✅ Row #${rowNo}: Uploaded Meta Image Hash ${extraUpRes.hash} (${roleInfo.role}: ${roleInfo.width || "auto"}x${roleInfo.height || "auto"}).`);
                             if (extraAsset.id) dbImageMap.set(`file_${extraAsset.id}`, String(extraUpRes.hash));
                             if (extraAsset.url) dbImageMap.set(extraAsset.url, String(extraUpRes.hash));
+                            uploadedMulti.push({
+                              hash: String(extraUpRes.hash),
+                              url: extraUpRes.url || null,
+                              role: roleInfo.role,
+                              ratio: roleInfo.ratio,
+                              width: roleInfo.width,
+                              height: roleInfo.height,
+                              filePath: extraFilePath,
+                              fileName: extraAsset.fileName || path.basename(extraFilePath),
+                              assetId: extraAsset.id || extraAsset.fileId || null,
+                            });
+
                             await MetaUploadedMedia.recordMedia({
                               userId,
                               accountId: targetAccountId,
@@ -814,10 +860,10 @@ export class MetaAdsOrchestrator {
                               imageHash: String(extraUpRes.hash),
                               sourceRow: rowNo,
                               rowNumber: rowNo,
-                              adName: `${adConfig.adName} - Creative ${faIdx + 1}`,
+                              adName: `${adConfig.adName} - Placement ${faIdx + 2}`,
                               sourceUrl: extraAsset.url || extraAsset.webViewLink || adConfig.creative,
                               fileId: extraAsset.id || null,
-                              localFilePath: extraAsset.filePath,
+                              localFilePath: extraFilePath,
                               campaignName: session.campaignName,
                               adSetName: session.adSetName,
                               sessionId: session.sessionId,
@@ -832,6 +878,14 @@ export class MetaAdsOrchestrator {
                         }
                       }
                     }
+                  }
+
+                  if (uploadedMulti.length >= 2) {
+                    adConfig.multiImages = uploadedMulti;
+                    adConfig.imageHashes = uploadedMulti.map((u) => u.hash);
+                    existingRes.multiImages = uploadedMulti;
+                    existingRes.imageHashes = uploadedMulti.map((u) => u.hash);
+                    emit(4, `🎯 Row #${rowNo} ("${adConfig.adName}"): Placement Asset Customization enabled with ${uploadedMulti.length} images (Feed: ${uploadedMulti[0].hash}, Story: ${uploadedMulti[1].hash})`);
                   }
 
                   if (session.preview?.adDetails?.[i]) {
@@ -1004,6 +1058,8 @@ export class MetaAdsOrchestrator {
               imageUrl: adConfig.creative,
               driveUrl: adConfig.creative,
               imageHash: rowImageHash,
+              imageHashes: adConfig.imageHashes || (rowImageHash ? [rowImageHash] : []),
+              multiImages: adConfig.multiImages || [],
               pixelId: adPixelId,
               appId: adAppId,
               objectStoreUrl: adStoreUrl,
@@ -1017,6 +1073,8 @@ export class MetaAdsOrchestrator {
           const creativeId = createdAdRes.data?.creativeId || createdAdRes.creativeId;
           const outVideoId = createdAdRes.data?.videoId || createdAdRes.videoId || rowVideoId;
           const outImageHash = createdAdRes.data?.imageHash || createdAdRes.imageHash || rowImageHash;
+          const outImageHashes = createdAdRes.data?.imageHashes || createdAdRes.imageHashes || adConfig.imageHashes || (outImageHash ? [outImageHash] : []);
+          const isPAC = Boolean(createdAdRes.data?.placementCustomization || createdAdRes.placementCustomization || (outImageHashes && outImageHashes.length > 1));
 
           if (adId) {
             existingRes.status = "SUCCESS";
@@ -1024,8 +1082,11 @@ export class MetaAdsOrchestrator {
             existingRes.creativeId = creativeId || `creative_${adId}`;
             existingRes.videoId = outVideoId || null;
             existingRes.imageHash = outImageHash || null;
+            existingRes.imageHashes = outImageHashes;
+            existingRes.multiImages = createdAdRes.data?.multiImages || createdAdRes.multiImages || adConfig.multiImages || [];
+            existingRes.placementCustomization = isPAC;
             existingRes.error = null;
-            emit(4, `🎉 Ad "${adConfig.adName}" (Row #${rowNo}) Created Successfully! (Ad ID: ${adId})`);
+            emit(4, `🎉 Ad "${adConfig.adName}" (Row #${rowNo}) Created Successfully! (Ad ID: ${adId}${isPAC ? `, Placement Customization: ${outImageHashes.length} images` : ""})`);
 
             console.log("--------------------------------------------------------------------------------");
             console.log(`🚀 ROW #${rowNo < 10 ? "0" + rowNo : rowNo} | Ad Name: "${adConfig.adName}"`);

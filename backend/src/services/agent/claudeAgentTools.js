@@ -754,6 +754,9 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
         .default("BOOK_NOW")
         .describe("Call to action button (e.g. 'BOOK_NOW', 'SHOP_NOW', 'LEARN_MORE', 'DOWNLOAD', 'INSTALL_APP', etc.)"),
       imageUrl: z.string().optional().describe("Optional image URL"),
+      imageHash: z.string().optional().describe("Optional primary Meta image hash"),
+      imageHashes: z.array(z.string()).optional().describe("Optional array of Meta image hashes for placement asset customization (PAC)"),
+      multiImages: z.array(z.any()).optional().describe("Optional structured placement images with roles (FEED vs STORY)"),
       pageId: z.string().optional().describe("Optional Facebook Page ID (auto-resolved from connected pages if omitted)"),
       instagramId: z.string().optional().describe("Optional Instagram account ID"),
       instagramActorId: z.string().optional().describe("Optional Instagram actor ID"),

@@ -104,6 +104,53 @@ export class McpExecutionLogger {
 
     return logEntry;
   }
+
+  /**
+   * Log structured diagnostic stages for official Meta MCP connection
+   * Safe logs for: META_MCP_ENDPOINT_CHECK, META_MCP_AUTH_CHECK, META_MCP_HANDSHAKE,
+   * META_MCP_TOOLS_DISCOVERY, META_MCP_READONLY_TEST, META_MCP_CONNECTION_RESULT.
+   * NEVER logs access tokens, authorization headers, cookies, or secrets.
+   */
+  static logDiagnosticStage({
+    stage, // e.g. "META_MCP_ENDPOINT_CHECK"
+    userId,
+    accountId,
+    status, // "PASS" | "FAIL"
+    durationMs = 0,
+    details = "",
+    error = null,
+  }) {
+    const cleanAccountId = accountId
+      ? String(accountId).startsWith("act_")
+        ? accountId
+        : `act_${accountId}`
+      : "N/A";
+
+    const sanitizedError = error
+      ? (error.message || String(error)).replace(/Bearer\s+[a-zA-Z0-9_\-\.]+/gi, "Bearer [REDACTED]")
+      : null;
+
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      userId: userId ? String(userId) : "anonymous",
+      safeAccountRef: cleanAccountId,
+      stage,
+      status: status === "PASS" ? "PASS" : "FAIL",
+      durationMs: typeof durationMs === "number" ? durationMs : 0,
+      details: typeof details === "string" ? details.replace(/Bearer\s+[a-zA-Z0-9_\-\.]+/gi, "Bearer [REDACTED]") : details,
+      error: sanitizedError,
+    };
+
+    const badge = status === "PASS" ? "✅" : "❌";
+    console.log(
+      `[DIAGNOSTIC] ${badge} [${stage}] Account: ${cleanAccountId} | Status: ${logEntry.status} (${logEntry.durationMs}ms)${details ? ` | ${logEntry.details}` : ""}`
+    );
+    if (sanitizedError) {
+      console.error(`[DIAGNOSTIC ERROR] [${stage}] Account: ${cleanAccountId} -> ${sanitizedError}`);
+    }
+
+    return logEntry;
+  }
 }
 
 export default McpExecutionLogger;

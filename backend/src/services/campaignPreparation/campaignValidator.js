@@ -709,7 +709,59 @@ export class CampaignValidator {
         });
       }
 
-      if (resolvedDriveAssets && resolvedDriveAssets.length > 1) {
+      const areImagePlacementAssets =
+        resolvedDriveAssets &&
+        resolvedDriveAssets.length > 1 &&
+        resolvedDriveAssets.every(
+          (a) => a.isImage !== false && (a.type || "").toUpperCase() !== "VIDEO"
+        );
+
+      if (areImagePlacementAssets && userAnswers?.splitCreativeAds !== true) {
+        // Group multiple image assets (e.g. 2 images: 1 Feed, 1 Story) into 1 single Ad with Placement Asset Customization (PAC)
+        const primaryAsset = resolvedDriveAssets[0];
+        const assetUrl =
+          primaryAsset?.url ||
+          primaryAsset?.webViewLink ||
+          (primaryAsset?.fileId || primaryAsset?.id
+            ? `https://drive.google.com/file/d/${primaryAsset.fileId || primaryAsset.id}/view`
+            : mediaRef);
+
+        adLevelRows.push({
+          sourceRow: rowNo,
+          adName, // Exact Ad name from Sheet without "- Creative 1" suffix
+          pageId,
+          instagramId: rowInstagramId,
+          appId: rowAppId,
+          pixelId: pixelId || this.getFieldValue(vals, "pixelId") || vals.pixel_id || null,
+          creativeType: "IMAGE",
+          creative: assetUrl,
+          assetId: primaryAsset?.fileId || primaryAsset?.id || null,
+          assetName: primaryAsset?.name || primaryAsset?.fileName || null,
+          creativeIndex: 1,
+          totalCreativesInRow: resolvedDriveAssets.length,
+          resolvedDriveAssets,
+          multiImageAssets: resolvedDriveAssets,
+          isPlacementAssetCustomization: true,
+          primaryText,
+          headline,
+          description: this.getFieldValue(vals, "description") || "",
+          destination,
+          displayLink: rowDisplayLink,
+          urlTags: (() => {
+            const raw =
+              this.getFieldValue(vals, "urlTags") ||
+              vals.url_parameter ||
+              vals["URL Parameter"] ||
+              vals["URL Parameters"] ||
+              vals.url_tags ||
+              vals.url_parameters ||
+              null;
+            return raw ? String(raw).trim().replace(/^\?/, "") : null;
+          })(),
+          cta: this.getFieldValue(vals, "cta") || (isAppPromotion ? "DOWNLOAD" : "BOOK_NOW"),
+          status: adIssues.some((issue) => issue.rowNumber === rowNo) ? "INVALID" : "READY",
+        });
+      } else if (resolvedDriveAssets && resolvedDriveAssets.length > 1) {
         resolvedDriveAssets.forEach((asset, assetIdx) => {
           const suffix = ` - Creative ${assetIdx + 1}`;
           const currentAdName = `${adName}${suffix}`;

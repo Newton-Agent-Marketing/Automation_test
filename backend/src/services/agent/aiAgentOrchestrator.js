@@ -1146,11 +1146,15 @@ export class AiAgentOrchestrator {
           }
         }
 
+        const isLiveMcp = metaResult?.status === "LIVE_DATA_FROM_META_MCP";
+        const isDbFallback = metaResult?.status === "DATABASE_METRICS";
+
         executedTools.push({
           toolName: "fetch_live_meta_ads_mcp",
           toolArgs: { accountId: `act_${targetAccountId}`, datePreset: "last_7d" },
           toolResult: metaResult,
-          status: metaResult ? "SUCCESS" : "FAILED",
+          status: isLiveMcp ? "SUCCESS" : isDbFallback ? "DATABASE_RESULT" : metaResult ? "SUCCESS" : "FAILED",
+          executionSource: isLiveMcp ? "OFFICIAL_META_MCP" : isDbFallback ? "MONGODB_METRICS" : "UNKNOWN",
           durationMs: Date.now() - startTime,
         });
       } catch (err) {
