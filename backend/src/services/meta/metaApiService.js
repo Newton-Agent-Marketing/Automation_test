@@ -807,7 +807,7 @@ export class MetaApiService {
     }
   }
 
-  // 11.5. Auto-resolve & verify a valid Instagram User ID (instagram_user_id / instagram_actor_id)
+  // 11.5. Auto-resolve & verify a valid Instagram User ID (instagram_user_id)
   static async resolveInstagramUserId(accountId, accessToken, pageId, requestedIgId, source = "Excel Sheet / Request") {
     const isPresent = Boolean(requestedIgId && String(requestedIgId).trim());
     let isVerified = false;
@@ -830,7 +830,6 @@ export class MetaApiService {
           // 1. Check Ad Account linked instagram accounts via Meta Graph API
           const accIgRes = await axios.get(`${META_GRAPH_URL}/${cleanAccId}/instagram_accounts`, {
             params: { access_token: accessToken, fields: "id,username" },
-            timeout: 5000,
           });
           const accIgs = accIgRes.data?.data || [];
           const matchAccIg = accIgs.find((ig) => String(ig.id) === clean);
@@ -843,7 +842,6 @@ export class MetaApiService {
           if (!isVerified && pageId) {
             const pageIgRes = await axios.get(`${META_GRAPH_URL}/${pageId}`, {
               params: { access_token: accessToken, fields: "instagram_business_account,connected_instagram_account" },
-              timeout: 5000,
             });
             const linkedId = pageIgRes.data?.instagram_business_account?.id || pageIgRes.data?.connected_instagram_account?.id;
             if (linkedId && String(linkedId) === clean) {
@@ -854,93 +852,12 @@ export class MetaApiService {
         } catch (vErr) {
           isVerified = false;
         }
-
-        // If explicitly requested as numeric ID, accept as strong candidate even if lookup threw
-        if (!isVerified && /^\d{10,25}$/.test(clean)) {
-          verifiedId = clean;
-          isVerified = true;
-        }
       }
     }
 
-    // Auto-discover when not provided or unverified
-    if (!verifiedId && pageId && accessToken && !accessToken.startsWith("EAAB_simulated")) {
-      // 1. Page linked Instagram business or connected account
-      try {
-        const pageIgRes = await axios.get(`${META_GRAPH_URL}/${pageId}`, {
-          params: { access_token: accessToken, fields: "instagram_business_account,connected_instagram_account" },
-          timeout: 5000,
-        });
-        const linkedId = pageIgRes.data?.instagram_business_account?.id || pageIgRes.data?.connected_instagram_account?.id;
-        if (linkedId) {
-          verifiedId = String(linkedId);
-          isVerified = true;
-          console.log(`📸 [Meta Auto-Discovered Instagram Account from Page ${pageId}]: ID = ${verifiedId}`);
-        }
-      } catch (pageIgErr) {
-        console.warn(`[Meta Page IG Lookup Notice for Page ${pageId}]:`, pageIgErr.response?.data?.error?.message || pageIgErr.message);
-      }
-
-      // 2. Page-backed Instagram accounts (PBIA)
-      if (!verifiedId) {
-        try {
-          const pbiaRes = await axios.get(`${META_GRAPH_URL}/${pageId}/page_backed_instagram_accounts`, {
-            params: { access_token: accessToken, fields: "id,username" },
-            timeout: 5000,
-          });
-          const pbiaId = pbiaRes.data?.data?.[0]?.id;
-          if (pbiaId) {
-            verifiedId = String(pbiaId);
-            isVerified = true;
-            console.log(`📸 [Meta Auto-Discovered Page-Backed Instagram Account from Page ${pageId}]: ID = ${verifiedId}`);
-          }
-        } catch (pbiaErr) {
-          console.warn(`[Meta PBIA Lookup Notice for Page ${pageId}]:`, pbiaErr.response?.data?.error?.message || pbiaErr.message);
-        }
-      }
-
-      // 3. Auto-create Page-backed Instagram account if missing so ads can run on Instagram
-      if (!verifiedId) {
-        try {
-          const pbiaCreateRes = await axios.post(`${META_GRAPH_URL}/${pageId}/page_backed_instagram_accounts`, null, {
-            params: { access_token: accessToken },
-            timeout: 5000,
-          });
-          const newPbiaId = pbiaCreateRes.data?.id;
-          if (newPbiaId) {
-            verifiedId = String(newPbiaId);
-            isVerified = true;
-            console.log(`📸 [Meta Created Page-Backed Instagram Account for Page ${pageId}]: ID = ${verifiedId}`);
-          }
-        } catch (pbiaCreateErr) {
-          console.warn(`[Meta PBIA Creation Notice for Page ${pageId}]:`, pbiaCreateErr.response?.data?.error?.message || pbiaCreateErr.message);
-        }
-      }
-    }
-
-    // 4. Ad Account linked Instagram accounts
-    if (!verifiedId && accountId && accessToken && !accessToken.startsWith("EAAB_simulated")) {
-      try {
-        const cleanAccId = String(accountId).startsWith("act_") ? accountId : `act_${accountId}`;
-        const accIgRes = await axios.get(`${META_GRAPH_URL}/${cleanAccId}/instagram_accounts`, {
-          params: { access_token: accessToken, fields: "id,username" },
-          timeout: 5000,
-        });
-        const adAccIgId = accIgRes.data?.data?.[0]?.id;
-        if (adAccIgId) {
-          verifiedId = String(adAccIgId);
-          isVerified = true;
-          console.log(`📸 [Meta Auto-Discovered Instagram Account from Ad Account ${cleanAccId}]: ID = ${verifiedId}`);
-        }
-      } catch (adAccIgErr) {
-        console.warn(`[Meta Ad Account IG Lookup Notice for ${accountId}]:`, adAccIgErr.response?.data?.error?.message || adAccIgErr.message);
-      }
-    }
-
-    console.log(`Instagram user ID source: ${isPresent ? source : "Auto-Discovery"}`);
+    console.log(`Instagram user ID source: ${source}`);
     console.log(`Instagram user ID present: ${isPresent}`);
     console.log(`Instagram user ID verified: ${isVerified}`);
-    console.log(`Instagram ID resolved: ${verifiedId || "None"}`);
     console.log(`Page ID: ${pageId || "None"}`);
 
     if (isVerified && verifiedId) {
@@ -1730,10 +1647,7 @@ export class MetaApiService {
   static async createAdSet(
     accountId,
     accessToken,
-    params = {},
-    callerUserId = null
-  ) {
-    const {
+    {
       campaignId,
       name,
       dailyBudget,
@@ -1766,16 +1680,8 @@ export class MetaApiService {
       campaignObjective,
       destination_type,
       destinationType,
-      userId = null,
-    } = params;
-
-    const effectiveUserId = callerUserId || userId || params.userId || null;
-    const cleanId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
-    const cleanTargetRaw = cleanId.replace(/^act_/, "");
-
-    // Early token resolution so campaign lookup and adset creation have a guaranteed authentic token
-    accessToken = await this.resolveOAuthToken(cleanId, effectiveUserId, accessToken);
-
+    } = {}
+  ) {
     // --- 1. LIVE META CAMPAIGN VALIDATION CHECK ---
     const campaignUrl = `${META_GRAPH_URL}/${campaignId}`;
     console.log(`[Meta Campaign Validation Check] campaign_id: ${campaignId}`);
@@ -1866,6 +1772,9 @@ export class MetaApiService {
       throw new Error("Selected campaign is archived. Please select an active campaign.");
     }
 
+    const cleanId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
+    const cleanTargetRaw = cleanId.replace(/^act_/, "");
+    accessToken = await this.resolveOAuthToken(cleanId, params.userId, accessToken);
     if (liveCampaign?.account_id) {
       const campAccRaw = String(liveCampaign.account_id).replace(/^act_/, "");
       if (campAccRaw !== cleanTargetRaw) {
@@ -1892,18 +1801,6 @@ export class MetaApiService {
     // Only include genders if filtered to a single gender (1=Male, 2=Female). Omit if targeting all.
     if (Array.isArray(targeting.genders) && targeting.genders.length === 1) {
       targetingObj.genders = targeting.genders;
-    }
-
-    // Platform Placements: If only Facebook Page is provided (no Instagram ID), target Facebook placements.
-    // If both Page and Instagram are available, target both Facebook and Instagram.
-    const candidateIgId = params.instagramId || params.instagramActorId || params.instagram_user_id || params.instagram_actor_id || targeting.instagramId || targeting.instagramActorId;
-    if (!candidateIgId && !targeting.publisher_platforms) {
-      targetingObj.publisher_platforms = ["facebook", "audience_network", "messenger"];
-      targetingObj.facebook_positions = ["feed", "story"];
-    } else if (targeting.publisher_platforms) {
-      targetingObj.publisher_platforms = targeting.publisher_platforms;
-      if (targeting.facebook_positions) targetingObj.facebook_positions = targeting.facebook_positions;
-      if (targeting.instagram_positions) targetingObj.instagram_positions = targeting.instagram_positions;
     }
 
     // Resolve valid interest objects if provided
@@ -2622,7 +2519,7 @@ export class MetaApiService {
           return { width, height, format: "webp" };
         }
       }
-    } catch (_) {}
+    } catch (_) { }
     return null;
   }
 
@@ -2726,10 +2623,9 @@ export class MetaApiService {
       });
     }
 
-    const effectiveUserId = params.userId || params.callerUserId || null;
     const cleanId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
     const cleanTargetRaw = cleanId.replace(/^act_/, "");
-    accessToken = await this.resolveOAuthToken(cleanId, effectiveUserId, accessToken);
+    accessToken = await this.resolveOAuthToken(cleanId, params.userId, accessToken);
 
     // Early validation: Verify Ad Set belongs to the selected Meta account before creating creative
     if (adSetId && accessToken && !accessToken.startsWith("EAAB_simulated")) {
@@ -2799,6 +2695,10 @@ export class MetaApiService {
         const role = (typeof h === "object" && h.role) ? h.role : (idx === 0 ? "FEED" : "STORY");
         return { hash: hashStr, role };
       });
+    }
+
+    if (!effectiveImageHash && candidateMultiImages.length > 0 && candidateMultiImages[0]?.hash) {
+      effectiveImageHash = candidateMultiImages[0].hash;
     }
 
     const targetImg = imageUrl || driveUrl || params.image || params.creativeUrl;
@@ -2963,18 +2863,6 @@ export class MetaApiService {
       storyPlacementHash = storyImg.hash;
       effectiveImageHash = feedPlacementHash;
 
-      const defaultTextLabel = { name: "default_text_label" };
-      const hasBody = Boolean(cleanPrimaryText);
-      const hasTitle = Boolean(cleanHeadline);
-      const hasDesc = Boolean(cleanDescription);
-      const hasLinkUrl = Boolean(cleanLinkUrl);
-
-      const ruleLabelProps = {
-        ...(hasBody ? { body_label: defaultTextLabel } : {}),
-        ...(hasTitle ? { title_label: defaultTextLabel } : {}),
-        ...(hasLinkUrl ? { link_url_label: defaultTextLabel } : {}),
-      };
-
       const assetFeedSpec = {
         ad_formats: ["SINGLE_IMAGE"],
         call_to_action_types: [effectiveCta],
@@ -2988,16 +2876,19 @@ export class MetaApiService {
             adlabels: [{ name: "story_placement" }],
           },
         ],
-        bodies: hasBody ? [{ text: cleanPrimaryText, adlabels: [defaultTextLabel] }] : [],
-        titles: hasTitle ? [{ text: this.truncateToMaxBytes(cleanHeadline, 250), adlabels: [defaultTextLabel] }] : [],
-        descriptions: hasDesc ? [{ text: cleanDescription, adlabels: [defaultTextLabel] }] : [],
+        bodies: cleanPrimaryText ? [{ text: cleanPrimaryText }] : [],
+        titles: cleanHeadline ? [{ text: this.truncateToMaxBytes(cleanHeadline, 250) }] : [],
+        descriptions: cleanDescription ? [{ text: cleanDescription }] : [],
         link_urls: [
           {
             website_url: cleanLinkUrl,
             ...(cleanDisplayLink ? { display_url: cleanDisplayLink } : {}),
-            adlabels: [defaultTextLabel],
+            call_to_action: {
+              type: effectiveCta,
+            },
           },
         ],
+
         asset_customization_rules: [
           {
             customization_spec: {
@@ -3006,7 +2897,6 @@ export class MetaApiService {
               ...(effectiveInstagramUserId ? { instagram_positions: ["story", "reels"] } : {}),
             },
             image_label: { name: "story_placement" },
-            ...ruleLabelProps,
           },
           {
             customization_spec: {
@@ -3015,23 +2905,19 @@ export class MetaApiService {
               ...(effectiveInstagramUserId ? { instagram_positions: ["stream"] } : {}),
             },
             image_label: { name: "feed_placement" },
-            ...ruleLabelProps,
           },
           {
             customization_spec: {},
             image_label: { name: "feed_placement" },
-            ...ruleLabelProps,
             is_default: true,
           },
         ],
+
       };
 
       objectStorySpec = {
         page_id: effectivePageId,
-        ...(effectiveInstagramUserId ? {
-          instagram_actor_id: effectiveInstagramUserId,
-          instagram_user_id: effectiveInstagramUserId,
-        } : {}),
+        ...(effectiveInstagramUserId ? { instagram_user_id: effectiveInstagramUserId } : {}),
       };
 
       creativeParams = {
@@ -3073,10 +2959,7 @@ export class MetaApiService {
 
       objectStorySpec = {
         page_id: effectivePageId,
-        ...(effectiveInstagramUserId ? {
-          instagram_actor_id: effectiveInstagramUserId,
-          instagram_user_id: effectiveInstagramUserId,
-        } : {}),
+        ...(effectiveInstagramUserId ? { instagram_user_id: effectiveInstagramUserId } : {}),
         link_data: linkData,
       };
 
@@ -3121,7 +3004,13 @@ export class MetaApiService {
       video_filtering: { enroll_status: "OPT_IN" },
     };
 
-    if (!hasMultiPlacementImages) {
+    if (hasMultiPlacementImages) {
+      creativeParams.degrees_of_freedom_spec = JSON.stringify({
+        creative_features_spec: {
+          standard_enhancements: { enroll_status: "OPT_OUT" },
+        },
+      });
+    } else {
       creativeParams.degrees_of_freedom_spec = JSON.stringify({
         degrees_of_freedom_type: "USER_ENROLLED",
         creative_features_spec: fullCreativeFeaturesSpec,
@@ -3223,59 +3112,41 @@ export class MetaApiService {
         delete objectStorySpec.instagram_user_id;
         creativeParams.object_story_spec = JSON.stringify(objectStorySpec);
       }
-      if (hasMultiPlacementImages) {
-        console.warn(`[Meta Creative Fallback]: Placement Asset Customization creative attempt 1 failed (${firstErr?.message || err.message}). Retrying with standard image creative...`);
-        const fallbackLinkData = {
-          link: cleanLinkUrl,
-          call_to_action: {
-            type: effectiveCta,
-            value: {
-              link: cleanLinkUrl,
-              ...(cleanDisplayLink ? { link_caption: cleanDisplayLink } : {}),
+      // Attempt 2: Retry with exact core spec keys without non-standard keys
+      try {
+        creativeParams.degrees_of_freedom_spec = JSON.stringify({
+          degrees_of_freedom_type: "USER_ENROLLED",
+          creative_features_spec: {
+            advantage_plus_creative: { enroll_status: "OPT_IN" },
+            text_optimizations: { enroll_status: "OPT_IN" },
+            inline_comment: { enroll_status: "OPT_IN" },
+            enhance_cta: {
+              enroll_status: "OPT_IN",
+              customizations: {
+                text_extraction: {
+                  enroll_status: "OPT_IN",
+                },
+              },
             },
+            image_touchups: { enroll_status: "OPT_IN" },
           },
-          image_hash: feedPlacementHash || effectiveImageHash,
-        };
-        if (cleanPrimaryText) fallbackLinkData.message = cleanPrimaryText;
-        if (cleanHeadline) fallbackLinkData.name = this.truncateToMaxBytes(cleanHeadline, 250);
-        if (cleanDescription) fallbackLinkData.description = cleanDescription;
-
-        const fallbackStorySpec = {
-          page_id: effectivePageId,
-          ...(effectiveInstagramUserId ? {
-            instagram_actor_id: effectiveInstagramUserId,
-            instagram_user_id: effectiveInstagramUserId,
-          } : {}),
-          link_data: fallbackLinkData,
-        };
-
-        const fallbackParams = {
-          name: this.formatCreativeName(name, "Creative"),
-          object_story_spec: JSON.stringify(fallbackStorySpec),
-          access_token: accessToken,
-        };
-        if (cleanLinkUrl) fallbackParams.link_url = cleanLinkUrl;
-        if (cleanUrlTags) fallbackParams.url_tags = cleanUrlTags;
-
-        try {
-          const fallbackRes = await axios.post(creativeUrl, null, { params: fallbackParams });
-          console.log("[Meta Image Creative Standard Fallback Success Response]:", fallbackRes.data);
-          creativeId = fallbackRes.data?.id;
-        } catch (stdErr) {
-          if (fallbackStorySpec.instagram_actor_id) {
-            delete fallbackStorySpec.instagram_actor_id;
-            delete fallbackStorySpec.instagram_user_id;
-            fallbackParams.object_story_spec = JSON.stringify(fallbackStorySpec);
-            const fallbackRes2 = await axios.post(creativeUrl, null, { params: fallbackParams });
-            creativeId = fallbackRes2.data?.id;
-          } else {
-            console.warn("[Meta Image Creative Standard Fallback Warning]:", stdErr.response?.data?.error || stdErr.message);
-          }
+        });
+        console.log("[Final Creative Payload (Retry 2)]:", {
+          creativeUrl,
+          creativeParams: { ...creativeParams, access_token: "[REDACTED]" },
+        });
+        const retryRes2 = await axios.post(creativeUrl, null, { params: creativeParams });
+        console.log("[Meta Image Creative Attempt 2 Success Response]:", retryRes2.data);
+        creativeId = retryRes2.data?.id;
+      } catch (retryErr2) {
+        console.warn("[Meta Image Creative Attempt 2 Warning]:", retryErr2.response?.data?.error || retryErr2.message);
+        const err2 = retryErr2.response?.data?.error;
+        if (err2?.code === 10 || err2?.error_subcode === 3858749 || (err2?.message || "").toLowerCase().includes("permission")) {
+          delete objectStorySpec.instagram_actor_id;
+          delete objectStorySpec.instagram_user_id;
+          creativeParams.object_story_spec = JSON.stringify(objectStorySpec);
         }
-      }
-
-      if (!creativeId) {
-        // Attempt 2: Retry with exact core spec keys without non-standard keys
+        // Attempt 3: Core text, comment & CTA fallback with USER_ENROLLED
         try {
           creativeParams.degrees_of_freedom_spec = JSON.stringify({
             degrees_of_freedom_type: "USER_ENROLLED",
@@ -3292,53 +3163,19 @@ export class MetaApiService {
                 },
               },
               image_touchups: { enroll_status: "OPT_IN" },
+              video_auto_crop: { enroll_status: "OPT_IN" },
+              video_filtering: { enroll_status: "OPT_IN" },
             },
           });
-          console.log("[Final Creative Payload (Retry 2)]:", {
-            creativeUrl,
-            creativeParams: { ...creativeParams, access_token: "[REDACTED]" },
-          });
-          const retryRes2 = await axios.post(creativeUrl, null, { params: creativeParams });
-          console.log("[Meta Image Creative Attempt 2 Success Response]:", retryRes2.data);
-          creativeId = retryRes2.data?.id;
-        } catch (retryErr2) {
-          console.warn("[Meta Image Creative Attempt 2 Warning]:", retryErr2.response?.data?.error || retryErr2.message);
-          const err2 = retryErr2.response?.data?.error;
-          if (err2?.code === 10 || err2?.error_subcode === 3858749 || (err2?.message || "").toLowerCase().includes("permission")) {
-            delete objectStorySpec.instagram_actor_id;
-            delete objectStorySpec.instagram_user_id;
-            creativeParams.object_story_spec = JSON.stringify(objectStorySpec);
-          }
-          // Attempt 3: Core text, comment & CTA fallback with USER_ENROLLED
-          try {
-            creativeParams.degrees_of_freedom_spec = JSON.stringify({
-              degrees_of_freedom_type: "USER_ENROLLED",
-              creative_features_spec: {
-                advantage_plus_creative: { enroll_status: "OPT_IN" },
-                text_optimizations: { enroll_status: "OPT_IN" },
-                inline_comment: { enroll_status: "OPT_IN" },
-                enhance_cta: {
-                  enroll_status: "OPT_IN",
-                  customizations: {
-                    text_extraction: {
-                      enroll_status: "OPT_IN",
-                    },
-                  },
-                },
-                image_touchups: { enroll_status: "OPT_IN" },
-                video_auto_crop: { enroll_status: "OPT_IN" },
-                video_filtering: { enroll_status: "OPT_IN" },
-              },
-            });
-            const retryRes3 = await axios.post(creativeUrl, null, { params: creativeParams });
-            console.log("[Meta Image Creative Attempt 3 Success Response]:", retryRes3.data);
-            creativeId = retryRes3.data?.id;
-          } catch (retryErr3) {
-            console.warn("[Meta Image Creative Attempt 3 Warning]:", retryErr3.response?.data?.error || retryErr3.message);
-            const metaErr = retryErr3.response?.data?.error || retryErr2.response?.data?.error || err.response?.data?.error;
-            const msg = metaErr ? `[${metaErr.code}]: ${metaErr.message || metaErr.error_user_msg}` : retryErr3.message;
-            throw new Error(`Meta Ad Creative Creation Failed: ${msg}`);
-          }
+          const retryRes3 = await axios.post(creativeUrl, null, { params: creativeParams });
+          console.log("[Meta Image Creative Attempt 3 Success Response]:", retryRes3.data);
+          creativeId = retryRes3.data?.id;
+        } catch (retryErr3) {
+          console.warn("[Meta Image Creative Attempt 3 Warning]:", retryErr3.response?.data?.error || retryErr3.message);
+          const metaErr = retryErr3.response?.data?.error || retryEr
+          r2.response?.data?.error || err.response?.data?.error;
+          const msg = metaErr ? `[${metaErr.code}]: ${metaErr.message || metaErr.error_user_msg}` : retryErr3.message;
+          throw new Error(`Meta Ad Creative Creation Failed: ${msg}`);
         }
       }
     }
@@ -3479,137 +3316,6 @@ export class MetaApiService {
             };
           } catch (retryErr) {
             // continue to error handling
-          }
-        }
-
-        const latestMetaErr = error.response?.data?.error || initialMetaErr;
-        const latestSubcode = latestMetaErr?.error_subcode;
-        const latestErrMsg = (latestMetaErr?.message || latestMetaErr?.error_user_msg || error.message || "").toLowerCase();
-        const isAdUncoverableErr = latestSubcode === 2446485 || latestErrMsg.includes("uncoverable") || latestErrMsg.includes("delete this ad and create a new one");
-        const isInstagramMissingErr = latestSubcode === 1772103 || latestErrMsg.includes("instagram account is missing");
-
-        // Resilient Fallback: If PAC creative was rejected (e.g. 2446485) or Instagram account is missing (1772103) or placement conflict
-        if (hasMultiPlacementImages || isAdUncoverableErr || isInstagramMissingErr) {
-          try {
-            console.warn(`[Meta Ad Creation Fallback]: Creative ${creativeId} resulted in ad creation error (subcode: ${latestSubcode || "none"}, msg: ${latestMetaErr?.error_user_title || latestMetaErr?.message}). Deploying standard creative fallback...`);
-
-            const fallbackLinkData = {
-              link: cleanLinkUrl,
-              call_to_action: {
-                type: effectiveCta,
-                value: {
-                  link: cleanLinkUrl,
-                  ...(cleanDisplayLink ? { link_caption: cleanDisplayLink } : {}),
-                },
-              },
-              image_hash: feedPlacementHash || effectiveImageHash,
-            };
-            if (cleanPrimaryText) fallbackLinkData.message = cleanPrimaryText;
-            if (cleanHeadline) fallbackLinkData.name = this.truncateToMaxBytes(cleanHeadline, 250);
-            if (cleanDescription) fallbackLinkData.description = cleanDescription;
-
-            const fallbackStorySpec = {
-              page_id: effectivePageId,
-              link_data: fallbackLinkData,
-            };
-            if (effectiveInstagramUserId) {
-              fallbackStorySpec.instagram_actor_id = effectiveInstagramUserId;
-              fallbackStorySpec.instagram_user_id = effectiveInstagramUserId;
-            }
-
-            const fallbackCreativeParams = {
-              name: this.formatCreativeName(`${name || "Ad"} Standard`, "Creative"),
-              object_story_spec: JSON.stringify(fallbackStorySpec),
-              access_token: accessToken,
-            };
-            if (cleanLinkUrl) fallbackCreativeParams.link_url = cleanLinkUrl;
-            if (cleanUrlTags) fallbackCreativeParams.url_tags = cleanUrlTags;
-
-            let fallbackCreativeRes = null;
-            try {
-              fallbackCreativeRes = await axios.post(creativeUrl, null, { params: fallbackCreativeParams });
-            } catch (fbCreatErr) {
-              if (fallbackStorySpec.instagram_actor_id) {
-                delete fallbackStorySpec.instagram_actor_id;
-                delete fallbackStorySpec.instagram_user_id;
-                fallbackCreativeParams.object_story_spec = JSON.stringify(fallbackStorySpec);
-                fallbackCreativeRes = await axios.post(creativeUrl, null, { params: fallbackCreativeParams });
-              } else {
-                throw fbCreatErr;
-              }
-            }
-
-            const fallbackCreativeId = fallbackCreativeRes?.data?.id;
-            if (fallbackCreativeId) {
-              console.log(`[Meta Ad Creation Fallback]: Standard creative created: ${fallbackCreativeId}. Retrying ad creation...`);
-              const fallbackPayload = {
-                name: formatAdName(name),
-                adset_id: adSetId,
-                status: status || "PAUSED",
-                access_token: accessToken,
-                creative: JSON.stringify({ creative_id: fallbackCreativeId }),
-              };
-              if (cleanUrlTags) fallbackPayload.url_tags = cleanUrlTags;
-
-              const fallbackAdRes = await axios.post(adUrl, null, { params: fallbackPayload });
-              console.log(`[Meta Ad Creation Fallback]: ✅ Ad created successfully with standard fallback creative:`, fallbackAdRes.data);
-
-              return {
-                ...fallbackAdRes.data,
-                creativeId: fallbackCreativeId,
-                pageId: effectivePageId,
-                pixelId: effectivePixelId,
-                urlTags: cleanUrlTags,
-                imageHash: feedPlacementHash || effectiveImageHash,
-                imageHashes: [feedPlacementHash, storyPlacementHash].filter(Boolean),
-                multiImages: candidateMultiImages,
-                placementCustomization: false,
-                fallbackUsed: true,
-              };
-            }
-          } catch (fallbackError) {
-            console.warn("[Meta Ad Creation Fallback Warning]:", fallbackError.response?.data?.error || fallbackError.message);
-          }
-        }
-
-        if (isInstagramMissingErr && adSetId) {
-          try {
-            console.warn(`[Meta Ad Creation Notice]: Instagram account is missing for this Page. Updating Ad Set ${adSetId} to Facebook-only placements and retrying ad creation...`);
-            const adSetUrl = `${META_GRAPH_URL}/${adSetId}`;
-            const curAdSet = await axios.get(adSetUrl, {
-              params: { access_token: accessToken, fields: "targeting" },
-              timeout: 5000,
-            }).catch(() => null);
-            const curTargeting = curAdSet?.data?.targeting || {};
-            curTargeting.publisher_platforms = ["facebook", "audience_network", "messenger"];
-            curTargeting.facebook_positions = ["feed", "story"];
-            delete curTargeting.instagram_positions;
-
-            await axios.post(adSetUrl, null, {
-              params: {
-                targeting: JSON.stringify(curTargeting),
-                access_token: accessToken,
-              },
-              timeout: 5000,
-            });
-
-            console.log(`[Meta Ad Creation Notice]: Ad Set ${adSetId} updated to Facebook-only placements. Retrying ad creation now...`);
-            const retryPayload = { ...payload };
-            delete retryPayload.tracking_specs;
-            const retryRes = await axios.post(adUrl, null, { params: retryPayload });
-            return {
-              ...retryRes.data,
-              creativeId,
-              pageId: effectivePageId,
-              pixelId: effectivePixelId,
-              urlTags: cleanUrlTags,
-              imageHash: hasMultiPlacementImages ? feedPlacementHash : effectiveImageHash,
-              imageHashes: hasMultiPlacementImages ? [feedPlacementHash, storyPlacementHash] : (effectiveImageHash ? [effectiveImageHash] : []),
-              multiImages: hasMultiPlacementImages ? candidateMultiImages : [],
-              placementCustomization: hasMultiPlacementImages,
-            };
-          } catch (igRetryErr) {
-            console.warn("[Meta Ad Creation Instagram Retry Warning]:", igRetryErr.response?.data?.error || igRetryErr.message);
           }
         }
 
@@ -4386,6 +4092,13 @@ export class MetaApiService {
       console.log("[Meta Video Creative]: No explicit thumbnail image_hash or image_url provided; Meta will render thumbnail from video_id natively.");
     }
 
+    console.log("[META PAC DEBUG]", {
+      totalImages: candidateMultiImages.length,
+      feedHash: candidateMultiImages.find(x => x.role === "FEED")?.hash,
+      storyHash: candidateMultiImages.find(x => x.role === "STORY")?.hash,
+      hasMultiPlacementImages,
+    });
+
     // Step 1: Create Video Ad Creative
     const creativeUrl = `${META_GRAPH_URL}/${cleanId}/adcreatives`;
     const videoDataPayload = {
@@ -4403,6 +4116,7 @@ export class MetaApiService {
         },
       },
     };
+
 
     if (cleanPrimaryText) videoDataPayload.message = cleanPrimaryText;
     if (cleanHeadline) {
@@ -4475,7 +4189,13 @@ export class MetaApiService {
       video_filtering: { enroll_status: "OPT_IN" },
     };
 
-    if (!hasMultiPlacementImages) {
+    if (hasMultiPlacementImages) {
+      creativeParams.degrees_of_freedom_spec = JSON.stringify({
+        creative_features_spec: {
+          standard_enhancements: { enroll_status: "OPT_OUT" },
+        },
+      });
+    } else {
       creativeParams.degrees_of_freedom_spec = JSON.stringify({
         degrees_of_freedom_type: "USER_ENROLLED",
         creative_features_spec: fullCreativeFeaturesSpec,
