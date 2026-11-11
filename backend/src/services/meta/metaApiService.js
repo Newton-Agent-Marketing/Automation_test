@@ -2889,9 +2889,6 @@ export class MetaApiService {
           {
             website_url: cleanLinkUrl,
             ...(cleanDisplayLink ? { display_url: cleanDisplayLink } : {}),
-            call_to_action: {
-              type: effectiveCta,
-            },
           },
         ],
 
