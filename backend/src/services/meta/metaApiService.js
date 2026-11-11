@@ -2964,7 +2964,7 @@ export class MetaApiService {
           },
           {
             customization_spec: {
-              publisher_platforms: ["facebook", ...(effectiveInstagramUserId ? ["instagram"] : []), "audience_network", "messenger"],
+              publisher_platforms: ["facebook", ...(effectiveInstagramUserId ? ["instagram"] : [])],
               facebook_positions: ["feed"],
               ...(effectiveInstagramUserId ? { instagram_positions: ["stream"] } : {}),
             },
@@ -3435,6 +3435,108 @@ export class MetaApiService {
             };
           } catch (igRetryErr) {
             console.warn("[Meta Ad Creation Instagram Retry Warning]:", igRetryErr.response?.data?.error || igRetryErr.message);
+          }
+        }
+
+        const latestMetaErr = error.response?.data?.error || initialMetaErr;
+        const latestSubcode = latestMetaErr?.error_subcode;
+        const latestErrMsg = (latestMetaErr?.message || latestMetaErr?.error_user_msg || error.message || "").toLowerCase();
+        const isAdUncoverableErr = latestSubcode === 2446485 || latestErrMsg.includes("uncoverable") || latestErrMsg.includes("delete this ad and create a new one");
+
+        if (hasMultiPlacementImages && isAdUncoverableErr) {
+          try {
+            console.warn(`[Meta Ad Creation Fallback]: Creative ${creativeId} resulted in uncoverable ad creation error (subcode 2446485). Deploying standard creative fallback...`);
+
+            const fallbackLinkData = {
+              link: cleanLinkUrl,
+              call_to_action: {
+                type: effectiveCta,
+                value: {
+                  link: cleanLinkUrl,
+                  ...(cleanDisplayLink ? { link_caption: cleanDisplayLink } : {}),
+                },
+              },
+              image_hash: feedPlacementHash || effectiveImageHash,
+            };
+            if (cleanPrimaryText) fallbackLinkData.message = cleanPrimaryText;
+            if (cleanHeadline) fallbackLinkData.name = this.truncateToMaxBytes(cleanHeadline, 250);
+            if (cleanDescription) fallbackLinkData.description = cleanDescription;
+
+            const fallbackStorySpec = {
+              page_id: effectivePageId,
+              link_data: fallbackLinkData,
+            };
+            if (effectiveInstagramUserId) {
+              fallbackStorySpec.instagram_actor_id = effectiveInstagramUserId;
+              fallbackStorySpec.instagram_user_id = effectiveInstagramUserId;
+            }
+
+            const fallbackCreativeParams = {
+              name: this.formatCreativeName(`${name || "Ad"} Standard`, "Creative"),
+              object_story_spec: JSON.stringify(fallbackStorySpec),
+              access_token: accessToken,
+            };
+            if (cleanLinkUrl) fallbackCreativeParams.link_url = cleanLinkUrl;
+            if (cleanUrlTags) fallbackCreativeParams.url_tags = cleanUrlTags;
+
+            let fallbackCreativeRes = null;
+            try {
+              fallbackCreativeRes = await axios.post(creativeUrl, null, { params: fallbackCreativeParams });
+            } catch (fbCreatErr) {
+              if (fallbackStorySpec.instagram_actor_id) {
+                delete fallbackStorySpec.instagram_actor_id;
+                delete fallbackStorySpec.instagram_user_id;
+                fallbackCreativeParams.object_story_spec = JSON.stringify(fallbackStorySpec);
+                fallbackCreativeRes = await axios.post(creativeUrl, null, { params: fallbackCreativeParams });
+              } else {
+                throw fbCreatErr;
+              }
+            }
+
+            const fallbackCreativeId = fallbackCreativeRes?.data?.id;
+            if (fallbackCreativeId) {
+              console.log(`[Meta Ad Creation Fallback]: Standard creative created: ${fallbackCreativeId}. Retrying ad creation...`);
+              const fallbackPayload = {
+                name: formatAdName(name),
+                adset_id: adSetId,
+                status: status || "PAUSED",
+                access_token: accessToken,
+                creative: JSON.stringify({ creative_id: fallbackCreativeId }),
+              };
+              if (cleanUrlTags) fallbackPayload.url_tags = cleanUrlTags;
+              if (payload.tracking_specs) fallbackPayload.tracking_specs = payload.tracking_specs;
+              if (payload.pixel_id) fallbackPayload.pixel_id = payload.pixel_id;
+
+              let fallbackAdRes;
+              try {
+                fallbackAdRes = await axios.post(adUrl, null, { params: fallbackPayload });
+              } catch (fallbackAdErr) {
+                if (fallbackPayload.tracking_specs) {
+                  const retryNoTracking = { ...fallbackPayload };
+                  delete retryNoTracking.tracking_specs;
+                  fallbackAdRes = await axios.post(adUrl, null, { params: retryNoTracking });
+                } else {
+                  throw fallbackAdErr;
+                }
+              }
+
+              console.log(`[Meta Ad Creation Fallback]: ✅ Ad created successfully with standard fallback creative:`, fallbackAdRes.data);
+
+              return {
+                ...fallbackAdRes.data,
+                creativeId: fallbackCreativeId,
+                pageId: effectivePageId,
+                pixelId: effectivePixelId,
+                urlTags: cleanUrlTags,
+                imageHash: feedPlacementHash || effectiveImageHash,
+                imageHashes: [feedPlacementHash, storyPlacementHash].filter(Boolean),
+                multiImages: candidateMultiImages,
+                placementCustomization: false,
+                fallbackUsed: true,
+              };
+            }
+          } catch (fallbackError) {
+            console.warn("[Meta Ad Creation Fallback Warning]:", fallbackError.response?.data?.error || fallbackError.message);
           }
         }
 
