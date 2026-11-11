@@ -347,6 +347,16 @@ export class MetaAdsOrchestrator {
           (session.preview?.adSetDetails?.find((d) => d.field === "Conversion Event")?.value) ||
           (objective === "OUTCOME_LEADS" ? "LEAD" : null);
 
+        const stagePageId = String(
+          session.userAnswers?.pageId ||
+          session.userAnswers?.page_id ||
+          session.chatInjectedValues?.pageId ||
+          session.chatInjectedValues?.page_id ||
+          session.contextNodeData?.pageId ||
+          ""
+        ).trim() || null;
+        const stageInstagramId = session.userAnswers?.instagramId || session.userAnswers?.instagram_id || session.chatInjectedValues?.instagramId || null;
+
         let adSetRes = null;
         try {
           adSetRes = await executeAgentTool("create_meta_ad_set", {
@@ -363,6 +373,8 @@ export class MetaAdsOrchestrator {
             appId,
             objectStoreUrl,
             pixelId,
+            pageId: stagePageId,
+            instagramId: stageInstagramId,
             destination_type: isAppCamp ? "APP" : "WEBSITE",
             trackingType: isAppCamp ? "APP" : ((pixelId && appId) ? "BOTH" : "WEBSITE"),
             customEventType: finalOptGoal === "APP_INSTALLS" ? null : selectedConvEvent,

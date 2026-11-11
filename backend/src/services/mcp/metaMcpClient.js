@@ -1327,6 +1327,8 @@ export class MetaMcpClient {
         destination_type: args.destination_type || args.destinationType || null,
         promotedObject,
         objective: args.objective || args.campaignObjective,
+        pageId: args.pageId || args.page_id || null,
+        instagramId: args.instagramId || args.instagram_id || args.instagramActorId || null,
         userId,
         accessToken: effectiveToken,
       }, userId);
