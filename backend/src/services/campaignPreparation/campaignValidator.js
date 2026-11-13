@@ -428,7 +428,13 @@ export class CampaignValidator {
             ? `${cleanDate} ${String(rawTithi).trim()}`
             : cleanDate;
 
-          if (!rawAdName.startsWith(prefix) && !rawAdName.startsWith(cleanDate)) {
+          const alreadyHasDate =
+            rawAdName.startsWith(prefix) ||
+            rawAdName.startsWith(cleanDate) ||
+            rawAdName.includes(cleanDate) ||
+            (rawAdName.length > 40 && (rawAdName.includes("_") || rawAdName.includes("+")));
+
+          if (!alreadyHasDate) {
             adName = `${prefix} - ${rawAdName}`;
           }
         }

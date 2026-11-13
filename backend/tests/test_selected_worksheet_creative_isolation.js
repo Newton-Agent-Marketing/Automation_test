@@ -131,3 +131,4 @@ describe("Selected Worksheet Tab Creative Isolation Test", () => {
     assert.strictEqual(dbVideoMap.has(sharedFolderUrl), false, "Folder URL must never exist in dbVideoMap");
   });
 });
+

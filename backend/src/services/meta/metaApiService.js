@@ -713,7 +713,7 @@ export class MetaApiService {
     const url = `${META_GRAPH_URL}/${cleanId}/campaigns`;
 
     const payload = {
-      name: this.truncateToMaxBytes(name || `Campaign_${Date.now()}`, 250),
+      name: this.truncateToMaxBytes(name || `Campaign_${Date.now()}`, 1000),
       objective,
       status: status || "PAUSED",
       special_ad_categories: JSON.stringify(specialAdCategories || ["NONE"]),
@@ -1996,7 +1996,7 @@ export class MetaApiService {
     }
 
     const payload = {
-      name: this.truncateToMaxBytes(name || `AdSet_${Date.now()}`, 250),
+      name: this.truncateToMaxBytes(name || `AdSet_${Date.now()}`, 1000),
       campaign_id: campaignId,
       optimization_goal: effectiveGoal,
       billing_event: billingEvent || "IMPRESSIONS",
@@ -2336,7 +2336,7 @@ export class MetaApiService {
   }
 
   // Helper: Safely truncate any string to max UTF-8 bytes without splitting multi-byte characters or emojis
-  static truncateToMaxBytes(str, maxBytes = 250) {
+  static truncateToMaxBytes(str, maxBytes = 1000) {
     if (!str) return str;
     const s = String(str).trim();
     if (Buffer.byteLength(s, "utf8") <= maxBytes) {
@@ -2359,11 +2359,11 @@ export class MetaApiService {
     return trimmed;
   }
 
-  // Helper: Format & truncate Creative Name ensuring it never exceeds Meta's 255-byte limit
+  // Helper: Format & truncate Creative Name ensuring it never exceeds Meta's 1024-char limit
   static formatCreativeName(strName, suffix = "Creative") {
     const s = String(strName || "").trim();
     const sfx = suffix ? ` ${suffix.trim()}` : "";
-    const maxBytes = 250; // Meta hard limit is 255 bytes; 250 leaves safe margin
+    const maxBytes = 1000; // Meta allows up to 1024 chars; 1000 bytes leaves safe margin
 
     if (Buffer.byteLength(`${s}${sfx}`, "utf8") <= maxBytes) {
       return `${s}${sfx}`;
@@ -2387,8 +2387,8 @@ export class MetaApiService {
     return `${truncatedBase.trim()}${tail}`;
   }
 
-  // Helper: Format & truncate Ad Name ensuring it never exceeds Meta's 255-byte limit
-  static formatAdName(strName, maxBytes = 250) {
+  // Helper: Format & truncate Ad Name ensuring it never exceeds Meta's 1024-char limit
+  static formatAdName(strName, maxBytes = 1000) {
     const s = String(strName || "").trim();
     if (Buffer.byteLength(s, "utf8") <= maxBytes) {
       return s;
@@ -2929,7 +2929,7 @@ export class MetaApiService {
     }
 
     // Step 3: Create Ad
-    const formatAdName = (strName) => MetaApiService.formatAdName(strName, 250);
+    const formatAdName = (strName) => MetaApiService.formatAdName(strName, 1000);
     const targetAdAccount = cleanId;
 
     const adUrl = `${META_GRAPH_URL}/${targetAdAccount}/ads`;
@@ -4158,7 +4158,7 @@ export class MetaApiService {
     }
 
     // Step 3: Create Ad
-    const formatAdName = (strName) => MetaApiService.formatAdName(strName, 250);
+    const formatAdName = (strName) => MetaApiService.formatAdName(strName, 1000);
     const targetAdAccount = cleanId;
 
     const adUrl = `${META_GRAPH_URL}/${targetAdAccount}/ads`;

@@ -134,21 +134,36 @@ export class DynamicSheetFilter {
   static parseAdNamePattern(msg) {
     if (!msg || typeof msg !== "string") return null;
 
+    // Fast-path: Explicit quoted value: adName: "...", ad name = '...'
+    const quotedMatch = msg.match(
+      /(?:(?:put|create|make|set|place|launch|with)\s+)?(?:ads?\s*(?:with\s+)?(?:named|called|titled|names?|title|label)?|ad_name)\s*(?:[:=\-–—]|named|called|titled|as)\s*["'“«`]([^"'”»`\r\n]+)["'”»`]/i
+    );
+    if (quotedMatch && quotedMatch[1] && quotedMatch[1].trim()) {
+      return quotedMatch[1].trim();
+    }
+
     // 1. Explicit key-value or phrasal declaration: "Put Ads with Name - ...", "- Ad name : ...", "Ad name: ...", "Ad Name = ..."
     const explicitPattern = /(?:(?:put|create|make|set|place|launch|with)\s+)?(?:ads?\s*(?:with\s+)?(?:named|called|titled|names?|title|label)?|ad_name)\s*(?:[:=\-–—]|named|called|titled|as)\s*([^\n\r;]+)/i;
     const explicitMatch = msg.match(explicitPattern);
     if (explicitMatch && explicitMatch[1]) {
-      let rawVal = explicitMatch[1].trim().replace(/^["'\`]+|["'\`]+$/g, "").trim();
-      rawVal = rawVal.replace(/\s+(?:the\s+ad\s+creatives|the\s+creatives|creatives\b|and\s+everything|fetch\s+from|from\s+(?:connected\s+)?(?:google\s+)?sheet).*/i, "").trim();
+      let rawVal = explicitMatch[1].trim().replace(/^["'`]+|["'`]+$/g, "").trim();
+      // Strip trailing boundary / action instructions if present
+      rawVal = rawVal
+        .replace(/\s+(?:and\s+)?(?:use|fetch|get|take|pull|read|from|in)\s+(?:the\s+)?(?:connected\s+)?(?:google\s+)?(?:sheet|spreadsheet|excel|warehouse|context|data).*/i, "")
+        .replace(/\s+(?:and\s+)?(?:create|make|launch|set\s*up|build|banao|run|publish|upload|process|retry)\s+(?:the\s+)?(?:ads?|campaign|adset).*/i, "")
+        .replace(/\s+(?:for|on|in|from|process|retry)\s+(?:rows?|lines?)\s*#?\d+.*/i, "")
+        .replace(/\s+(?:with|having)\s+(?:campaign|adset|budget|daily\s*budget|objective|target|sheet).*/i, "")
+        .replace(/\s+(?:the\s+ad\s+creatives|the\s+creatives|and\s+everything).*/i, "")
+        .trim();
       if (rawVal) {
         return rawVal;
       }
     }
 
     // 2. Phrasal declaration: "ad name should be ...", "use ... as ad name", "combine ... for ad name"
-    const phrasalMatch = msg.match(/(?:ad\s*names?\s*(?:should\s*be|will\s*be|is|as|to|named|called|pattern)?\s*[:=\-–—]?\s*|(?:use|combine|join|set)\s+)(["'\`][^"'\`\n\r]+["'\`]|[^\n\r,;.]+?)\s*(?:as\s*(?:the\s*)?ad\s*names?|\s+for\s*(?:the\s*)?ad\s*names?)/i);
+    const phrasalMatch = msg.match(/(?:ad\s*names?\s*(?:should\s*be|will\s*be|is|as|to|named|called|pattern)?\s*[:=\-–—]?\s*|(?:use|combine|join|set)\s+)(["'`][^"'`\n\r]+["'`]|[^\n\r,;.]+?)\s*(?:as\s*(?:the\s*)?ad\s*names?|\s+for\s*(?:the\s*)?ad\s*names?)/i);
     if (phrasalMatch && phrasalMatch[1]) {
-      return phrasalMatch[1].trim().replace(/^["'\`]+|["'\`]+$/g, "").trim();
+      return phrasalMatch[1].trim().replace(/^["'`]+|["'`]+$/g, "").trim();
     }
 
     return null;
@@ -159,8 +174,8 @@ export class DynamicSheetFilter {
    * Supports:
    *   - Column arithmetic/join: "Creative Code+Nomenclature" -> "OD-26-2219 + NW_Rahu_..."
    *   - Template placeholders: "[Temple Name] - [Creative Code]" -> "Rahu Paithani Temple - OD-26-2219"
-   *   - Custom delimiters: "+", "-", "_", "|", "and", " "
-   *   - Any arbitrary column name in the sheet
+   *   - Custom delimiters: "+", "-", "|", "and", " "
+   *   - Literal ad names: preserves full nomenclatures (e.g. "NW_Surya+Other_...") intact without splitting or corrupting.
    */
   static evaluateAdNamePattern(pattern, rowVals = {}, headers = [], rowNo = 2) {
     if (!pattern || typeof pattern !== "string") return null;
@@ -196,24 +211,33 @@ export class DynamicSheetFilter {
       }
     }
 
-    // 2. Tokenize by common delimiters like "+", " - ", "_", "|", " and "
-    const delimiterMatch = pattern.match(/\s*([+_|\/]|-(?=\s)|\band\b)\s*/i);
-    const delimiter = delimiterMatch ? (delimiterMatch[1] === "+" ? " + " : ` ${delimiterMatch[1].trim()} `) : " - ";
+    // 2. Tokenize by explicit column join operators: "+", " - ", "|", " and "
+    const formulaMatch = pattern.match(/\s*(\+|\s+-\s+|\||\band\b)\s*/i);
+    if (!formulaMatch) {
+      return pattern;
+    }
 
-    // Split pattern by delimiters to find column candidate names
-    const tokens = pattern.split(/\s*(?:[+_|\/]|-(?=\s)|\band\b)\s*/i).map((t) => t.trim().replace(/^["'\`]+|["'\`]+$/g, "")).filter(Boolean);
+    const delimiter = formulaMatch[1].trim().toLowerCase() === "+"
+      ? " + "
+      : (formulaMatch[1].trim().toLowerCase() === "and" ? " - " : ` ${formulaMatch[1].trim()} `);
 
+    // Split pattern strictly by formula join operators
+    const tokens = pattern.split(/\s*(?:\+|\s+-\s+|\||\band\b)\s*/i).map((t) => t.trim().replace(/^["'`]+|["'`]+$/g, "")).filter(Boolean);
+
+    let matchedColumnCount = 0;
     const resolvedValues = [];
     for (const token of tokens) {
       const val = getVal(token);
       if (val) {
+        matchedColumnCount++;
         resolvedValues.push(val);
       } else {
         resolvedValues.push(token);
       }
     }
 
-    if (resolvedValues.length > 0) {
+    // Only rewrite if at least ONE token was an actual sheet column; otherwise it's a literal ad name
+    if (matchedColumnCount > 0 && resolvedValues.length > 0) {
       const joined = resolvedValues.join(delimiter).replace(/\s{2,}/g, " ").trim();
       if (joined) return joined;
     }
