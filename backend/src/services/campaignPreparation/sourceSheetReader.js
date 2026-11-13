@@ -96,19 +96,21 @@ export class SourceSheetReader {
               const avail = Array.isArray(target.availableTabs) ? target.availableTabs : (Array.isArray(wh.data?.availableTabs) ? wh.data.availableTabs : []);
 
               if (!worksheetName && selIds.length > 0 && avail.length > 0) {
-                const found = avail.find((t) =>
-                  selIds.some(
-                    (id) =>
-                      String(id) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
-                      String(id).toLowerCase() === String(t.title || t.name || t.tabName || "").toLowerCase()
-                  )
-                );
-                if (found) {
-                  worksheetName = found.title || found.name || found.tabName;
+                const reversedSelIds = [...selIds].reverse();
+                for (const sId of reversedSelIds) {
+                  const match = avail.find((t) =>
+                    String(sId) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
+                    String(sId).toLowerCase() === String(t.title || t.name || t.tabName || "").toLowerCase()
+                  );
+                  if (match) {
+                    worksheetName = match.title || match.name || match.tabName;
+                    break;
+                  }
                 }
               }
               if (!worksheetName && Array.isArray(target.selectedTabsData) && target.selectedTabsData.length > 0) {
-                worksheetName = target.selectedTabsData[0].tabName || target.selectedTabsData[0].title;
+                const lastTab = target.selectedTabsData[target.selectedTabsData.length - 1];
+                worksheetName = lastTab?.tabName || lastTab?.title || target.selectedTabsData[0].tabName || target.selectedTabsData[0].title;
               }
 
               // Resolve gid for the worksheet

@@ -976,7 +976,14 @@ export async function getUserAiContext({ userId }) {
         sheetUrl: currentNode.data?.sheetUrl || "",
         excelProvider: currentNode.data?.excelProvider || "Google Sheets",
         workbookName: currentNode.data?.workbookName || "",
-        worksheetName: currentNode.data?.worksheetName || "",
+        worksheetName: currentNode.data?.worksheetName || currentNode.data?.targetTab || "",
+        targetTab: currentNode.data?.targetTab || currentNode.data?.worksheetName || "",
+        targetWorksheetName: currentNode.data?.targetWorksheetName || currentNode.data?.targetTab || currentNode.data?.worksheetName || "",
+        activeSheetId: currentNode.data?.activeSheetId || null,
+        activeSheetIndex: currentNode.data?.activeSheetIndex !== undefined ? currentNode.data.activeSheetIndex : null,
+        selectedTabIds: Array.isArray(currentNode.data?.selectedTabIds) ? currentNode.data.selectedTabIds : [],
+        availableTabs: Array.isArray(currentNode.data?.availableTabs) ? currentNode.data.availableTabs : [],
+        selectedTabsData: Array.isArray(currentNode.data?.selectedTabsData) ? currentNode.data.selectedTabsData : [],
         excelSyncStatus: currentNode.data?.excelSyncStatus || "NOT_CONNECTED",
         totalRows: currentNode.data?.totalRows || 0,
         totalDataRows: currentNode.data?.totalDataRows || 0,
@@ -1053,7 +1060,14 @@ export async function getUserAiContext({ userId }) {
           sheetUrl: warehouseDetails?.sheetUrl || "",
           excelProvider: warehouseDetails?.excelProvider || "Google Sheets",
           workbookName: warehouseDetails?.workbookName || "",
-          worksheetName: warehouseDetails?.worksheetName || "",
+          worksheetName: warehouseDetails?.worksheetName || warehouseDetails?.targetTab || "",
+          targetTab: warehouseDetails?.targetTab || warehouseDetails?.worksheetName || "",
+          targetWorksheetName: warehouseDetails?.targetWorksheetName || warehouseDetails?.targetTab || warehouseDetails?.worksheetName || "",
+          activeSheetId: warehouseDetails?.activeSheetId || null,
+          activeSheetIndex: warehouseDetails?.activeSheetIndex !== undefined ? warehouseDetails.activeSheetIndex : null,
+          selectedTabIds: Array.isArray(warehouseDetails?.selectedTabIds) ? warehouseDetails.selectedTabIds : [],
+          availableTabs: Array.isArray(warehouseDetails?.availableTabs) ? warehouseDetails.availableTabs : [],
+          selectedTabsData: Array.isArray(warehouseDetails?.selectedTabsData) ? warehouseDetails.selectedTabsData : [],
           excelSyncStatus: warehouseDetails?.excelSyncStatus || "NOT_CONNECTED",
           googleDriveConnected: Boolean(warehouseDetails?.googleDriveConnected),
           googleDriveEmail: warehouseDetails?.googleDriveEmail || "",
@@ -1695,23 +1709,25 @@ export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedCh
   }
 
   // Strategy 4: Check AI Context UI Selection (selectedTabIds)
-  // When user selected specific tab(s) in AI Context (e.g. checkbox checked for Eveil Eye | Protection)
+  // Check the latest selected tab ID first (the most recently selected tab in AI Context)
   if (!targetWorksheetName && selectedTabIds.length > 0 && availableTabs.length > 0) {
-    // Check if the latest/last selectedTabId matches a specific tab
-    const selectedTabObjects = availableTabs.filter((t) =>
-      selectedTabIds.some((id) =>
-        String(id) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
-        String(id).toLowerCase() === String(t.title || t.name || t.tabName || "").toLowerCase()
-      )
-    );
-    if (selectedTabObjects.length > 0) {
-      targetWorksheetName = selectedTabObjects[0].title || selectedTabObjects[0].name || selectedTabObjects[0].tabName;
+    const reversedIds = [...selectedTabIds].reverse();
+    for (const selId of reversedIds) {
+      const match = availableTabs.find((t) =>
+        String(selId) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
+        String(selId).toLowerCase() === String(t.title || t.name || t.tabName || "").toLowerCase()
+      );
+      if (match) {
+        targetWorksheetName = match.title || match.name || match.tabName;
+        break;
+      }
     }
   }
 
-  // Strategy 5: Fallback to selectedTabsData if available
+  // Strategy 5: Fallback to selectedTabsData if available (latest active tab first)
   if (!targetWorksheetName && selectedTabsData.length > 0) {
-    targetWorksheetName = selectedTabsData[0].tabName || selectedTabsData[0].title;
+    const lastTabData = selectedTabsData[selectedTabsData.length - 1];
+    targetWorksheetName = lastTabData?.tabName || lastTabData?.title || selectedTabsData[0].tabName || selectedTabsData[0].title;
   }
 
   // Strategy 6: If availableTabs exist and no tab was specified, default to first available tab's title

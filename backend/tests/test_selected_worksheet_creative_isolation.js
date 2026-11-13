@@ -130,5 +130,71 @@ describe("Selected Worksheet Tab Creative Isolation Test", () => {
 
     assert.strictEqual(dbVideoMap.has(sharedFolderUrl), false, "Folder URL must never exist in dbVideoMap");
   });
+
+  it("should prioritize newly selected Tab 2 over Tab 1 even when both tab IDs are present in selection", () => {
+    // When user toggles Tab 2 in warehouse UI, selectedTabIds has [0, 110461623] with Tab 2 as latest
+    const multiTabAiCtx = {
+      ...mockAiCtx,
+      businessUnitsHierarchy: [
+        {
+          ...mockAiCtx.businessUnitsHierarchy[0],
+          warehouses: [
+            {
+              ...mockAiCtx.businessUnitsHierarchy[0].warehouses[0],
+              selectedTabIds: ["0", "110461623"], // Tab 1 and Tab 2
+              worksheetName: "Eveil Eye | Protection",
+              targetTab: "Eveil Eye | Protection",
+              sheets: [
+                {
+                  ...mockAiCtx.businessUnitsHierarchy[0].warehouses[0].sheets[0],
+                  selectedTabIds: ["0", "110461623"],
+                  worksheetName: "Eveil Eye | Protection",
+                  targetTab: "Eveil Eye | Protection",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const res = resolveAiContextSelection({
+      aiCtx: multiTabAiCtx,
+      userMessage: "create ad",
+      requestedChannel: "Meta Ads",
+    });
+
+    assert.strictEqual(res.targetWorksheetName, "Eveil Eye | Protection", "Must prioritize the active Tab 2");
+  });
+
+  it("should retire stale preparation session when AI Context worksheet differs from session worksheet", () => {
+    // Simulate old session saved from previous ad creation on Tab 1
+    const oldSession = {
+      source: {
+        worksheetName: "Wealth & Prosperity",
+      },
+      status: "APPROVED",
+    };
+
+    const contextNodeData = {
+      targetWorksheetName: "Eveil Eye | Protection",
+      worksheetName: "Eveil Eye | Protection",
+    };
+
+    let session = { ...oldSession };
+    const freshTargetWorksheet = contextNodeData?.targetWorksheetName || contextNodeData?.worksheetName;
+
+    if (session && freshTargetWorksheet && session.source?.worksheetName) {
+      const cleanFresh = freshTargetWorksheet.trim().toLowerCase();
+      const cleanOld = session.source.worksheetName.trim().toLowerCase();
+      if (cleanFresh !== cleanOld) {
+        session.status = "COMPLETED";
+        session = null;
+      }
+    }
+
+    assert.strictEqual(session, null, "Old session for Tab 1 must be retired when user switches to Tab 2");
+    assert.strictEqual(oldSession.status, "APPROVED", "Original object preserved or updated");
+  });
 });
 

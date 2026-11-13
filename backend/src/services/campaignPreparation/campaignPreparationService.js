@@ -312,6 +312,21 @@ export class CampaignPreparationService {
       console.warn("[CampaignPreparation Context Resolution Warning]:", ctxErr.message);
     }
 
+    // Invalidate stale session if the user switched worksheet tabs in AI Context Warehouse node
+    const freshTargetWorksheet = contextNodeData?.targetWorksheetName || contextNodeData?.worksheetName;
+    if (session && freshTargetWorksheet && session.source?.worksheetName) {
+      const cleanFresh = freshTargetWorksheet.trim().toLowerCase();
+      const cleanOld = session.source.worksheetName.trim().toLowerCase();
+      if (cleanFresh !== cleanOld) {
+        console.log(`[CampaignPreparation] Detected worksheet tab change from "${session.source.worksheetName}" to "${freshTargetWorksheet}". Retiring previous session to ensure complete tab isolation.`);
+        try {
+          session.status = "COMPLETED";
+          await session.save();
+        } catch (_) {}
+        session = null;
+      }
+    }
+
     const effectiveMetaAccountId = contextNodeData.adAccountId || metaAccountId || session?.metaAccountId;
 
     let effectiveAccountDoc = accountDoc;
@@ -376,8 +391,8 @@ export class CampaignPreparationService {
           userId,
           sheetUrlOrId: session.source?.sheetUrl || session.source?.spreadsheetId,
           filePath: session.source?.filePath,
-          worksheetName: session.source?.worksheetName || contextNodeData?.targetWorksheetName,
-          selectedTabIds: session.source?.selectedTabIds || contextNodeData?.selectedTabIds,
+          worksheetName: contextNodeData?.targetWorksheetName || contextNodeData?.worksheetName || session.source?.worksheetName,
+          selectedTabIds: contextNodeData?.selectedTabIds || session.source?.selectedTabIds,
         });
 
         const { filteredSource: latestSource } = this.applyFiltersToSourceData(rawLatest, "", session.filterCriteria);
@@ -446,6 +461,11 @@ export class CampaignPreparationService {
         onProgress,
       });
 
+      if (creationResult.success) {
+        session.status = "COMPLETED";
+        await session.save();
+      }
+
       const responseMd = MetaAdsOrchestrator.formatCreationResultMarkdown(
         creationResult,
         session.campaignName,
@@ -495,8 +515,8 @@ export class CampaignPreparationService {
             userId,
             sheetUrlOrId: session.source?.sheetUrl || session.source?.spreadsheetId,
             filePath: session.source?.filePath,
-            worksheetName: session.source?.worksheetName || contextNodeData?.targetWorksheetName,
-            selectedTabIds: session.source?.selectedTabIds || contextNodeData?.selectedTabIds,
+            worksheetName: contextNodeData?.targetWorksheetName || contextNodeData?.worksheetName || session.source?.worksheetName,
+            selectedTabIds: contextNodeData?.selectedTabIds || session.source?.selectedTabIds,
           });
           const filtered = this.applyFiltersToSourceData(rawSource, "", session.filterCriteria);
           sourceData = filtered.filteredSource;
@@ -638,8 +658,8 @@ export class CampaignPreparationService {
             userId,
             sheetUrlOrId: session.source?.sheetUrl || session.source?.spreadsheetId,
             filePath: session.source?.filePath,
-            worksheetName: session.source?.worksheetName || contextNodeData?.targetWorksheetName,
-            selectedTabIds: session.source?.selectedTabIds || contextNodeData?.selectedTabIds,
+            worksheetName: contextNodeData?.targetWorksheetName || contextNodeData?.worksheetName || session.source?.worksheetName,
+            selectedTabIds: contextNodeData?.selectedTabIds || session.source?.selectedTabIds,
           });
 
           const filtered = this.applyFiltersToSourceData(rawSource, "", session.filterCriteria);
@@ -730,6 +750,11 @@ export class CampaignPreparationService {
             userEmail,
             onProgress,
           });
+
+          if (creationResult.success) {
+            session.status = "COMPLETED";
+            await session.save();
+          }
 
           let replyMd = `### ✅ Missing Fields Received & Ad Creation Resumed\n\n`;
           replyMd += `> 📥 **Injected Values**: ` + Object.entries(parsedAnswers).map(([k, v]) => `\`${k}\`: \`${v}\``).join(", ") + `\n\n`;
@@ -1010,6 +1035,11 @@ export class CampaignPreparationService {
           userEmail,
           onProgress,
         });
+
+        if (creationResult.success) {
+          session.status = "COMPLETED";
+          await session.save();
+        }
 
         const responseMd = MetaAdsOrchestrator.formatCreationResultMarkdown(
           creationResult,
