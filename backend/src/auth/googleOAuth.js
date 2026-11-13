@@ -168,10 +168,51 @@ class GoogleOAuthService {
   }
 
   /**
-   * Returns a valid access token, auto-refreshing if expired
+   * Returns a valid access token, auto-refreshing if expired.
+   * Checks local tokenStore first, then falls back to MongoDB GoogleAccount model.
    */
-  async getAccessToken() {
+  async getAccessToken(userId = null) {
     let tokens = tokenStore.loadTokens("google");
+    if (!tokens || (!tokens.access_token && !tokens.refresh_token)) {
+      try {
+        const mongoose = (await import("mongoose")).default;
+        if (mongoose.connection && mongoose.connection.readyState === 1) {
+          const GoogleAccount = (await import("../models/googleAccountModel.js")).default;
+          const query = {
+            isActive: true,
+            $or: [
+              { accessToken: { $exists: true, $ne: "" } },
+              { refreshToken: { $exists: true, $ne: "" } },
+            ],
+          };
+          if (userId) {
+            query.userId = userId;
+          }
+          let gAcc = await GoogleAccount.findOne(query).sort({ updatedAt: -1 }).lean();
+          if (!gAcc && userId) {
+            gAcc = await GoogleAccount.findOne({
+              isActive: true,
+              $or: [
+                { accessToken: { $exists: true, $ne: "" } },
+                { refreshToken: { $exists: true, $ne: "" } },
+              ],
+            }).sort({ updatedAt: -1 }).lean();
+          }
+
+          if (gAcc && (gAcc.accessToken || gAcc.refreshToken)) {
+            tokens = {
+              access_token: gAcc.accessToken,
+              refresh_token: gAcc.refreshToken,
+              scope: gAcc.scope || "https://www.googleapis.com/auth/drive.readonly",
+            };
+            tokenStore.saveTokens("google", tokens);
+          }
+        }
+      } catch (dbErr) {
+        console.warn("[GoogleOAuth] MongoDB GoogleAccount lookup warning:", dbErr.message);
+      }
+    }
+
     if (!tokens || (!tokens.access_token && !tokens.refresh_token)) {
       return null;
     }
@@ -187,8 +228,8 @@ class GoogleOAuthService {
   /**
    * Returns authenticated client helper (Axios instance configured with Bearer token)
    */
-  async getAuthenticatedClient() {
-    const accessToken = await this.getAccessToken();
+  async getAuthenticatedClient(userId = null) {
+    const accessToken = await this.getAccessToken(userId);
     if (!accessToken) {
       throw new Error("Google account is not connected. Please connect Google Drive first.");
     }

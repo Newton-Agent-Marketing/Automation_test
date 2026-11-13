@@ -344,77 +344,10 @@ export class MetaAdsOrchestrator {
       emit(4, `Pre-processing & downloading media assets for ${previewAds.length} ad rows...`);
       const effectiveToken = await MetaApiService.resolveOAuthToken(targetAccountId, userId, null);
 
-      // Pre-fetch existing videoIds and imageHashes from MetaUploadedMedia model and MongoDB sessions
-      const dbVideoMap = new Map();
-      const dbImageMap = new Map();
-
-      try {
-        const cachedMediaDocs = await MetaUploadedMedia.find({ accountId: targetAccountId }).lean().catch(() => []);
-        for (const cm of cachedMediaDocs) {
-          const fileId = cm.fileId || (cm.sourceUrl ? driveService.extractFileId(cm.sourceUrl) : null);
-          const isFolder = cm.sourceUrl && cm.sourceUrl.includes("/folders/");
-          if (cm.mediaType === "VIDEO" && cm.videoId && !isFolder) {
-            if (fileId && !dbVideoMap.has(`file_${fileId}`)) {
-              dbVideoMap.set(`file_${fileId}`, { videoId: cm.videoId, videoFilePath: cm.localFilePath });
-            }
-            if (cm.sourceUrl && !dbVideoMap.has(cm.sourceUrl)) {
-              dbVideoMap.set(cm.sourceUrl, { videoId: cm.videoId, videoFilePath: cm.localFilePath });
-            }
-          } else if (cm.mediaType === "IMAGE" && (cm.imageHash || cm.metaMediaId) && !isFolder) {
-            const hash = cm.imageHash || cm.metaMediaId;
-            if (fileId && !dbImageMap.has(`file_${fileId}`)) {
-              dbImageMap.set(`file_${fileId}`, hash);
-            }
-            if (cm.sourceUrl && !dbImageMap.has(cm.sourceUrl)) {
-              dbImageMap.set(cm.sourceUrl, hash);
-            }
-          }
-        }
-      } catch (mediaPrefetchErr) {
-        console.warn("[MetaAdsOrchestrator] Warning prefetching cached media from MetaUploadedMedia:", mediaPrefetchErr.message);
-      }
-
-      try {
-        const query = { "preview.adDetails.videoId": { $exists: true, $ne: null } };
-        if (session.userId) {
-          query.userId = session.userId;
-        }
-        let pastSessions = await CampaignPreparationSession.find(query).sort({ createdAt: -1 }).limit(10);
-        if (!pastSessions || pastSessions.length === 0) {
-          pastSessions = await CampaignPreparationSession.find({ "preview.adDetails.videoId": { $exists: true, $ne: null } }).sort({ createdAt: -1 }).limit(10);
-        }
-
-        for (const ps of pastSessions) {
-          // Strictly only reuse videos uploaded to the exact same Meta Ad Account
-          if (ps.metaAccountId && ps.metaAccountId !== targetAccountId) continue;
-          for (const pad of ps.preview?.adDetails || []) {
-            const vId = pad.videoId ? String(pad.videoId).trim() : null;
-            const isFolder = pad.creative && pad.creative.includes("/folders/");
-            if (vId && /^\d{10,20}$/.test(vId) && pad.creative && !isFolder) {
-              const fileId = driveService.extractFileId(pad.creative);
-              if (fileId && !dbVideoMap.has(`file_${fileId}`)) {
-                dbVideoMap.set(`file_${fileId}`, { videoId: vId, videoFilePath: pad.videoFilePath });
-              }
-              if (!dbVideoMap.has(pad.creative)) {
-                dbVideoMap.set(pad.creative, { videoId: vId, videoFilePath: pad.videoFilePath });
-              }
-            }
-            const iHash = pad.imageHash ? String(pad.imageHash).trim() : null;
-            if (iHash && pad.creative && !isFolder) {
-              const fileId = driveService.extractFileId(pad.creative);
-              if (fileId && !dbImageMap.has(`file_${fileId}`)) {
-                dbImageMap.set(`file_${fileId}`, iHash);
-              }
-              if (!dbImageMap.has(pad.creative)) {
-                dbImageMap.set(pad.creative, iHash);
-              }
-            }
-          }
-        }
-        console.log(`[MetaAdsOrchestrator Stage 4]: Found ${dbVideoMap.size} verified cached videos and ${dbImageMap.size} cached images for account ${targetAccountId}.`);
-      } catch (cacheErr) {
-        console.warn("[MetaAdsOrchestrator] Warning prefetching cached media from DB:", cacheErr.message);
-      }
+      // Execution-scoped cache: strictly only reuse assets uploaded during THIS exact creation job execution
+      // (Never pull random or stale video IDs from old sessions or cross-sheet caches)
+      const executionVideoMap = new Map();
+      const executionImageMap = new Map();
 
       emit(4, `Processing assets & creating ${previewAds.length} Meta Ads row-by-row...`);
 
@@ -480,30 +413,19 @@ export class MetaAdsOrchestrator {
 
           const targetFileId = driveService.extractFileId(adConfig.creative);
 
-          // Check if video is already verified & uploaded for this EXACT file/URL on this Meta account
+          // Check if video was already verified & uploaded during THIS CURRENT execution batch (strict 1-to-1 asset matching)
           let resolvedVideoId = null;
           let resolvedFilePath = null;
 
-          // Check 1: Verify if adConfig.videoId or existingRes.videoId strictly matches this exact asset (avoid stale cross-row reuse)
           const isFolderAsset = adConfig.creative && adConfig.creative.includes("/folders/");
-          const candVidId = adConfig.videoId || existingRes.videoId;
-          if (candVidId && /^\d{10,20}$/.test(String(candVidId).trim()) && !isFolderAsset) {
-            const matchedCached = (targetFileId ? dbVideoMap.get(`file_${targetFileId}`) : null) || dbVideoMap.get(adConfig.creative);
-            if (matchedCached && String(matchedCached.videoId) === String(candVidId).trim()) {
-              resolvedVideoId = String(candVidId).trim();
-              resolvedFilePath = matchedCached.videoFilePath || adConfig.videoFilePath;
-            }
-          }
-
-          // Check 2: Look up exact fileId or sourceUrl in dbVideoMap (Strict 1-to-1 asset matching, NEVER by row index or folder)
-          if (!resolvedVideoId && !isFolderAsset) {
-            const cached = (targetFileId ? dbVideoMap.get(`file_${targetFileId}`) : null) || dbVideoMap.get(adConfig.creative);
+          if (!isFolderAsset) {
+            const cached = (targetFileId ? executionVideoMap.get(`file_${targetFileId}`) : null) || executionVideoMap.get(adConfig.creative);
             const cachedVidId = typeof cached === "object" ? cached?.videoId : cached;
             const cachedFilePath = typeof cached === "object" ? cached?.videoFilePath : null;
             if (cachedVidId && /^\d{10,20}$/.test(String(cachedVidId).trim())) {
               resolvedVideoId = String(cachedVidId).trim();
               resolvedFilePath = cachedFilePath || null;
-              emit(4, `⚡ Row #${rowNo} ("${adConfig.adName}"): Reusing verified Meta Video ID ${resolvedVideoId} for asset "${adConfig.creative}".`);
+              emit(4, `⚡ Row #${rowNo} ("${adConfig.adName}"): Reusing freshly uploaded Meta Video ID ${resolvedVideoId} for asset "${adConfig.creative}".`);
             }
           }
 
@@ -512,12 +434,12 @@ export class MetaAdsOrchestrator {
             if (resolvedFilePath) adConfig.videoFilePath = resolvedFilePath;
             existingRes.videoId = resolvedVideoId;
           } else {
-            // Strictly reset to ensure no wrong video ID from another row/sheet leaks through
+            // Strictly reset to ensure no wrong video ID from another run leaks through
             adConfig.videoId = null;
             existingRes.videoId = null;
           }
 
-          // If not yet uploaded for THIS specific file asset, download and upload right now for this row
+          // If not yet uploaded in this execution, download from Google Drive and upload to Meta right now for this row
           if (!adConfig.videoId && adConfig.creative) {
             emit(4, `Row #${rowNo} ("${adConfig.adName}"): Downloading row-specific video asset from Google Drive...`);
             console.log(`[Meta Media Engine] 📥 Row #${rowNo}: Downloading video asset for Row #${rowNo} from "${adConfig.creative}"...`);
@@ -530,7 +452,7 @@ export class MetaAdsOrchestrator {
 
               if (!isPathMatchingAsset) {
                 const targetFilename = adConfig.adName || null;
-                const dlInfo = await driveService.downloadCreative(adConfig.creative, targetFilename, "video");
+                const dlInfo = await driveService.downloadCreative(adConfig.creative, targetFilename, "video", userId);
                 if (dlInfo?.filePath && fs.existsSync(dlInfo.filePath)) {
                   localFilePath = dlInfo.filePath;
                   adConfig.videoFilePath = localFilePath;
@@ -562,9 +484,9 @@ export class MetaAdsOrchestrator {
                   emit(4, `✅ Row #${rowNo} ("${adConfig.adName}"): Meta Video ID ${rowVidId} uploaded for Row #${rowNo}.`);
                   console.log(`[Meta Media Engine] ✅ Row #${rowNo}: Successfully uploaded video -> Meta Video ID: ${rowVidId}`);
 
-                  // Cache immediately in dbVideoMap for THIS exact fileId and sourceUrl
-                  if (targetFileId) dbVideoMap.set(`file_${targetFileId}`, { videoId: String(rowVidId), videoFilePath: localFilePath });
-                  dbVideoMap.set(adConfig.creative, { videoId: String(rowVidId), videoFilePath: localFilePath });
+                  // Cache in executionVideoMap for THIS batch only
+                  if (targetFileId) executionVideoMap.set(`file_${targetFileId}`, { videoId: String(rowVidId), videoFilePath: localFilePath });
+                  executionVideoMap.set(adConfig.creative, { videoId: String(rowVidId), videoFilePath: localFilePath });
 
                   // Persist to MetaUploadedMedia DB model immediately with row number and fileId
                   await MetaUploadedMedia.recordMedia({
@@ -614,22 +536,15 @@ export class MetaAdsOrchestrator {
 
           const targetImgFileId = driveService.extractFileId(adConfig.creative);
 
-          // Check if image is already verified & uploaded for this EXACT file/URL on this Meta account
+          // Check if image was already uploaded during THIS CURRENT execution batch
           let resolvedImageHash = null;
 
-          const candImgHash = adConfig.imageHash || existingRes.imageHash;
-          if (candImgHash) {
-            const matchedCached = (targetImgFileId ? dbImageMap.get(`file_${targetImgFileId}`) : null) || dbImageMap.get(adConfig.creative);
-            if (matchedCached && String(matchedCached) === String(candImgHash).trim()) {
-              resolvedImageHash = String(candImgHash).trim();
-            }
-          }
-
-          if (!resolvedImageHash) {
-            const cachedHash = (targetImgFileId ? dbImageMap.get(`file_${targetImgFileId}`) : null) || dbImageMap.get(adConfig.creative);
+          const isFolderAsset = adConfig.creative && adConfig.creative.includes("/folders/");
+          if (!isFolderAsset) {
+            const cachedHash = (targetImgFileId ? executionImageMap.get(`file_${targetImgFileId}`) : null) || executionImageMap.get(adConfig.creative);
             if (cachedHash) {
               resolvedImageHash = String(cachedHash).trim();
-              emit(4, `⚡ Row #${rowNo} ("${adConfig.adName}"): Reusing verified Meta Image Hash for asset "${adConfig.creative}".`);
+              emit(4, `⚡ Row #${rowNo} ("${adConfig.adName}"): Reusing freshly uploaded Meta Image Hash for asset "${adConfig.creative}".`);
             }
           }
 
@@ -641,7 +556,7 @@ export class MetaAdsOrchestrator {
             existingRes.imageHash = null;
           }
 
-          // If not in DB, download and upload right now for this row
+          // If not uploaded in this execution, download and upload right now for this row
           if (!adConfig.imageHash && adConfig.creative) {
             emit(4, `Row #${rowNo} ("${adConfig.adName}"): Downloading image asset from Google Drive/URL...`);
             try {
@@ -652,7 +567,7 @@ export class MetaAdsOrchestrator {
               );
 
               if (!isPathMatchingAsset) {
-                const dlInfo = await driveService.downloadCreative(adConfig.creative, null, "image");
+                const dlInfo = await driveService.downloadCreative(adConfig.creative, null, "image", userId);
                 if (dlInfo?.filePath && fs.existsSync(dlInfo.filePath)) {
                   localFilePath = dlInfo.filePath;
                   adConfig.imageFilePath = localFilePath;
@@ -675,8 +590,8 @@ export class MetaAdsOrchestrator {
                   existingRes.imageHash = String(rowImgHash);
                   emit(4, `✅ Row #${rowNo} ("${adConfig.adName}"): Meta Image Hash ${rowImgHash} stored in DB for Row #${rowNo}.`);
 
-                  if (targetImgFileId) dbImageMap.set(`file_${targetImgFileId}`, String(rowImgHash));
-                  dbImageMap.set(adConfig.creative, String(rowImgHash));
+                  if (targetImgFileId) executionImageMap.set(`file_${targetImgFileId}`, String(rowImgHash));
+                  executionImageMap.set(adConfig.creative, String(rowImgHash));
 
                   // Persist to MetaUploadedMedia DB model immediately with row number and fileId
                   await MetaUploadedMedia.recordMedia({

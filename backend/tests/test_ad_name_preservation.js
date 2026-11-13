@@ -104,3 +104,4 @@ test("CampaignValidator preserves full custom adName across rows", async () => {
 
   assert.equal(valResult.adLevelRows[0].adName, sampleLongAdName);
 });
+

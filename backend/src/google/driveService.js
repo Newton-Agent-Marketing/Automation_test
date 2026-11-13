@@ -735,7 +735,7 @@ class DriveService {
   /**
    * Download a file from Google Drive into scratch/ directory
    */
-  async downloadFile(driveLinkOrId, destinationFilename = null, expectedMediaType = null) {
+  async downloadFile(driveLinkOrId, destinationFilename = null, expectedMediaType = null, userId = null) {
     // If input is explicitly a Google Drive folder link, delegate to processDriveLink
     if (typeof driveLinkOrId === "string" && driveLinkOrId.includes("/folders/")) {
       console.log(`[DriveService] downloadFile: Detected folder URL "${driveLinkOrId}". Resolving media asset via processDriveLink (expectedMediaType: ${expectedMediaType || "ALL"})...`);
@@ -802,7 +802,7 @@ class DriveService {
 
     // Attempt 1: Authenticated API download
     try {
-      const auth = await googleOAuth.getAuthenticatedClient();
+      const auth = await googleOAuth.getAuthenticatedClient(userId);
       let meta = {};
       try {
         const metaRes = await auth.axiosInstance.get(
@@ -1082,7 +1082,7 @@ class DriveService {
   }
 
   // Alias downloadCreative for compatibility
-  async downloadCreative(driveLinkOrId, destinationFilename = null, expectedMediaType = null) {
+  async downloadCreative(driveLinkOrId, destinationFilename = null, expectedMediaType = null, userId = null) {
     if (typeof driveLinkOrId === "string" && driveLinkOrId.includes("/folders/")) {
       const folderRes = await this.processDriveLink(driveLinkOrId, expectedMediaType);
       if (folderRes?.assets && folderRes.assets.length > 0) {
@@ -1097,7 +1097,7 @@ class DriveService {
         return folderRes.assets[0];
       }
     }
-    return this.downloadFile(driveLinkOrId, destinationFilename, expectedMediaType);
+    return this.downloadFile(driveLinkOrId, destinationFilename, expectedMediaType, userId);
   }
 
   cleanupTempFile(filePath) {
