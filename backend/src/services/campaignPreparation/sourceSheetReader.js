@@ -86,23 +86,40 @@ export class SourceSheetReader {
                 : (Array.isArray(selectedTabIds) && selectedTabIds.length > 0 ? selectedTabIds : []);
               const avail = Array.isArray(target.availableTabs) ? target.availableTabs : (Array.isArray(wh.data?.availableTabs) ? wh.data.availableTabs : []);
 
+              const doesWsMatchSelIds = worksheetName && selIds.some((sId) => {
+                const sClean = String(sId).toLowerCase().trim().replace(/\.+$/, "");
+                const wsClean = String(worksheetName).toLowerCase().trim().replace(/\.+$/, "");
+                return String(sId) === wsClean || sClean === wsClean || (sClean.length >= 3 && (wsClean.startsWith(sClean) || sClean.startsWith(wsClean)));
+              });
+
               // 1. Prioritize explicit active tab selection from checkboxes (selIds)
-              if (!worksheetName && selIds.length > 0 && avail.length > 0) {
+              // If worksheetName is missing or does NOT match the active selIds, resolve worksheetName from selIds!
+              if ((!worksheetName || !doesWsMatchSelIds) && selIds.length > 0 && avail.length > 0) {
                 const reversedSelIds = [...selIds].reverse();
                 for (const sId of reversedSelIds) {
-                  const match = avail.find((t) =>
-                    String(sId) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
-                    String(sId).toLowerCase() === String(t.title || t.name || t.tabName || "").toLowerCase()
-                  );
+                  const sClean = String(sId).toLowerCase().trim().replace(/\.+$/, "");
+                  const match = avail.find((t) => {
+                    const tId = String(t.sheetId !== undefined ? t.sheetId : t.id);
+                    const tTitle = String(t.title || t.name || t.tabName || "").toLowerCase().trim();
+                    const cleanT = tTitle.replace(/\.+$/, "");
+                    return String(sId) === tId ||
+                      sClean === cleanT ||
+                      (sClean.length >= 3 && (cleanT.startsWith(sClean) || sClean.startsWith(cleanT)));
+                  });
                   if (match) {
                     worksheetName = match.title || match.name || match.tabName;
+                    break;
+                  }
+                  const numIdx = parseInt(sId, 10);
+                  if (!isNaN(numIdx) && numIdx >= 0 && numIdx < avail.length) {
+                    worksheetName = avail[numIdx].title || avail[numIdx].name;
                     break;
                   }
                 }
               }
 
               // 2. Prioritize selectedTabsData if available
-              if (!worksheetName && Array.isArray(target.selectedTabsData) && target.selectedTabsData.length > 0) {
+              if ((!worksheetName || !doesWsMatchSelIds) && Array.isArray(target.selectedTabsData) && target.selectedTabsData.length > 0) {
                 const lastTab = target.selectedTabsData[target.selectedTabsData.length - 1];
                 worksheetName = lastTab?.tabName || lastTab?.title || target.selectedTabsData[0].tabName || target.selectedTabsData[0].title;
               }
@@ -120,8 +137,9 @@ export class SourceSheetReader {
               if (worksheetName && avail.length > 0) {
                 const cleanWs = String(worksheetName).toLowerCase().trim().replace(/\.+$/, "");
                 const matchTab = avail.find((t) => {
-                  const tClean = String(t.title || t.name || "").toLowerCase().trim();
-                  return tClean === cleanWs || tClean.startsWith(cleanWs) || cleanWs.startsWith(tClean);
+                  const tId = String(t.sheetId !== undefined ? t.sheetId : t.id);
+                  const tClean = String(t.title || t.name || "").toLowerCase().trim().replace(/\.+$/, "");
+                  return tId === cleanWs || tClean === cleanWs || tClean.startsWith(cleanWs) || cleanWs.startsWith(tClean) || tClean.includes(cleanWs) || cleanWs.includes(tClean);
                 });
                 if (matchTab && matchTab.sheetId !== undefined) {
                   targetGid = String(matchTab.sheetId);
@@ -135,8 +153,8 @@ export class SourceSheetReader {
               if (worksheetName && allTabs.length > 0) {
                 const cleanWs = String(worksheetName).toLowerCase().trim().replace(/\.+$/, "");
                 preIngestedTabData = allTabs.find((t) => {
-                  const tClean = String(t.tabName || t.title || "").toLowerCase().trim();
-                  return tClean === cleanWs || tClean.startsWith(cleanWs) || cleanWs.startsWith(tClean);
+                  const tClean = String(t.tabName || t.title || "").toLowerCase().trim().replace(/\.+$/, "");
+                  return tClean === cleanWs || tClean.startsWith(cleanWs) || cleanWs.startsWith(tClean) || tClean.includes(cleanWs) || cleanWs.includes(tClean);
                 });
               }
             }
@@ -165,7 +183,39 @@ export class SourceSheetReader {
       const isDefaultedToSheet1 = worksheetName && worksheetName !== "Sheet1" && readResult?.sheetTitle === "Sheet1";
       const hasNoRows = !readResult || !Array.isArray(readResult.rows) || readResult.rows.length === 0;
 
-      if ((isWrongTab || isDefaultedToSheet1 || hasNoRows) && preIngestedTabData && Array.isArray(preIngestedTabData.rows) && preIngestedTabData.rows.length > 0) {
+      // Multi-Tab Selection Support ("jitna worksheet ma data ohe la"):
+      const hasMultipleSelectedTabs = target && Array.isArray(target.selectedTabsData) && target.selectedTabsData.length > 1 && Array.isArray(target.selectedTabIds) && target.selectedTabIds.length > 1;
+
+      if ((isWrongTab || isDefaultedToSheet1 || hasNoRows) && hasMultipleSelectedTabs) {
+        const combinedRows = [];
+        const combinedHeadersSet = new Set();
+        target.selectedTabsData.forEach((tab) => {
+          (tab.columns || []).forEach((c) => combinedHeadersSet.add(c));
+          (tab.rows || []).forEach((r) => {
+            combinedRows.push({
+              ...(r.values || r),
+              _worksheetTab: tab.tabName,
+              _worksheetId: tab.sheetId,
+            });
+          });
+        });
+
+        if (combinedRows.length > 0) {
+          const tabNames = target.selectedTabsData.map((t) => t.tabName).join(", ");
+          console.log(`[SourceSheetReader] Using multi-tab pre-ingested data for ${target.selectedTabsData.length} selected tabs [${tabNames}] (${combinedRows.length} total rows).`);
+          readResult = {
+            source: "ai_context_pre_ingested_multi_tab",
+            spreadsheetId,
+            spreadsheetName: `Google_Sheet_${spreadsheetId?.slice(0, 8)}`,
+            sheetTitle: target.selectedTabsData.map((t) => t.tabName).join(" + "),
+            availableWorksheets: target.selectedTabsData.map((t) => t.tabName),
+            headers: Array.from(combinedHeadersSet),
+            rows: combinedRows,
+            headerRowNumber: 1,
+            dataRowStart: 2,
+          };
+        }
+      } else if ((isWrongTab || isDefaultedToSheet1 || hasNoRows) && preIngestedTabData && Array.isArray(preIngestedTabData.rows) && preIngestedTabData.rows.length > 0) {
         console.log(`[SourceSheetReader] Using verified AI Context pre-ingested data for worksheet tab "${worksheetName}" (${preIngestedTabData.rows.length} rows).`);
         readResult = {
           source: "ai_context_pre_ingested",

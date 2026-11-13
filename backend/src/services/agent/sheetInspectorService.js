@@ -405,13 +405,18 @@ export class SheetInspectorService {
 
     const numMatch =
       msg.match(/\b(?:worksheet|tab)\s*#?\s*([0-9]+)\b/i) ||
-      msg.match(/\b([0-9]+)(?:st|nd|rd|th)\s+(?:worksheet|tab)\b/i);
+      msg.match(/\b([0-9]+)(?:st|nd|rd|th)\s+(?:worksheet|tab)\b/i) ||
+      msg.match(/\b([0-9]+)\s*(?:wala|wali)?\s*(?:worksheet|tab)\b/i);
     if (numMatch) {
       return parseInt(numMatch[1], 10);
     }
-    if (/\b(second|2nd)\s+(?:worksheet|tab)\b/i.test(msg)) return 2;
-    if (/\b(third|3rd)\s+(?:worksheet|tab)\b/i.test(msg)) return 3;
-    if (/\b(first|1st)\s+(?:worksheet|tab)\b/i.test(msg)) return 1;
+    if (/\b(fifth|5th|five|5|paanchwa|paanchwi)\s*(?:wala\s*)?(?:worksheet|tab|sheet)?\b|\b(?:worksheet|tab)\s*#?\s*5\b/i.test(msg)) return 5;
+    if (/\b(fourth|4th|four|4|chautha|chauthi)\s*(?:wala\s*)?(?:worksheet|tab|sheet)?\b|\b(?:worksheet|tab)\s*#?\s*4\b/i.test(msg)) return 4;
+    if (/\b(third|3rd|three|3|teesra|teesri)\s*(?:wala\s*)?(?:worksheet|tab|sheet)?\b|\b(?:worksheet|tab)\s*#?\s*3\b/i.test(msg)) return 3;
+    if (/\b(second|2nd|two|2|dusra|dusri|doosra|doosri)\s*(?:wala\s*)?(?:worksheet|tab|sheet)?\b|\b(?:worksheet|tab)\s*#?\s*2\b/i.test(msg) ||
+        /\bworksheet\s*(?:ma|me|mein)\s*(?:second|2nd|dusra|dusri)\b/i.test(msg)) return 2;
+    if (/\b(first|1st|one|1|pehla|pehli)\s*(?:wala\s*)?(?:worksheet|tab|sheet)?\b|\b(?:worksheet|tab)\s*#?\s*1\b/i.test(msg) ||
+        /\bworksheet\s*(?:ma|me|mein)\s*(?:first|1st|pehla|pehli)\b/i.test(msg)) return 1;
     return null;
   }
 
@@ -625,22 +630,30 @@ export class SheetInspectorService {
       if (selectedTabsData.length >= 1 && selectedTabsData[0]?.tabName) {
         resolvedTabName = selectedTabsData[0].tabName;
       } else if (selectedTabIds.length >= 1 && availableTabs.length > 0) {
-        const firstSel = selectedTabIds[0];
-        const selIdStr =
-          typeof firstSel === "object" && firstSel !== null
-            ? String(firstSel.sheetId ?? firstSel.id ?? "")
-            : String(firstSel);
-        const selTitleStr =
-          typeof firstSel === "object" && firstSel !== null
-            ? String(firstSel.title || firstSel.tabName || firstSel.name || "").toLowerCase()
-            : String(firstSel).toLowerCase();
-        const matchedSel = availableTabs.find(
-          (t) =>
-            (selIdStr && String(t.sheetId) === selIdStr) ||
-            (selTitleStr && String(t.title || t.name || "").toLowerCase() === selTitleStr)
-        );
-        if (matchedSel) {
-          resolvedTabName = matchedSel.title || matchedSel.name;
+        // Pick the active selected tab (latest selection first)
+        const reversedSel = [...selectedTabIds].reverse();
+        for (const sel of reversedSel) {
+          const selIdStr =
+            typeof sel === "object" && sel !== null
+              ? String(sel.sheetId ?? sel.id ?? "")
+              : String(sel);
+          const selTitleStr =
+            typeof sel === "object" && sel !== null
+              ? String(sel.title || sel.tabName || sel.name || "").toLowerCase().trim()
+              : String(sel).toLowerCase().trim();
+          const cleanSelTitle = selTitleStr.replace(/\.+$/, "");
+
+          const matchedSel = availableTabs.find((t) => {
+            const tId = String(t.sheetId !== undefined ? t.sheetId : t.id);
+            const tTitle = String(t.title || t.name || "").toLowerCase().trim();
+            const cleanT = tTitle.replace(/\.+$/, "");
+            return (selIdStr && tId === selIdStr) ||
+              (cleanSelTitle && (cleanT === cleanSelTitle || cleanT.startsWith(cleanSelTitle) || cleanSelTitle.startsWith(cleanT)));
+          });
+          if (matchedSel) {
+            resolvedTabName = matchedSel.title || matchedSel.name;
+            break;
+          }
         }
       } else if (
         sessionSheetContext?.worksheetTab &&

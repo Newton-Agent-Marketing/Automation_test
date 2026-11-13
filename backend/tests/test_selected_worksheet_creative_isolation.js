@@ -289,5 +289,117 @@ describe("Selected Worksheet Tab Creative Isolation Test", () => {
     assert.ok(fs.existsSync(testPath), "Scratch file should be created cleanly without ENAMETOOLONG");
     fs.unlinkSync(testPath);
   });
+
+  it("should resolve Tab 3 (NWTN | Ganpati) when 3rd tab is checked even if Tab 1 was default", () => {
+    const multiTab4Ctx = {
+      hasContext: true,
+      businessUnitsHierarchy: [
+        {
+          id: "bu_1",
+          name: "Utsav App",
+          channels: [{ id: "ch_1", channel: "Meta Ads", accountId: "act_1416124059911929" }],
+          products: [{ id: "prod_1", productName: "Utsav Puja" }],
+          warehouses: [
+            {
+              id: "wh_1",
+              name: "Warehouse (4 Tabs)",
+              sheetUrl: "https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit",
+              worksheetName: "NWTN | Telugu Ads", // stale Tab 1 default
+              targetTab: "NWTN | Telugu Ads",
+              selectedTabIds: ["100234"], // User checked Tab 3
+              availableTabs: [
+                { sheetId: 0, title: "NWTN | Telugu Ads", rowCount: 1000 },
+                { sheetId: 100123, title: "NWTN | Ghrishneshwar", rowCount: 997 },
+                { sheetId: 100234, title: "NWTN | Ganpatipule", rowCount: 1000 },
+                { sheetId: 100345, title: "New Creatives Batch 2", rowCount: 998 },
+              ],
+              selectedTabsData: [
+                {
+                  sheetId: 100234,
+                  tabName: "NWTN | Ganpatipule",
+                  columns: ["Ad Name", "Creative Smart Chips"],
+                  rows: [
+                    { "Ad Name": "Ganpati_Ad_1", "Creative Smart Chips": "https://drive.google.com/file/d/GANPATI_VIDEO_1/view" },
+                  ],
+                },
+              ],
+              sheets: [
+                {
+                  id: "sheet_1",
+                  worksheetName: "NWTN | Telugu Ads",
+                  selectedTabIds: ["100234"],
+                  availableTabs: [
+                    { sheetId: 0, title: "NWTN | Telugu Ads", rowCount: 1000 },
+                    { sheetId: 100123, title: "NWTN | Ghrishneshwar", rowCount: 997 },
+                    { sheetId: 100234, title: "NWTN | Ganpatipule", rowCount: 1000 },
+                    { sheetId: 100345, title: "New Creatives Batch 2", rowCount: 998 },
+                  ],
+                  selectedTabsData: [
+                    {
+                      sheetId: 100234,
+                      tabName: "NWTN | Ganpatipule",
+                      columns: ["Ad Name", "Creative Smart Chips"],
+                      rows: [
+                        { "Ad Name": "Ganpati_Ad_1", "Creative Smart Chips": "https://drive.google.com/file/d/GANPATI_VIDEO_1/view" },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const res = resolveAiContextSelection({
+      aiCtx: multiTab4Ctx,
+      userMessage: "create ad",
+      requestedChannel: "Meta Ads",
+    });
+
+    assert.strictEqual(res.targetWorksheetName, "NWTN | Ganpatipule", "Must resolve Tab 3 from selectedTabIds rather than stale Tab 1 string");
+  });
+
+  it("should resolve Tab 4 when prompt specifies 'fourth worksheet' or '4th worksheet'", () => {
+    const multiTab4Ctx = {
+      hasContext: true,
+      businessUnitsHierarchy: [
+        {
+          id: "bu_1",
+          name: "Utsav App",
+          channels: [{ id: "ch_1", channel: "Meta Ads", accountId: "act_1416124059911929" }],
+          products: [{ id: "prod_1", productName: "Utsav Puja" }],
+          warehouses: [
+            {
+              id: "wh_1",
+              name: "Warehouse (4 Tabs)",
+              sheetUrl: "https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit",
+              availableTabs: [
+                { sheetId: 0, title: "NWTN | Telugu Ads", rowCount: 1000 },
+                { sheetId: 100123, title: "NWTN | Ghrishneshwar", rowCount: 997 },
+                { sheetId: 100234, title: "NWTN | Ganpatipule", rowCount: 1000 },
+                { sheetId: 100345, title: "New Creatives Batch 2", rowCount: 998 },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const res4th = resolveAiContextSelection({
+      aiCtx: multiTab4Ctx,
+      userMessage: "create ad from 4th worksheet",
+      requestedChannel: "Meta Ads",
+    });
+    assert.strictEqual(res4th.targetWorksheetName, "New Creatives Batch 2", "Must resolve Tab 4 when user says '4th worksheet'");
+
+    const resFourth = resolveAiContextSelection({
+      aiCtx: multiTab4Ctx,
+      userMessage: "fourth worksheet wala ad create karo",
+      requestedChannel: "Meta Ads",
+    });
+    assert.strictEqual(resFourth.targetWorksheetName, "New Creatives Batch 2", "Must resolve Tab 4 when user says 'fourth worksheet wala'");
+  });
 });
 

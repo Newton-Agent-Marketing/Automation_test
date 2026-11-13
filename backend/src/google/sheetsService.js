@@ -559,13 +559,22 @@ class SheetsService {
               return tLow === cleanWithoutEllipsis ||
                 (cleanWithoutEllipsis && tLow.startsWith(cleanWithoutEllipsis)) ||
                 (cleanWithoutEllipsis && cleanWithoutEllipsis.startsWith(tLow)) ||
-                tLow.includes(cleanReq);
+                tLow.includes(cleanReq) ||
+                cleanReq.includes(tLow);
             });
             if (partial) {
               chosenTab = partial;
             } else {
               xlsxTabNotFound = true;
               warnings.push(`Worksheet "${sheetTitle}" not found. Available worksheets: [${wbTabs.join(", ")}].`);
+            }
+          }
+
+          if (xlsxTabNotFound && effectiveGid !== null && effectiveGid !== undefined) {
+            const gIdx = parseInt(effectiveGid, 10);
+            if (!isNaN(gIdx) && gIdx >= 0 && gIdx < wbTabs.length) {
+              chosenTab = wbTabs[gIdx];
+              xlsxTabNotFound = false;
             }
           }
 

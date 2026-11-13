@@ -1683,34 +1683,52 @@ export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedCh
     }
   }
 
-  // Strategy 2: User mentions ordinal reference for TAB/WORKSHEET (e.g. "second tab", "2nd tab", "second worksheet", "2nd worksheet", "tab #2", "dusra tab", "dusra worksheet")
-  // NOTE: Does NOT match "2nd sheet" or "sheet #2" which is for SPREADSHEET (handled in 5a)
+  // Strategy 2: User mentions ordinal reference for TAB/WORKSHEET (e.g. "second tab", "2nd tab", "second worksheet", "3rd worksheet", "fourth worksheet", "4th worksheet", "chautha", "wala")
   if (!targetWorksheetName && availableTabs.length > 0) {
-    const isTab2 = /\b(second|2nd|two|2|dusra|dusri|doosra|doosri)\s*(?:tab|worksheet)\b|\b(?:tab|worksheet)\s*#?\s*2\b/i.test(msgLower) &&
-      !/\b(first|1st|one|1|pehla|pehli)\s*(?:tab|worksheet)\b/i.test(msgLower);
-    const isTab3 = /\b(third|3rd|three|3|teesra|teesri)\s*(?:tab|worksheet)\b|\b(?:tab|worksheet)\s*#?\s*3\b/i.test(msgLower);
-    const isTab1 = /\b(first|1st|one|1|pehla|pehli)\s*(?:tab|worksheet)\b|\b(?:tab|worksheet)\s*#?\s*1\b/i.test(msgLower) && !isTab2 && !isTab3;
+    const isTab5 = /\b(fifth|5th|five|5|paanchwa|paanchwi)\s*(?:wala\s*)?(?:tab|worksheet|sheet)?\b|\b(?:tab|worksheet)\s*#?\s*5\b/i.test(msgLower);
+    const isTab4 = /\b(fourth|4th|four|4|chautha|chauthi)\s*(?:wala\s*)?(?:tab|worksheet|sheet)?\b|\b(?:tab|worksheet)\s*#?\s*4\b/i.test(msgLower) && !isTab5;
+    const isTab3 = /\b(third|3rd|three|3|teesra|teesri)\s*(?:wala\s*)?(?:tab|worksheet|sheet)?\b|\b(?:tab|worksheet)\s*#?\s*3\b/i.test(msgLower) && !isTab4 && !isTab5;
+    const isTab2 = (/\b(second|2nd|two|2|dusra|dusri|doosra|doosri)\s*(?:wala\s*)?(?:tab|worksheet|sheet)?\b|\b(?:tab|worksheet)\s*#?\s*2\b/i.test(msgLower) ||
+      /\bworksheet\s*(?:ma|me|mein)\s*(?:second|2nd|dusra|dusri)\b/i.test(msgLower)) &&
+      !/\b(first|1st|one|1|pehla|pehli)\s*(?:tab|worksheet|sheet)\b/i.test(msgLower) && !isTab3 && !isTab4 && !isTab5;
+    const isTab1 = (/\b(first|1st|one|1|pehla|pehli)\s*(?:wala\s*)?(?:tab|worksheet|sheet)?\b|\b(?:tab|worksheet)\s*#?\s*1\b/i.test(msgLower) ||
+      /\bworksheet\s*(?:ma|me|mein)\s*(?:first|1st|pehla|pehli)\b/i.test(msgLower)) &&
+      !isTab2 && !isTab3 && !isTab4 && !isTab5;
 
-    if (isTab2 && availableTabs.length >= 2) {
-      targetWorksheetName = availableTabs[1].title || availableTabs[1].name;
+    if (isTab5 && availableTabs.length >= 5) {
+      targetWorksheetName = availableTabs[4].title || availableTabs[4].name;
+    } else if (isTab4 && availableTabs.length >= 4) {
+      targetWorksheetName = availableTabs[3].title || availableTabs[3].name;
     } else if (isTab3 && availableTabs.length >= 3) {
       targetWorksheetName = availableTabs[2].title || availableTabs[2].name;
+    } else if (isTab2 && availableTabs.length >= 2) {
+      targetWorksheetName = availableTabs[1].title || availableTabs[1].name;
     } else if (isTab1 && availableTabs.length >= 1) {
       targetWorksheetName = availableTabs[0].title || availableTabs[0].name;
     }
   }
 
   // Strategy 3: Check AI Context UI Selection (selectedTabIds)
-  // Check the latest selected tab ID first (the active tab the user selected in AI Context)
+  // Check the active tab IDs selected in AI Context (latest selected first)
   if (!targetWorksheetName && selectedTabIds.length > 0 && availableTabs.length > 0) {
     const reversedIds = [...selectedTabIds].reverse();
     for (const selId of reversedIds) {
-      const match = availableTabs.find((t) =>
-        String(selId) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
-        String(selId).toLowerCase() === String(t.title || t.name || t.tabName || "").toLowerCase()
-      );
+      const cleanSel = String(selId).toLowerCase().trim().replace(/\.+$/, "");
+      const match = availableTabs.find((t) => {
+        const tId = String(t.sheetId !== undefined ? t.sheetId : t.id);
+        const tTitle = String(t.title || t.name || t.tabName || "").toLowerCase().trim();
+        const cleanT = tTitle.replace(/\.+$/, "");
+        return String(selId) === tId ||
+          cleanSel === cleanT ||
+          (cleanSel.length >= 3 && (cleanT.startsWith(cleanSel) || cleanSel.startsWith(cleanT)));
+      });
       if (match) {
         targetWorksheetName = match.title || match.name || match.tabName;
+        break;
+      }
+      const numIdx = parseInt(selId, 10);
+      if (!isNaN(numIdx) && numIdx >= 0 && numIdx < availableTabs.length) {
+        targetWorksheetName = availableTabs[numIdx].title || availableTabs[numIdx].name;
         break;
       }
     }
@@ -1723,14 +1741,37 @@ export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedCh
   }
 
   // Strategy 5: Check explicitly configured active worksheetName / targetTab from AI Context selection
+  // Guard: ONLY use configuredTab if selectedTabIds is empty OR configuredTab matches one of selectedTabIds
   if (!targetWorksheetName) {
     const configuredTab = matchedSheet?.targetTab || matchedSheet?.worksheetName || matchedWarehouse?.targetTab || matchedWarehouse?.worksheetName;
     if (configuredTab && configuredTab !== "Sheet1" && configuredTab.trim() !== "") {
-      targetWorksheetName = configuredTab.trim();
+      const isConfiguredTabAllowed = selectedTabIds.length === 0 || selectedTabIds.some((sId) => {
+        const sClean = String(sId).toLowerCase().trim().replace(/\.+$/, "");
+        const cClean = configuredTab.toLowerCase().trim().replace(/\.+$/, "");
+        return String(sId) === cClean || sClean === cClean || (sClean.length >= 3 && (cClean.startsWith(sClean) || sClean.startsWith(cClean)));
+      });
+      if (isConfiguredTabAllowed) {
+        targetWorksheetName = configuredTab.trim();
+      }
     }
   }
 
-  // Strategy 6: If availableTabs exist and no tab was specified, default to first available tab's title
+  // Strategy 6: If availableTabs exist and no tab was specified:
+  // If selectedTabIds has tabs, pick the first matching selected tab!
+  if (!targetWorksheetName && selectedTabIds.length > 0 && availableTabs.length > 0) {
+    const firstSel = selectedTabIds[0];
+    const cleanSel = String(firstSel).toLowerCase().trim().replace(/\.+$/, "");
+    const match = availableTabs.find((t) => {
+      const tId = String(t.sheetId !== undefined ? t.sheetId : t.id);
+      const cleanT = String(t.title || t.name || t.tabName || "").toLowerCase().trim().replace(/\.+$/, "");
+      return String(firstSel) === tId || cleanSel === cleanT || (cleanSel.length >= 3 && cleanT.startsWith(cleanSel));
+    });
+    if (match) {
+      targetWorksheetName = match.title || match.name || match.tabName;
+    }
+  }
+
+  // Strategy 7: Fallback to first available tab ONLY if nothing was selected
   if (!targetWorksheetName && availableTabs.length > 0) {
     targetWorksheetName = availableTabs[0].title || availableTabs[0].name;
   }

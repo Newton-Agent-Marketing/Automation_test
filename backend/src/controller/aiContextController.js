@@ -1,4 +1,3 @@
-
 import axios from "axios";
 import AiContext from "../models/aiContextModel.js";
 import User from "../models/authModel.js";
@@ -1343,25 +1342,17 @@ export class AiContextController {
         availableTabs = disc.tabs || [];
       }
 
-      // Match selected tabs against available tabs, prioritizing the active/latest selection order
-      const tabsToFetch = [];
-      const reversedIds = [...selectedTabIds].reverse();
-      const primaryId = reversedIds[0];
-      const primaryTab = availableTabs.find(
-        (t) =>
-          String(primaryId) === String(t.sheetId) ||
-          String(primaryId).toLowerCase() === String(t.title || "").toLowerCase()
+      // Match selected tabs against available tabs (with resilient ID, title & ellipsis handling)
+      const tabsToFetch = availableTabs.filter((t) =>
+        selectedTabIds.some((sel) => {
+          const sClean = String(sel).toLowerCase().trim().replace(/\.+$/, "");
+          const tClean = String(t.title || "").toLowerCase().trim().replace(/\.+$/, "");
+          const tId = String(t.sheetId !== undefined ? t.sheetId : t.id);
+          return String(sel) === tId ||
+            sClean === tClean ||
+            (sClean.length >= 3 && (tClean.startsWith(sClean) || sClean.startsWith(tClean)));
+        })
       );
-      if (primaryTab) {
-        tabsToFetch.push(primaryTab);
-      }
-      availableTabs.forEach((t) => {
-        if (!tabsToFetch.some((f) => f.sheetId === t.sheetId)) {
-          if (selectedTabIds.some((sel) => String(sel) === String(t.sheetId) || String(sel).toLowerCase() === String(t.title || "").toLowerCase())) {
-            tabsToFetch.push(t);
-          }
-        }
-      });
 
       console.log(`[saveTabSelection] Fetching data for ${tabsToFetch.length} selected tabs out of ${availableTabs.length} discovered:`, tabsToFetch.map(t => t.title));
 
@@ -1443,13 +1434,6 @@ export class AiContextController {
 
       context.markModified("nodes");
       await context.save();
-
-      // Invalidate and refresh in-memory cache immediately so agent calls fetch fresh context
-      if (globalThis.__aiContextCache) {
-        globalThis.__aiContextCache.delete(String(userId));
-        const freshContext = typeof context.toObject === "function" ? context.toObject() : context;
-        globalThis.__aiContextCache.set(String(userId), freshContext);
-      }
 
       return res.status(200).json({
         success: true,
