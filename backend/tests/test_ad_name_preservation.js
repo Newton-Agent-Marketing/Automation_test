@@ -61,6 +61,44 @@ test("DynamicSheetFilter.evaluateAdNamePattern correctly resolves column formula
   assert.equal(res2, "Surya Narayan Mandir - OD-26-2219");
 });
 
+test("DynamicSheetFilter.evaluateAdNamePattern resolves single column name 'Nomenclature' to row value", () => {
+  const rowValsRow2 = {
+    "Creative Code": "OD-26-2219",
+    "Nomenclature": "NW_Surya_Gaya_Row2_Video",
+    "Temple Name": "Surya Narayan Mandir",
+  };
+  const rowValsRow3 = {
+    "Creative Code": "OD-26-2220",
+    "Nomenclature": "NW_Surya_Gaya_Row3_Video",
+    "Temple Name": "Surya Narayan Mandir",
+  };
+  const headers = Object.keys(rowValsRow2);
+
+  // 1. Bare column name: "Nomenclature"
+  assert.equal(DynamicSheetFilter.evaluateAdNamePattern("Nomenclature", rowValsRow2, headers, 2), "NW_Surya_Gaya_Row2_Video");
+  assert.equal(DynamicSheetFilter.evaluateAdNamePattern("Nomenclature", rowValsRow3, headers, 3), "NW_Surya_Gaya_Row3_Video");
+
+  // 2. Quoted column name: "\"Nomenclature\""
+  assert.equal(DynamicSheetFilter.evaluateAdNamePattern('"Nomenclature"', rowValsRow2, headers, 2), "NW_Surya_Gaya_Row2_Video");
+
+  // 3. Lowercase / case-insensitive: "nomenclature"
+  assert.equal(DynamicSheetFilter.evaluateAdNamePattern("nomenclature", rowValsRow3, headers, 3), "NW_Surya_Gaya_Row3_Video");
+
+  // 4. Bracketed: "[Nomenclature]"
+  assert.equal(DynamicSheetFilter.evaluateAdNamePattern("[Nomenclature]", rowValsRow2, headers, 2), "NW_Surya_Gaya_Row2_Video");
+});
+
+test("DynamicSheetFilter.parseAdNamePattern parses Hinglish adname instructions for Nomenclature", () => {
+  const p1 = 'adname jo: "Nomenclature"';
+  assert.equal(DynamicSheetFilter.parseAdNamePattern(p1), "Nomenclature");
+
+  const p2 = 'adname jo :" Nomenclature " dea hai to sheet ma jo Nomenclature us ki value la';
+  assert.equal(DynamicSheetFilter.parseAdNamePattern(p2), "Nomenclature");
+
+  const p3 = 'adName: "Nomenclature"';
+  assert.equal(DynamicSheetFilter.parseAdNamePattern(p3), "Nomenclature");
+});
+
 test("MetaApiService.formatAdName does not truncate long 300+ char ad names", () => {
   assert.ok(sampleLongAdName.length > 250, "Sample ad name should be longer than old 250 cap");
   const formatted = MetaApiService.formatAdName(sampleLongAdName);

@@ -134,21 +134,22 @@ export class DynamicSheetFilter {
   static parseAdNamePattern(msg) {
     if (!msg || typeof msg !== "string") return null;
 
-    // Fast-path: Explicit quoted value: adName: "...", ad name = '...'
+    // Fast-path: Explicit quoted value: adName: "...", ad name = '...', adname jo: "..."
     const quotedMatch = msg.match(
-      /(?:(?:put|create|make|set|place|launch|with)\s+)?(?:ads?\s*(?:with\s+)?(?:named|called|titled|names?|title|label)?|ad_name)\s*(?:[:=\-–—]|named|called|titled|as)\s*["'“«`]([^"'”»`\r\n]+)["'”»`]/i
+      /(?:(?:put|create|make|set|place|launch|with|use)\s+)?(?:ad\s*names?|ad_name|adname|ads?\s*(?:with\s+)?(?:named|called|titled|names?|title|label)?)\s*(?:jo|ko|ka\s*name|hai|is|will\s*be|should\s*be|as|to)?\s*(?:[:=\-–—]|named|called|titled|as)\s*["'“«`]([^"'”»`\r\n]+)["'”»`]/i
     );
     if (quotedMatch && quotedMatch[1] && quotedMatch[1].trim()) {
       return quotedMatch[1].trim();
     }
 
-    // 1. Explicit key-value or phrasal declaration: "Put Ads with Name - ...", "- Ad name : ...", "Ad name: ...", "Ad Name = ..."
-    const explicitPattern = /(?:(?:put|create|make|set|place|launch|with)\s+)?(?:ads?\s*(?:with\s+)?(?:named|called|titled|names?|title|label)?|ad_name)\s*(?:[:=\-–—]|named|called|titled|as)\s*([^\n\r;]+)/i;
+    // 1. Explicit key-value or phrasal declaration: "Put Ads with Name - ...", "- Ad name : ...", "Ad name: ...", "Ad Name = ...", "adname jo: ..."
+    const explicitPattern = /(?:(?:put|create|make|set|place|launch|with|use)\s+)?(?:ad\s*names?|ad_name|adname|ads?\s*(?:with\s+)?(?:named|called|titled|names?|title|label)?)\s*(?:jo|ko|ka\s*name|hai|is|will\s*be|should\s*be|as|to)?\s*(?:[:=\-–—]|named|called|titled|as)\s*([^\n\r;]+)/i;
     const explicitMatch = msg.match(explicitPattern);
     if (explicitMatch && explicitMatch[1]) {
       let rawVal = explicitMatch[1].trim().replace(/^["'`]+|["'`]+$/g, "").trim();
       // Strip trailing boundary / action instructions if present
       rawVal = rawVal
+        .replace(/\s+(?:dea|diya|de|rakhna|le|lo)\s+hai.*/i, "")
         .replace(/\s+(?:and\s+)?(?:use|fetch|get|take|pull|read|from|in)\s+(?:the\s+)?(?:connected\s+)?(?:google\s+)?(?:sheet|spreadsheet|excel|warehouse|context|data).*/i, "")
         .replace(/\s+(?:and\s+)?(?:create|make|launch|set\s*up|build|banao|run|publish|upload|process|retry)\s+(?:the\s+)?(?:ads?|campaign|adset).*/i, "")
         .replace(/\s+(?:for|on|in|from|process|retry)\s+(?:rows?|lines?)\s*#?\d+.*/i, "")
@@ -172,6 +173,7 @@ export class DynamicSheetFilter {
   /**
    * Evaluate dynamic Ad Name for a specific row using the user-defined pattern or column combination.
    * Supports:
+   *   - Direct single column: "Nomenclature" -> vals["Nomenclature"]
    *   - Column arithmetic/join: "Creative Code+Nomenclature" -> "OD-26-2219 + NW_Rahu_..."
    *   - Template placeholders: "[Temple Name] - [Creative Code]" -> "Rahu Paithani Temple - OD-26-2219"
    *   - Custom delimiters: "+", "-", "|", "and", " "
@@ -193,7 +195,7 @@ export class DynamicSheetFilter {
       return "";
     };
 
-    let evaluated = pattern;
+    let evaluated = String(pattern || "").trim().replace(/^["'`]+|["'`]+$/g, "").trim();
     let anyReplaced = false;
 
     // 1. Template evaluation with brackets: {Column} or [Column]
@@ -211,8 +213,14 @@ export class DynamicSheetFilter {
       }
     }
 
-    // 2. Tokenize by explicit column join operators: "+", " - ", "|", " and "
-    const formulaMatch = pattern.match(/\s*(\+|\s+-\s+|\||\band\b)\s*/i);
+    // 2. Direct single column lookup: e.g. pattern = "Nomenclature" or "Creative Code"
+    const singleColVal = getVal(evaluated);
+    if (singleColVal) {
+      return singleColVal;
+    }
+
+    // 3. Tokenize by explicit column join operators: "+", " - ", "|", " and "
+    const formulaMatch = evaluated.match(/\s*(\+|\s+-\s+|\||\band\b)\s*/i);
     if (!formulaMatch) {
       return pattern;
     }
@@ -222,7 +230,7 @@ export class DynamicSheetFilter {
       : (formulaMatch[1].trim().toLowerCase() === "and" ? " - " : ` ${formulaMatch[1].trim()} `);
 
     // Split pattern strictly by formula join operators
-    const tokens = pattern.split(/\s*(?:\+|\s+-\s+|\||\band\b)\s*/i).map((t) => t.trim().replace(/^["'`]+|["'`]+$/g, "")).filter(Boolean);
+    const tokens = evaluated.split(/\s*(?:\+|\s+-\s+|\||\band\b)\s*/i).map((t) => t.trim().replace(/^["'`]+|["'`]+$/g, "")).filter(Boolean);
 
     let matchedColumnCount = 0;
     const resolvedValues = [];
