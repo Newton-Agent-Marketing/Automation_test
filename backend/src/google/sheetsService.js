@@ -236,6 +236,9 @@ class SheetsService {
             );
             if (matchedSheet) {
               targetSheetTitle = matchedSheet.properties.title;
+              if (!effectiveGid && matchedSheet.properties?.sheetId !== undefined) {
+                effectiveGid = String(matchedSheet.properties.sheetId);
+              }
             } else {
               requestedTabNotFound = true;
               console.warn(`[SheetsService Notice] Requested worksheet tab "${sheetTitle}" not found in spreadsheet "${spreadsheetName}". Available worksheets: [${availableWorksheets.join(", ")}]. Defaulting to "${sheetsList[0].properties?.title}".`);
@@ -245,11 +248,16 @@ class SheetsService {
 
           if (!targetSheetTitle && effectiveGid) {
             const matchedSheet = sheetsList.find((s) => String(s.properties?.sheetId) === String(effectiveGid));
-            if (matchedSheet) targetSheetTitle = matchedSheet.properties.title;
+            if (matchedSheet) {
+              targetSheetTitle = matchedSheet.properties.title;
+            }
           }
 
           if (!targetSheetTitle) {
             targetSheetTitle = sheetsList[0].properties?.title || "Sheet1";
+            if (!effectiveGid && sheetsList[0].properties?.sheetId !== undefined) {
+              effectiveGid = String(sheetsList[0].properties.sheetId);
+            }
           }
         }
 
@@ -297,16 +305,17 @@ class SheetsService {
       const gridUrlArraysMap = new Map();
       const gridRawValuesMap = new Map();
       try {
-        const gridRange = effectiveRange;
+        const cleanTabForGrid = (targetSheetTitle || availableWorksheets[0] || "Sheet1").replace(/^'+|'+$/g, "").trim();
+        const gridRange = `'${cleanTabForGrid.replace(/'/g, "''")}'!A1:Z500`;
         const gridUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?includeGridData=true&ranges=${encodeURIComponent(gridRange)}`;
         let gridRes = null;
         try {
           gridRes = await auth.axiosInstance.get(gridUrl);
         } catch (gUrlErr) {
-          if (gridRange.includes("!")) {
-            const fallbackGridUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?includeGridData=true&ranges=A1:Z1000`;
+          const fallbackGridUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?includeGridData=true&ranges=A1:Z500`;
+          try {
             gridRes = await auth.axiosInstance.get(fallbackGridUrl);
-          }
+          } catch (_) {}
         }
 
         const sheetsData = gridRes?.data?.sheets || [];
@@ -756,6 +765,20 @@ class SheetsService {
     }
 
     // Method 3: Public CSV export fallback (with cache-busting timestamp to avoid Google CDN edge cache)
+    if (!effectiveGid && sheetTitle) {
+      try {
+        const disc = await this.discoverWorksheetTabs({ spreadsheetIdOrUrl: spreadsheetId });
+        const matched = (disc.tabs || []).find(
+          (t) =>
+            String(t.title || "").toLowerCase().trim() === String(sheetTitle).toLowerCase().trim() ||
+            String(t.title || "").toLowerCase().includes(String(sheetTitle).toLowerCase().trim())
+        );
+        if (matched && matched.sheetId !== undefined && matched.sheetId !== null) {
+          effectiveGid = String(matched.sheetId);
+        }
+      } catch (_) {}
+    }
+
     const publicExportUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv${effectiveGid ? `&gid=${effectiveGid}` : ""}&_t=${Date.now()}`;
     const publicCsvRes = await axios.get(publicExportUrl, {
       timeout: 15000,

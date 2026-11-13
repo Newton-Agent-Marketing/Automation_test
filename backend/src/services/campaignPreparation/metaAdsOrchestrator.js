@@ -352,14 +352,15 @@ export class MetaAdsOrchestrator {
         const cachedMediaDocs = await MetaUploadedMedia.find({ accountId: targetAccountId }).lean().catch(() => []);
         for (const cm of cachedMediaDocs) {
           const fileId = cm.fileId || (cm.sourceUrl ? driveService.extractFileId(cm.sourceUrl) : null);
-          if (cm.mediaType === "VIDEO" && cm.videoId) {
+          const isFolder = cm.sourceUrl && cm.sourceUrl.includes("/folders/");
+          if (cm.mediaType === "VIDEO" && cm.videoId && !isFolder) {
             if (fileId && !dbVideoMap.has(`file_${fileId}`)) {
               dbVideoMap.set(`file_${fileId}`, { videoId: cm.videoId, videoFilePath: cm.localFilePath });
             }
             if (cm.sourceUrl && !dbVideoMap.has(cm.sourceUrl)) {
               dbVideoMap.set(cm.sourceUrl, { videoId: cm.videoId, videoFilePath: cm.localFilePath });
             }
-          } else if (cm.mediaType === "IMAGE" && (cm.imageHash || cm.metaMediaId)) {
+          } else if (cm.mediaType === "IMAGE" && (cm.imageHash || cm.metaMediaId) && !isFolder) {
             const hash = cm.imageHash || cm.metaMediaId;
             if (fileId && !dbImageMap.has(`file_${fileId}`)) {
               dbImageMap.set(`file_${fileId}`, hash);
@@ -388,7 +389,8 @@ export class MetaAdsOrchestrator {
           if (ps.metaAccountId && ps.metaAccountId !== targetAccountId) continue;
           for (const pad of ps.preview?.adDetails || []) {
             const vId = pad.videoId ? String(pad.videoId).trim() : null;
-            if (vId && /^\d{10,20}$/.test(vId) && pad.creative) {
+            const isFolder = pad.creative && pad.creative.includes("/folders/");
+            if (vId && /^\d{10,20}$/.test(vId) && pad.creative && !isFolder) {
               const fileId = driveService.extractFileId(pad.creative);
               if (fileId && !dbVideoMap.has(`file_${fileId}`)) {
                 dbVideoMap.set(`file_${fileId}`, { videoId: vId, videoFilePath: pad.videoFilePath });
@@ -398,7 +400,7 @@ export class MetaAdsOrchestrator {
               }
             }
             const iHash = pad.imageHash ? String(pad.imageHash).trim() : null;
-            if (iHash && pad.creative) {
+            if (iHash && pad.creative && !isFolder) {
               const fileId = driveService.extractFileId(pad.creative);
               if (fileId && !dbImageMap.has(`file_${fileId}`)) {
                 dbImageMap.set(`file_${fileId}`, iHash);
@@ -483,8 +485,9 @@ export class MetaAdsOrchestrator {
           let resolvedFilePath = null;
 
           // Check 1: Verify if adConfig.videoId or existingRes.videoId strictly matches this exact asset (avoid stale cross-row reuse)
+          const isFolderAsset = adConfig.creative && adConfig.creative.includes("/folders/");
           const candVidId = adConfig.videoId || existingRes.videoId;
-          if (candVidId && /^\d{10,20}$/.test(String(candVidId).trim())) {
+          if (candVidId && /^\d{10,20}$/.test(String(candVidId).trim()) && !isFolderAsset) {
             const matchedCached = (targetFileId ? dbVideoMap.get(`file_${targetFileId}`) : null) || dbVideoMap.get(adConfig.creative);
             if (matchedCached && String(matchedCached.videoId) === String(candVidId).trim()) {
               resolvedVideoId = String(candVidId).trim();
@@ -492,8 +495,8 @@ export class MetaAdsOrchestrator {
             }
           }
 
-          // Check 2: Look up exact fileId or sourceUrl in dbVideoMap (Strict 1-to-1 asset matching, NEVER by row index)
-          if (!resolvedVideoId) {
+          // Check 2: Look up exact fileId or sourceUrl in dbVideoMap (Strict 1-to-1 asset matching, NEVER by row index or folder)
+          if (!resolvedVideoId && !isFolderAsset) {
             const cached = (targetFileId ? dbVideoMap.get(`file_${targetFileId}`) : null) || dbVideoMap.get(adConfig.creative);
             const cachedVidId = typeof cached === "object" ? cached?.videoId : cached;
             const cachedFilePath = typeof cached === "object" ? cached?.videoFilePath : null;

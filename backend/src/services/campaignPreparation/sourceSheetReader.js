@@ -61,7 +61,10 @@ export class SourceSheetReader {
       spreadsheetId = sheetsService.extractSpreadsheetId(sheetUrlOrId);
 
       // Auto-resolve worksheet tab from AI Context if not explicitly passed
-      if (!worksheetName && userId) {
+      let targetGid = null;
+      let preIngestedTabData = null;
+
+      if (userId) {
         try {
           const context = await AiContext.findOne({ userId }).lean();
           const allWhNodes = (context?.nodes || []).filter(
@@ -78,12 +81,21 @@ export class SourceSheetReader {
               target = sheets.find((s) => s.isSelected || (wh.data?.activeSheetId && s.id === wh.data.activeSheetId)) || sheets[0] || wh.data;
             }
             if (target) {
+              // 1. Prioritize explicit targetTab or worksheetName if set
+              if (!worksheetName) {
+                if (target.targetTab && target.targetTab !== "Sheet1") {
+                  worksheetName = target.targetTab;
+                } else if (target.worksheetName && target.worksheetName !== "Sheet1") {
+                  worksheetName = target.worksheetName;
+                }
+              }
+
               const selIds = (Array.isArray(target.selectedTabIds) && target.selectedTabIds.length > 0)
                 ? target.selectedTabIds
                 : (Array.isArray(selectedTabIds) && selectedTabIds.length > 0 ? selectedTabIds : []);
-              const avail = Array.isArray(target.availableTabs) ? target.availableTabs : [];
+              const avail = Array.isArray(target.availableTabs) ? target.availableTabs : (Array.isArray(wh.data?.availableTabs) ? wh.data.availableTabs : []);
 
-              if (selIds.length > 0 && avail.length > 0) {
+              if (!worksheetName && selIds.length > 0 && avail.length > 0) {
                 const found = avail.find((t) =>
                   selIds.some(
                     (id) =>
@@ -98,8 +110,23 @@ export class SourceSheetReader {
               if (!worksheetName && Array.isArray(target.selectedTabsData) && target.selectedTabsData.length > 0) {
                 worksheetName = target.selectedTabsData[0].tabName || target.selectedTabsData[0].title;
               }
-              if (!worksheetName && target.worksheetName && target.worksheetName !== "Sheet1") {
-                worksheetName = target.worksheetName;
+
+              // Resolve gid for the worksheet
+              if (worksheetName && avail.length > 0) {
+                const matchTab = avail.find((t) =>
+                  String(t.title || t.name || "").toLowerCase().trim() === String(worksheetName).toLowerCase().trim()
+                );
+                if (matchTab && matchTab.sheetId !== undefined) {
+                  targetGid = String(matchTab.sheetId);
+                }
+              }
+
+              // Check for pre-ingested tab data
+              const allTabs = Array.isArray(target.selectedTabsData) ? target.selectedTabsData : (Array.isArray(wh.data?.selectedTabsData) ? wh.data.selectedTabsData : []);
+              if (worksheetName && allTabs.length > 0) {
+                preIngestedTabData = allTabs.find((t) =>
+                  String(t.tabName || t.title || "").toLowerCase().trim() === String(worksheetName).toLowerCase().trim()
+                );
               }
             }
             if (worksheetName) break;
@@ -109,18 +136,43 @@ export class SourceSheetReader {
         }
       }
 
-      const readResult = await sheetsService.readSpreadsheet({
-        spreadsheetIdOrUrl: sheetUrlOrId,
-        sheetTitle: worksheetName,
-      });
+      let readResult = null;
+      try {
+        readResult = await sheetsService.readSpreadsheet({
+          spreadsheetIdOrUrl: sheetUrlOrId,
+          sheetTitle: worksheetName,
+          gid: targetGid,
+        });
+      } catch (readErr) {
+        console.warn("[SourceSheetReader] readSpreadsheet notice:", readErr.message);
+      }
 
-      spreadsheetName = readResult.spreadsheetName || `Google_Sheet_${spreadsheetId?.slice(0, 8)}`;
-      targetWorksheet = readResult.sheetTitle || worksheetName || "Sheet1";
-      availableWorksheets = readResult.availableWorksheets || [targetWorksheet];
-      headers = readResult.headers || [];
-      rawRows = readResult.rows || [];
-      headerRowNumber = readResult.headerRowNumber || 1;
-      dataRowStart = readResult.dataRowStart || 2;
+      // If live read defaulted to Sheet1 or returned no rows, fall back to pre-ingested tab rows from AI Context
+      const isDefaultedToSheet1 = worksheetName && worksheetName !== "Sheet1" && readResult?.sheetTitle === "Sheet1";
+      const hasNoRows = !readResult || !Array.isArray(readResult.rows) || readResult.rows.length === 0;
+
+      if ((isDefaultedToSheet1 || hasNoRows) && preIngestedTabData && Array.isArray(preIngestedTabData.rows) && preIngestedTabData.rows.length > 0) {
+        console.log(`[SourceSheetReader] Using verified AI Context pre-ingested data for worksheet tab "${worksheetName}" (${preIngestedTabData.rows.length} rows).`);
+        readResult = {
+          source: "ai_context_pre_ingested",
+          spreadsheetId,
+          spreadsheetName: `Google_Sheet_${spreadsheetId?.slice(0, 8)}`,
+          sheetTitle: worksheetName,
+          availableWorksheets: [worksheetName],
+          headers: preIngestedTabData.columns || Object.keys(preIngestedTabData.rows[0] || {}).filter((k) => !k.startsWith("_")),
+          rows: preIngestedTabData.rows,
+          headerRowNumber: 1,
+          dataRowStart: 2,
+        };
+      }
+
+      spreadsheetName = readResult?.spreadsheetName || `Google_Sheet_${spreadsheetId?.slice(0, 8)}`;
+      targetWorksheet = readResult?.sheetTitle || worksheetName || "Sheet1";
+      availableWorksheets = readResult?.availableWorksheets || [targetWorksheet];
+      headers = readResult?.headers || [];
+      rawRows = readResult?.rows || [];
+      headerRowNumber = readResult?.headerRowNumber || 1;
+      dataRowStart = readResult?.dataRowStart || 2;
     } else if (filePath || fileBuffer) {
       // 2. Direct Excel file buffer or disk path
       sourceType = "excel";

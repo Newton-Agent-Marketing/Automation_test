@@ -1174,9 +1174,32 @@ export async function getUserAiContext({ userId }) {
       })),
       warehouses: buWarehouses.map((n) => ({
         id: n.id,
-        name: n.label || n.data?.name,
+        name: n.label || n.data?.name || "Excel & Google Drive Warehouse",
         sheetUrl: n.data?.sheetUrl || "",
-        sheets: Array.isArray(n.data?.sheets) ? n.data.sheets : [],
+        activeSheetId: n.data?.activeSheetId || null,
+        activeSheetIndex: n.data?.activeSheetIndex !== undefined ? n.data.activeSheetIndex : null,
+        worksheetName: n.data?.worksheetName || "",
+        targetTab: n.data?.targetTab || n.data?.worksheetName || "",
+        availableTabs: n.data?.availableTabs || [],
+        selectedTabIds: n.data?.selectedTabIds || [],
+        selectedTabsData: n.data?.selectedTabsData || [],
+        sheets: (Array.isArray(n.data?.sheets) ? n.data.sheets : []).map((s, idx) => ({
+          ...s,
+          sheetIndex: idx,
+          id: s.id || `sheet_${idx + 1}`,
+          sheetName: s.workbookName || s.sheetName || `Sheet #${idx + 1}`,
+          workbookName: s.workbookName || "",
+          sheetUrl: s.sheetUrl || "",
+          worksheetName: s.worksheetName || s.targetTab || "",
+          targetTab: s.targetTab || s.worksheetName || "",
+          selectedTabIds: Array.isArray(s.selectedTabIds) ? s.selectedTabIds : [],
+          availableTabs: Array.isArray(s.availableTabs) ? s.availableTabs : [],
+          selectedTabsData: Array.isArray(s.selectedTabsData) ? s.selectedTabsData : [],
+          totalRows: s.totalRows || (s.sheetRows || []).length || 0,
+          sheetRows: s.sheetRows || [],
+          sheetColumns: s.sheetColumns || [],
+          isSelected: s.isSelected || (n.data?.activeSheetId && s.id === n.data.activeSheetId) || false,
+        })),
         dataLabels: n.data?.dataLabels || n.data?.dataLevel || "",
       })),
     });
@@ -1213,9 +1236,32 @@ export async function getUserAiContext({ userId }) {
       })),
       warehouses: allWarehouses.map((n) => ({
         id: n.id,
-        name: n.label || n.data?.name,
+        name: n.label || n.data?.name || "Excel & Google Drive Warehouse",
         sheetUrl: n.data?.sheetUrl || "",
-        sheets: Array.isArray(n.data?.sheets) ? n.data.sheets : [],
+        activeSheetId: n.data?.activeSheetId || null,
+        activeSheetIndex: n.data?.activeSheetIndex !== undefined ? n.data.activeSheetIndex : null,
+        worksheetName: n.data?.worksheetName || "",
+        targetTab: n.data?.targetTab || n.data?.worksheetName || "",
+        availableTabs: n.data?.availableTabs || [],
+        selectedTabIds: n.data?.selectedTabIds || [],
+        selectedTabsData: n.data?.selectedTabsData || [],
+        sheets: (Array.isArray(n.data?.sheets) ? n.data.sheets : []).map((s, idx) => ({
+          ...s,
+          sheetIndex: idx,
+          id: s.id || `sheet_${idx + 1}`,
+          sheetName: s.workbookName || s.sheetName || `Sheet #${idx + 1}`,
+          workbookName: s.workbookName || "",
+          sheetUrl: s.sheetUrl || "",
+          worksheetName: s.worksheetName || s.targetTab || "",
+          targetTab: s.targetTab || s.worksheetName || "",
+          selectedTabIds: Array.isArray(s.selectedTabIds) ? s.selectedTabIds : [],
+          availableTabs: Array.isArray(s.availableTabs) ? s.availableTabs : [],
+          selectedTabsData: Array.isArray(s.selectedTabsData) ? s.selectedTabsData : [],
+          totalRows: s.totalRows || (s.sheetRows || []).length || 0,
+          sheetRows: s.sheetRows || [],
+          sheetColumns: s.sheetColumns || [],
+          isSelected: s.isSelected || (n.data?.activeSheetId && s.id === n.data.activeSheetId) || false,
+        })),
         dataLabels: n.data?.dataLabels || n.data?.dataLevel || "",
       })),
     });
@@ -1640,9 +1686,18 @@ export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedCh
     }
   }
 
-  // Strategy 3: Check AI Context UI Selection (selectedTabIds)
+  // Strategy 3: Check explicitly configured active worksheetName / targetTab from AI Context selection
+  if (!targetWorksheetName) {
+    const configuredTab = matchedSheet?.targetTab || matchedSheet?.worksheetName || matchedWarehouse?.targetTab || matchedWarehouse?.worksheetName;
+    if (configuredTab && configuredTab !== "Sheet1" && configuredTab.trim() !== "") {
+      targetWorksheetName = configuredTab.trim();
+    }
+  }
+
+  // Strategy 4: Check AI Context UI Selection (selectedTabIds)
   // When user selected specific tab(s) in AI Context (e.g. checkbox checked for Eveil Eye | Protection)
   if (!targetWorksheetName && selectedTabIds.length > 0 && availableTabs.length > 0) {
+    // Check if the latest/last selectedTabId matches a specific tab
     const selectedTabObjects = availableTabs.filter((t) =>
       selectedTabIds.some((id) =>
         String(id) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
@@ -1654,17 +1709,9 @@ export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedCh
     }
   }
 
-  // Strategy 4: Fallback to selectedTabsData if available
+  // Strategy 5: Fallback to selectedTabsData if available
   if (!targetWorksheetName && selectedTabsData.length > 0) {
     targetWorksheetName = selectedTabsData[0].tabName || selectedTabsData[0].title;
-  }
-
-  // Strategy 5: Fallback to sheet's configured worksheetName or targetTab if customized (not "Sheet1")
-  if (!targetWorksheetName && (matchedSheet?.worksheetName || matchedSheet?.targetTab)) {
-    const wName = matchedSheet.targetTab || matchedSheet.worksheetName;
-    if (wName && wName !== "Sheet1") {
-      targetWorksheetName = wName;
-    }
   }
 
   // Strategy 6: If availableTabs exist and no tab was specified, default to first available tab's title
