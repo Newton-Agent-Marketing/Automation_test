@@ -81,20 +81,12 @@ export class SourceSheetReader {
               target = sheets.find((s) => s.isSelected || (wh.data?.activeSheetId && s.id === wh.data.activeSheetId)) || sheets[0] || wh.data;
             }
             if (target) {
-              // 1. Prioritize explicit targetTab or worksheetName if set
-              if (!worksheetName) {
-                if (target.targetTab && target.targetTab !== "Sheet1") {
-                  worksheetName = target.targetTab;
-                } else if (target.worksheetName && target.worksheetName !== "Sheet1") {
-                  worksheetName = target.worksheetName;
-                }
-              }
-
               const selIds = (Array.isArray(target.selectedTabIds) && target.selectedTabIds.length > 0)
                 ? target.selectedTabIds
                 : (Array.isArray(selectedTabIds) && selectedTabIds.length > 0 ? selectedTabIds : []);
               const avail = Array.isArray(target.availableTabs) ? target.availableTabs : (Array.isArray(wh.data?.availableTabs) ? wh.data.availableTabs : []);
 
+              // 1. Prioritize explicit active tab selection from checkboxes (selIds)
               if (!worksheetName && selIds.length > 0 && avail.length > 0) {
                 const reversedSelIds = [...selIds].reverse();
                 for (const sId of reversedSelIds) {
@@ -108,27 +100,44 @@ export class SourceSheetReader {
                   }
                 }
               }
+
+              // 2. Prioritize selectedTabsData if available
               if (!worksheetName && Array.isArray(target.selectedTabsData) && target.selectedTabsData.length > 0) {
                 const lastTab = target.selectedTabsData[target.selectedTabsData.length - 1];
                 worksheetName = lastTab?.tabName || lastTab?.title || target.selectedTabsData[0].tabName || target.selectedTabsData[0].title;
               }
 
-              // Resolve gid for the worksheet
-              if (worksheetName && avail.length > 0) {
-                const matchTab = avail.find((t) =>
-                  String(t.title || t.name || "").toLowerCase().trim() === String(worksheetName).toLowerCase().trim()
-                );
-                if (matchTab && matchTab.sheetId !== undefined) {
-                  targetGid = String(matchTab.sheetId);
+              // 3. Fallback to explicit targetTab or worksheetName if set
+              if (!worksheetName) {
+                if (target.targetTab && target.targetTab !== "Sheet1") {
+                  worksheetName = target.targetTab;
+                } else if (target.worksheetName && target.worksheetName !== "Sheet1") {
+                  worksheetName = target.worksheetName;
                 }
               }
 
-              // Check for pre-ingested tab data
+              // Resolve gid for the worksheet (with resilient partial/prefix matching)
+              if (worksheetName && avail.length > 0) {
+                const cleanWs = String(worksheetName).toLowerCase().trim().replace(/\.+$/, "");
+                const matchTab = avail.find((t) => {
+                  const tClean = String(t.title || t.name || "").toLowerCase().trim();
+                  return tClean === cleanWs || tClean.startsWith(cleanWs) || cleanWs.startsWith(tClean);
+                });
+                if (matchTab && matchTab.sheetId !== undefined) {
+                  targetGid = String(matchTab.sheetId);
+                  // Normalize worksheetName to the exact full title in available tabs
+                  worksheetName = matchTab.title || matchTab.name || worksheetName;
+                }
+              }
+
+              // Check for pre-ingested tab data (with resilient partial/prefix matching)
               const allTabs = Array.isArray(target.selectedTabsData) ? target.selectedTabsData : (Array.isArray(wh.data?.selectedTabsData) ? wh.data.selectedTabsData : []);
               if (worksheetName && allTabs.length > 0) {
-                preIngestedTabData = allTabs.find((t) =>
-                  String(t.tabName || t.title || "").toLowerCase().trim() === String(worksheetName).toLowerCase().trim()
-                );
+                const cleanWs = String(worksheetName).toLowerCase().trim().replace(/\.+$/, "");
+                preIngestedTabData = allTabs.find((t) => {
+                  const tClean = String(t.tabName || t.title || "").toLowerCase().trim();
+                  return tClean === cleanWs || tClean.startsWith(cleanWs) || cleanWs.startsWith(tClean);
+                });
               }
             }
             if (worksheetName) break;
@@ -149,11 +158,14 @@ export class SourceSheetReader {
         console.warn("[SourceSheetReader] readSpreadsheet notice:", readErr.message);
       }
 
-      // If live read defaulted to Sheet1 or returned no rows, fall back to pre-ingested tab rows from AI Context
+      // If live read returned a different worksheet tab, defaulted to Sheet1, or returned no rows, fall back to pre-ingested tab rows from AI Context
+      const isWrongTab = worksheetName && readResult?.sheetTitle &&
+        String(readResult.sheetTitle).toLowerCase().trim() !== String(worksheetName).toLowerCase().trim() &&
+        !String(readResult.sheetTitle).toLowerCase().trim().startsWith(String(worksheetName).toLowerCase().trim().replace(/\.+$/, ""));
       const isDefaultedToSheet1 = worksheetName && worksheetName !== "Sheet1" && readResult?.sheetTitle === "Sheet1";
       const hasNoRows = !readResult || !Array.isArray(readResult.rows) || readResult.rows.length === 0;
 
-      if ((isDefaultedToSheet1 || hasNoRows) && preIngestedTabData && Array.isArray(preIngestedTabData.rows) && preIngestedTabData.rows.length > 0) {
+      if ((isWrongTab || isDefaultedToSheet1 || hasNoRows) && preIngestedTabData && Array.isArray(preIngestedTabData.rows) && preIngestedTabData.rows.length > 0) {
         console.log(`[SourceSheetReader] Using verified AI Context pre-ingested data for worksheet tab "${worksheetName}" (${preIngestedTabData.rows.length} rows).`);
         readResult = {
           source: "ai_context_pre_ingested",

@@ -196,5 +196,70 @@ describe("Selected Worksheet Tab Creative Isolation Test", () => {
     assert.strictEqual(session, null, "Old session for Tab 1 must be retired when user switches to Tab 2");
     assert.strictEqual(oldSession.status, "APPROVED", "Original object preserved or updated");
   });
+
+  it("should resolve Tab 2 (Chhath Puja) when only Tab 2 is checked in selectedTabIds even if worksheetName was Tithi Mix", () => {
+    const tithiMixCtx = {
+      hasContext: true,
+      businessUnitsHierarchy: [
+        {
+          id: "bu_1",
+          name: "Utsav App",
+          warehouses: [
+            {
+              id: "wh_1",
+              name: "Copy of Utsav Ads",
+              worksheetName: "Tithi Mix", // Old string
+              targetTab: "Tithi Mix",
+              selectedTabIds: ["100234"], // User checked only Tab 2 (Chhath Puja)
+              availableTabs: [
+                { sheetId: 0, title: "Tithi Mix", rowCount: 1000 },
+                { sheetId: 100234, title: "Chhath Puja", rowCount: 1000 },
+              ],
+              selectedTabsData: [
+                {
+                  sheetId: 100234,
+                  tabName: "Chhath Puja",
+                  columns: ["Ad Name", "Creative Smart Chips"],
+                  rows: [
+                    { "Ad Name": "Chhath_Ad_1", "Creative Smart Chips": "https://drive.google.com/file/d/CHHATH_VIDEO_1/view" },
+                  ],
+                },
+              ],
+              sheets: [
+                {
+                  id: "sheet_1",
+                  worksheetName: "Tithi Mix",
+                  targetTab: "Tithi Mix",
+                  selectedTabIds: ["100234"],
+                  availableTabs: [
+                    { sheetId: 0, title: "Tithi Mix", rowCount: 1000 },
+                    { sheetId: 100234, title: "Chhath Puja", rowCount: 1000 },
+                  ],
+                  selectedTabsData: [
+                    {
+                      sheetId: 100234,
+                      tabName: "Chhath Puja",
+                      columns: ["Ad Name", "Creative Smart Chips"],
+                      rows: [
+                        { "Ad Name": "Chhath_Ad_1", "Creative Smart Chips": "https://drive.google.com/file/d/CHHATH_VIDEO_1/view" },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const res = resolveAiContextSelection({
+      aiCtx: tithiMixCtx,
+      userMessage: "create ad",
+      requestedChannel: "Meta Ads",
+    });
+
+    assert.strictEqual(res.targetWorksheetName, "Chhath Puja", "Must resolve Chhath Puja from selectedTabIds rather than stale Tithi Mix string");
+  });
 });
 

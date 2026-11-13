@@ -193,7 +193,8 @@ class SheetsService {
     let effectiveGid = gid;
     if (!effectiveGid && typeof spreadsheetIdOrUrl === "string") {
       const gidMatch = spreadsheetIdOrUrl.match(/[#?&]gid=([0-9]+)/);
-      if (gidMatch) effectiveGid = gidMatch[1];
+      // Only extract gid from URL if sheetTitle was NOT explicitly specified
+      if (gidMatch && !sheetTitle) effectiveGid = gidMatch[1];
     }
 
     let availableWorksheets = [];
@@ -227,29 +228,35 @@ class SheetsService {
         }));
 
         if (sheetsList.length > 0) {
-          if (sheetTitle) {
+          // 1a. If effectiveGid is provided and valid, prioritize exact sheetId match
+          if (effectiveGid) {
+            const matchedByGid = sheetsList.find((s) => String(s.properties?.sheetId) === String(effectiveGid));
+            if (matchedByGid) {
+              targetSheetTitle = matchedByGid.properties.title;
+            }
+          }
+
+          // 1b. If sheetTitle is provided, match by title (with resilient substring/ellipsis stripping)
+          if (sheetTitle && !targetSheetTitle) {
             const cleanTarget = String(sheetTitle).toLowerCase().trim();
-            const matchedSheet = sheetsList.find(
-              (s) =>
-                String(s.properties?.title || "").toLowerCase().trim() === cleanTarget ||
-                String(s.properties?.title || "").toLowerCase().includes(cleanTarget)
-            );
+            const cleanWithoutEllipsis = cleanTarget.replace(/\.+$/, "");
+            const matchedSheet = sheetsList.find((s) => {
+              const sTitle = String(s.properties?.title || "").toLowerCase().trim();
+              return sTitle === cleanTarget ||
+                (cleanWithoutEllipsis && sTitle.startsWith(cleanWithoutEllipsis)) ||
+                (cleanWithoutEllipsis && cleanWithoutEllipsis.startsWith(sTitle)) ||
+                sTitle.includes(cleanTarget) ||
+                cleanTarget.includes(sTitle);
+            });
             if (matchedSheet) {
               targetSheetTitle = matchedSheet.properties.title;
-              if (!effectiveGid && matchedSheet.properties?.sheetId !== undefined) {
+              if (matchedSheet.properties?.sheetId !== undefined) {
                 effectiveGid = String(matchedSheet.properties.sheetId);
               }
             } else {
               requestedTabNotFound = true;
               console.warn(`[SheetsService Notice] Requested worksheet tab "${sheetTitle}" not found in spreadsheet "${spreadsheetName}". Available worksheets: [${availableWorksheets.join(", ")}]. Defaulting to "${sheetsList[0].properties?.title}".`);
               warnings.push(`Worksheet "${sheetTitle}" not found. Defaulted to "${sheetsList[0].properties?.title}".`);
-            }
-          }
-
-          if (!targetSheetTitle && effectiveGid) {
-            const matchedSheet = sheetsList.find((s) => String(s.properties?.sheetId) === String(effectiveGid));
-            if (matchedSheet) {
-              targetSheetTitle = matchedSheet.properties.title;
             }
           }
 
@@ -545,8 +552,15 @@ class SheetsService {
 
           if (sheetTitle) {
             const cleanReq = String(sheetTitle).toLowerCase().trim();
+            const cleanWithoutEllipsis = cleanReq.replace(/\.+$/, "");
             const exact = wbTabs.find((t) => t.toLowerCase().trim() === cleanReq);
-            const partial = exact || wbTabs.find((t) => t.toLowerCase().includes(cleanReq));
+            const partial = exact || wbTabs.find((t) => {
+              const tLow = t.toLowerCase().trim();
+              return tLow === cleanWithoutEllipsis ||
+                (cleanWithoutEllipsis && tLow.startsWith(cleanWithoutEllipsis)) ||
+                (cleanWithoutEllipsis && cleanWithoutEllipsis.startsWith(tLow)) ||
+                tLow.includes(cleanReq);
+            });
             if (partial) {
               chosenTab = partial;
             } else {
@@ -723,96 +737,85 @@ class SheetsService {
       console.warn("[SheetsService] XLSX export fallback notice:", xlsxErr.message);
     }
 
-    // Method 2b: Google Drive API v3 Authenticated CSV Export (with cache-busting timestamp)
+    // Method 2b & 3: Tab-Aware Authenticated/Public CSV Export
     try {
-      const accessToken = await googleOAuth.getAccessToken();
-      if (accessToken) {
-        const driveExportUrl = `https://www.googleapis.com/drive/v3/files/${spreadsheetId}/export?mimeType=text/csv&_t=${Date.now()}`;
-        const csvRes = await axios.get(driveExportUrl, {
-          timeout: 15000,
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            Accept: "text/csv,text/plain,*/*",
-            "Cache-Control": "no-cache, no-store, max-age=0",
-            Pragma: "no-cache",
-          },
-        });
+      const accessToken = await googleOAuth.getAccessToken().catch(() => null);
 
-        if (csvRes.data && typeof csvRes.data === "string" && !csvRes.data.includes("<!DOCTYPE html>") && !csvRes.data.includes("<html")) {
-          const parsed = this.parseCSVText(csvRes.data);
-          return {
-            source: "drive_api_v3_export",
-            spreadsheetId,
-            spreadsheetName,
-            sheetTitle: sheetTitle || "Sheet1",
-            availableWorksheets: [sheetTitle || "Sheet1"],
-            detectedHeaderRowIndex: parsed.detectedHeaderRowIndex,
-            headerRowNumber: parsed.headerRowNumber,
-            lastRowNumber: parsed.lastRowNumber,
-            dataRowStart: parsed.dataRowStart,
-            totalSheetRows: parsed.totalSheetRows,
-            totalDataRows: parsed.totalDataRows,
-            blankRowsCount: parsed.blankRowsCount,
-            headers: parsed.headers,
-            rows: parsed.rows,
-            totalRows: parsed.rows.length,
-            warnings: parsed.warnings,
-          };
-        }
+      if (!effectiveGid && sheetTitle) {
+        try {
+          const disc = await this.discoverWorksheetTabs({ spreadsheetIdOrUrl: spreadsheetId });
+          const cleanReq = String(sheetTitle).toLowerCase().trim().replace(/\.+$/, "");
+          const matched = (disc.tabs || []).find((t) => {
+            const tClean = String(t.title || "").toLowerCase().trim();
+            return tClean === cleanReq ||
+              (cleanReq && tClean.startsWith(cleanReq)) ||
+              (cleanReq && cleanReq.startsWith(tClean)) ||
+              tClean.includes(cleanReq);
+          });
+          if (matched && matched.sheetId !== undefined && matched.sheetId !== null) {
+            effectiveGid = String(matched.sheetId);
+          }
+        } catch (_) {}
       }
-    } catch (exportErr) {
-      console.warn("[SheetsService] Authenticated Drive API export fallback to public export:", exportErr.message);
-    }
 
-    // Method 3: Public CSV export fallback (with cache-busting timestamp to avoid Google CDN edge cache)
-    if (!effectiveGid && sheetTitle) {
-      try {
-        const disc = await this.discoverWorksheetTabs({ spreadsheetIdOrUrl: spreadsheetId });
-        const matched = (disc.tabs || []).find(
-          (t) =>
-            String(t.title || "").toLowerCase().trim() === String(sheetTitle).toLowerCase().trim() ||
-            String(t.title || "").toLowerCase().includes(String(sheetTitle).toLowerCase().trim())
-        );
-        if (matched && matched.sheetId !== undefined && matched.sheetId !== null) {
-          effectiveGid = String(matched.sheetId);
-        }
-      } catch (_) {}
-    }
-
-    const publicExportUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv${effectiveGid ? `&gid=${effectiveGid}` : ""}&_t=${Date.now()}`;
-    const publicCsvRes = await axios.get(publicExportUrl, {
-      timeout: 15000,
-      headers: {
+      // Tab-aware export URL preserving exact gid
+      const exportUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv${effectiveGid ? `&gid=${effectiveGid}` : ""}&_t=${Date.now()}`;
+      const exportHeaders = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         Accept: "text/csv,text/plain,*/*",
         "Cache-Control": "no-cache, no-store, max-age=0",
         Pragma: "no-cache",
-      },
-    });
+      };
+      if (accessToken) {
+        exportHeaders.Authorization = `Bearer ${accessToken}`;
+      }
 
-    if (!publicCsvRes.data || typeof publicCsvRes.data !== "string" || publicCsvRes.data.includes("<!DOCTYPE html>") || publicCsvRes.data.includes("<html")) {
-      throw new Error("Could not read Google Sheet data. Please ensure your Google Account is connected with Google Sheets permissions or link sharing is set to 'Anyone with the link can view'.");
+      let csvRes = null;
+      try {
+        csvRes = await axios.get(exportUrl, {
+          timeout: 15000,
+          headers: exportHeaders,
+        });
+      } catch (authCsvErr) {
+        if (accessToken) {
+          // Fallback to unauthenticated public export if token had invalid scope
+          delete exportHeaders.Authorization;
+          csvRes = await axios.get(exportUrl, {
+            timeout: 15000,
+            headers: exportHeaders,
+          });
+        } else {
+          throw authCsvErr;
+        }
+      }
+
+      if (csvRes?.data && typeof csvRes.data === "string" && !csvRes.data.includes("<!DOCTYPE html>") && !csvRes.data.includes("<html")) {
+        const parsed = this.parseCSVText(csvRes.data);
+        return {
+          source: accessToken ? "authenticated_tab_export" : "public_export",
+          spreadsheetId,
+          spreadsheetName,
+          sheetTitle: sheetTitle || (effectiveGid ? `Tab_${effectiveGid}` : "Sheet1"),
+          availableWorksheets: [sheetTitle || "Sheet1"],
+          detectedHeaderRowIndex: parsed.detectedHeaderRowIndex,
+          headerRowNumber: parsed.headerRowNumber,
+          lastRowNumber: parsed.lastRowNumber,
+          dataRowStart: parsed.dataRowStart,
+          totalSheetRows: parsed.totalSheetRows,
+          totalDataRows: parsed.totalDataRows,
+          blankRowsCount: parsed.blankRowsCount,
+          headers: parsed.headers,
+          rows: parsed.rows,
+          totalRows: parsed.rows.length,
+          warnings: parsed.warnings,
+        };
+      }
+    } catch (exportErr) {
+      console.warn("[SheetsService] Tab-aware export notice:", exportErr.message);
+      throw new Error(`Could not read Google Sheet data: ${exportErr.message}`);
     }
 
-    const parsedPublic = this.parseCSVText(publicCsvRes.data);
-    return {
-      source: "public_export",
-      spreadsheetId,
-      spreadsheetName,
-      sheetTitle: sheetTitle || "Sheet1",
-      availableWorksheets: [sheetTitle || "Sheet1"],
-      detectedHeaderRowIndex: parsedPublic.detectedHeaderRowIndex,
-      headerRowNumber: parsedPublic.headerRowNumber,
-      lastRowNumber: parsedPublic.lastRowNumber,
-      dataRowStart: parsedPublic.dataRowStart,
-      totalSheetRows: parsedPublic.totalSheetRows,
-      totalDataRows: parsedPublic.totalDataRows,
-      blankRowsCount: parsedPublic.blankRowsCount,
-      headers: parsedPublic.headers,
-      rows: parsedPublic.rows,
-      totalRows: parsedPublic.rows.length,
-      warnings: parsedPublic.warnings,
-    };
+    throw new Error("Could not read Google Sheet data. Please ensure the sheet URL and worksheet tab are accessible.");
   }
 
   /**

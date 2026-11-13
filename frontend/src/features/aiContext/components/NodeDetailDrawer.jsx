@@ -419,13 +419,17 @@ export const NodeDetailDrawer = ({
 
         let effectiveWsName = s.worksheetName || "Sheet1";
         if (updated.length > 0 && Array.isArray(s.availableTabs)) {
-          const matchTab = s.availableTabs.find((t) =>
-            updated.some((id) =>
-              String(id) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
-              String(id).toLowerCase() === String(t.title || t.name || "").toLowerCase()
-            )
-          );
-          if (matchTab) effectiveWsName = matchTab.title || matchTab.name || effectiveWsName;
+          const reversedUpdated = [...updated].reverse();
+          for (const uId of reversedUpdated) {
+            const matchTab = s.availableTabs.find((t) =>
+              String(uId) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
+              String(uId).toLowerCase() === String(t.title || t.name || "").toLowerCase()
+            );
+            if (matchTab) {
+              effectiveWsName = matchTab.title || matchTab.name || effectiveWsName;
+              break;
+            }
+          }
         }
 
         return {
@@ -1531,16 +1535,21 @@ export const NodeDetailDrawer = ({
         const selIds = Array.isArray(s.selectedTabIds) ? s.selectedTabIds : [];
         const avail = Array.isArray(s.availableTabs) ? s.availableTabs : [];
         if (selIds.length > 0 && avail.length > 0) {
-          const matched = avail.find(
-            (t) =>
-              selIds.some((id) =>
-                String(id) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
-                String(id).toLowerCase() === String(t.title || t.name || "").toLowerCase()
-              )
-          );
-          if (matched) effectiveWsName = matched.title || matched.name || effectiveWsName;
+          const reversedSel = [...selIds].reverse();
+          for (const sId of reversedSel) {
+            const matched = avail.find(
+              (t) =>
+                String(sId) === String(t.sheetId !== undefined ? t.sheetId : t.id) ||
+                String(sId).toLowerCase() === String(t.title || t.name || "").toLowerCase()
+            );
+            if (matched) {
+              effectiveWsName = matched.title || matched.name || effectiveWsName;
+              break;
+            }
+          }
         } else if (Array.isArray(s.selectedTabsData) && s.selectedTabsData.length > 0) {
-          effectiveWsName = s.selectedTabsData[0].tabName || s.selectedTabsData[0].title || effectiveWsName;
+          const lastTab = s.selectedTabsData[s.selectedTabsData.length - 1];
+          effectiveWsName = lastTab?.tabName || lastTab?.title || s.selectedTabsData[0].tabName || s.selectedTabsData[0].title || effectiveWsName;
         }
 
         return {

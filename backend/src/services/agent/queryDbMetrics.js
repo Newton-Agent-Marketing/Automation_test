@@ -1700,16 +1700,8 @@ export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedCh
     }
   }
 
-  // Strategy 3: Check explicitly configured active worksheetName / targetTab from AI Context selection
-  if (!targetWorksheetName) {
-    const configuredTab = matchedSheet?.targetTab || matchedSheet?.worksheetName || matchedWarehouse?.targetTab || matchedWarehouse?.worksheetName;
-    if (configuredTab && configuredTab !== "Sheet1" && configuredTab.trim() !== "") {
-      targetWorksheetName = configuredTab.trim();
-    }
-  }
-
-  // Strategy 4: Check AI Context UI Selection (selectedTabIds)
-  // Check the latest selected tab ID first (the most recently selected tab in AI Context)
+  // Strategy 3: Check AI Context UI Selection (selectedTabIds)
+  // Check the latest selected tab ID first (the active tab the user selected in AI Context)
   if (!targetWorksheetName && selectedTabIds.length > 0 && availableTabs.length > 0) {
     const reversedIds = [...selectedTabIds].reverse();
     for (const selId of reversedIds) {
@@ -1724,10 +1716,18 @@ export function resolveAiContextSelection({ aiCtx, userMessage = "", requestedCh
     }
   }
 
-  // Strategy 5: Fallback to selectedTabsData if available (latest active tab first)
+  // Strategy 4: Fallback to selectedTabsData if available (latest active tab first)
   if (!targetWorksheetName && selectedTabsData.length > 0) {
     const lastTabData = selectedTabsData[selectedTabsData.length - 1];
     targetWorksheetName = lastTabData?.tabName || lastTabData?.title || selectedTabsData[0].tabName || selectedTabsData[0].title;
+  }
+
+  // Strategy 5: Check explicitly configured active worksheetName / targetTab from AI Context selection
+  if (!targetWorksheetName) {
+    const configuredTab = matchedSheet?.targetTab || matchedSheet?.worksheetName || matchedWarehouse?.targetTab || matchedWarehouse?.worksheetName;
+    if (configuredTab && configuredTab !== "Sheet1" && configuredTab.trim() !== "") {
+      targetWorksheetName = configuredTab.trim();
+    }
   }
 
   // Strategy 6: If availableTabs exist and no tab was specified, default to first available tab's title
