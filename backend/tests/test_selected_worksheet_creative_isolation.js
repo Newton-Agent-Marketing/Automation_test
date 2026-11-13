@@ -1,8 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "fs";
+import path from "path";
 import { resolveAiContextSelection } from "../src/services/agent/queryDbMetrics.js";
 import { MediaAssetResolver } from "../src/services/data/mediaAssetResolver.js";
 import SourceSheetReader from "../src/services/campaignPreparation/sourceSheetReader.js";
+import driveService from "../src/google/driveService.js";
 
 describe("Selected Worksheet Tab Creative Isolation Test", () => {
   const mockAiCtx = {
@@ -260,6 +263,31 @@ describe("Selected Worksheet Tab Creative Isolation Test", () => {
     });
 
     assert.strictEqual(res.targetWorksheetName, "Chhath Puja", "Must resolve Chhath Puja from selectedTabIds rather than stale Tithi Mix string");
+  });
+
+  it("should truncate long filenames to strictly prevent ENAMETOOLONG on Linux (< 255 bytes)", async () => {
+    const fileId = "1G5kuUDWpFcsv2P7ZwAry7Pbs0bgNOYWv";
+    const ultraLongName = "UTSAV_CAMPAIGN_FESTIVAL_SPECIAL_OFFER_VIDEO_CREATIVE_ROW_2_CHHATH_PUJA_VERY_LONG_NOMENCLATURE_WITH_MANY_PARAMETERS_AND_METRICS_AND_LABELS_FOR_TARGETING_PURPOSES_AUDIENCE_LOOKALIKE_MALE_FEMALE_25_45_TIER1_TIER2_SPECIAL_DISCOUNT_OFFER_VIDEO_CREATIVE_1080x1920_REEL_STORY_PLACEMENT_HIGH_CTR.mp4";
+
+    const safeName = driveService.sanitizeBasename(ultraLongName, fileId, ".mp4");
+
+    // Total filename length must be well under 100 characters (< 255 limit)
+    assert.ok(safeName.length <= 100, `Safe filename must be <= 100 chars, got: ${safeName.length} ("${safeName}")`);
+    assert.ok(safeName.startsWith(fileId), `Safe filename must preserve fileId prefix: ${safeName}`);
+    assert.ok(safeName.endsWith(".mp4"), `Safe filename must preserve .mp4 extension: ${safeName}`);
+    assert.ok(!/[^a-zA-Z0-9._-]/.test(safeName), "Safe filename must only contain filesystem-safe characters");
+
+    // Verify creating write stream in scratchDir succeeds without ENAMETOOLONG
+    driveService.ensureScratchDir();
+    const testPath = path.join(driveService.scratchDir, safeName);
+    const writer = fs.createWriteStream(testPath);
+    await new Promise((resolve) => {
+      writer.on("finish", resolve);
+      writer.write("TEST");
+      writer.end();
+    });
+    assert.ok(fs.existsSync(testPath), "Scratch file should be created cleanly without ENAMETOOLONG");
+    fs.unlinkSync(testPath);
   });
 });
 

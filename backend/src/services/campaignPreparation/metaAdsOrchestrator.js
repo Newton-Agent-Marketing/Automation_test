@@ -451,7 +451,10 @@ export class MetaAdsOrchestrator {
               );
 
               if (!isPathMatchingAsset) {
-                const targetFilename = adConfig.adName || null;
+                const safeAdNameSlug = (adConfig.adName || `row_${rowNo}`)
+                  .replace(/[^a-zA-Z0-9_-]/g, "_")
+                  .slice(0, 50);
+                const targetFilename = `${safeAdNameSlug}.mp4`;
                 const dlInfo = await driveService.downloadCreative(adConfig.creative, targetFilename, "video", userId);
                 if (dlInfo?.filePath && fs.existsSync(dlInfo.filePath)) {
                   localFilePath = dlInfo.filePath;

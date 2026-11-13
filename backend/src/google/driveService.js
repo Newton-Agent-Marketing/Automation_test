@@ -733,6 +733,46 @@ class DriveService {
   }
 
   /**
+   * Generates a safe, truncated basename for local scratch storage to prevent ENAMETOOLONG
+   * on Linux (255 byte limit) while preserving fileId uniqueness and human-readable slug.
+   */
+  sanitizeBasename(rawName, fileId, defaultExt = ".mp4") {
+    const safeFileId = (fileId || "asset").substring(0, 33).replace(/[^a-zA-Z0-9_-]/g, "");
+    let cleanExt = "";
+    let basePart = "";
+
+    if (rawName && typeof rawName === "string") {
+      const noQuery = rawName.split("?")[0].split("#")[0].trim();
+      const parsedExt = path.extname(noQuery);
+      if (parsedExt && parsedExt.length <= 8 && /^\.[a-zA-Z0-9]+$/.test(parsedExt)) {
+        cleanExt = parsedExt;
+        basePart = path.basename(noQuery, cleanExt);
+      } else {
+        basePart = path.basename(noQuery);
+      }
+    }
+
+    if (!cleanExt) {
+      cleanExt = defaultExt.startsWith(".") ? defaultExt : `.${defaultExt}`;
+    }
+
+    // Clean basePart: remove non-alphanumeric, collapse underscores
+    basePart = basePart.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
+
+    // If basePart starts with safeFileId, strip it so we don't repeat it
+    if (safeFileId && basePart.startsWith(safeFileId)) {
+      basePart = basePart.slice(safeFileId.length).replace(/^_+/, "");
+    }
+
+    // Strictly cap basePart to 50 characters to stay well below Linux 255 byte limit
+    const truncatedBase = basePart.slice(0, 50);
+
+    return truncatedBase
+      ? `${safeFileId}_${truncatedBase}${cleanExt}`
+      : `${safeFileId}_${Date.now()}${cleanExt}`;
+  }
+
+  /**
    * Download a file from Google Drive into scratch/ directory
    */
   async downloadFile(driveLinkOrId, destinationFilename = null, expectedMediaType = null, userId = null) {
@@ -819,6 +859,8 @@ class DriveService {
         }
         if (!filename && meta.name) {
           filename = meta.name;
+        } else if (filename && meta.name && !path.extname(filename) && path.extname(meta.name)) {
+          filename = `${filename}${path.extname(meta.name)}`;
         }
         if (meta.mimeType) {
           mimeType = meta.mimeType;
@@ -828,13 +870,9 @@ class DriveService {
         console.warn("[DriveService] Metadata fetch warning:", mErr.message);
       }
 
-      if (!filename) {
-        const ext = mimeType.includes("video") ? ".mp4" : mimeType.includes("image") ? ".jpg" : "";
-        filename = `drive_asset_${Date.now()}_${fileId.substring(0, 8)}${ext}`;
-      }
-
-      // Prefix filename with fileId to guarantee 100% isolation across rows and campaigns
-      const safeBasename = filename.startsWith(`${fileId}_`) ? filename : `${fileId}_${filename.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+      const defaultExt = mimeType.includes("video") ? ".mp4" : mimeType.includes("image") ? ".jpg" : ".bin";
+      // Sanitize and strictly cap filename to guarantee safe Linux/ext4 length (<255 bytes)
+      const safeBasename = this.sanitizeBasename(filename, fileId, defaultExt);
       const savePath = path.join(this.scratchDir, safeBasename);
 
       const streamRes = await auth.axiosInstance.get(
@@ -850,7 +888,12 @@ class DriveService {
 
       await new Promise((resolve, reject) => {
         writer.on("finish", resolve);
-        writer.on("error", reject);
+        writer.on("error", (wErr) => {
+          if (fs.existsSync(savePath)) {
+            try { fs.unlinkSync(savePath); } catch (e) {}
+          }
+          reject(wErr);
+        });
       });
 
       const stats = fs.statSync(savePath);
@@ -895,7 +938,7 @@ class DriveService {
     }
 
     // Attempt 2: Public download fallback
-    const fallbackFilename = filename || `drive_asset_${Date.now()}_${fileId.substring(0, 8)}`;
+    const fallbackFilename = this.sanitizeBasename(filename, fileId, mimeType.includes("video") ? ".mp4" : ".jpg");
     const fallbackPath = path.join(this.scratchDir, fallbackFilename);
 
     try {
@@ -1024,7 +1067,8 @@ class DriveService {
       };
     } catch (fallbackErr) {
       if (process.env.SIMULATION_MODE === "true" || fileId.startsWith("sim_")) {
-        const dummyPath = path.join(this.scratchDir, `${fallbackFilename}_simulated.mp4`);
+        const dummyFilename = this.sanitizeBasename(`${fallbackFilename}_sim`, fileId, ".mp4");
+        const dummyPath = path.join(this.scratchDir, dummyFilename);
         fs.writeFileSync(dummyPath, Buffer.from("SIMULATED_VIDEO_BINARY_DATA"));
         return {
           filePath: dummyPath,
