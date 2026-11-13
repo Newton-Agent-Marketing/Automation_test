@@ -1068,9 +1068,13 @@ export class DynamicSheetFilter {
       .replace(/\b(?:range|rows?|lines?)\s*:\s*/gi, (match) => match.replace(":", " "))
       .trim();
 
+    // Strip explicit campaign/adset/ad name declarations so names like "NWTN | Row 3 | Test" do not get mistakenly parsed as row filters
+    const textForFiltering = normalizedText
+      .replace(/\b(?:campaign|adset|ad_set|ad)\s*(?:name|title)?\s*[:=]\s*["'][^"']+["']/gi, "");
+
     // Check for row exclusion keywords: "except row 3", "excluding rows 3, 5", "row 3 chod kar", "without row 3", "skip row 4"
     const excludeRegex = /(?:except|excluding|without|skip|not|chod\s*kar|chhod\s*kar)\s*(?:rows?|lines?)?\s*#?\s*(\d+(?:\s*(?:,|and|or|ya|&|\+)\s*(?:rows?|lines?)?\s*#?\s*\d+)*)/i;
-    const excludeMatch = normalizedText.match(excludeRegex);
+    const excludeMatch = textForFiltering.match(excludeRegex);
     let excludedRowNums = [];
     if (excludeMatch) {
       const exNums = excludeMatch[1].match(/\d+/g);
@@ -1080,8 +1084,8 @@ export class DynamicSheetFilter {
     }
 
     // 2. Check for multi-row list: "row 10, row 11", "rows 10, 11", "row 10 and row 11", "row 10 aur 11", "row 10, 11, 12", "row 10 aur row 11", "row 10 & row 11"
-    const multiRowListRegex = /(?:rows?|lines?)\s*#?\s*\d+\s*(?:(?:,|and|&|\+|aur|or|ya|tatha|evam)\s*(?:rows?|lines?)?\s*#?\s*\d+\s*)+/i;
-    const listMatch = normalizedText.match(multiRowListRegex);
+    const multiRowListRegex = /(?:rows?|lines?)\s*(?:no\.?|num\.?|number)?\s*#?\s*\d+\s*(?:(?:,|and|&|\+|aur|or|ya|tatha|evam)\s*(?:rows?|lines?)?\s*(?:no\.?|num\.?|number)?\s*#?\s*\d+\s*)+/i;
+    const listMatch = textForFiltering.match(multiRowListRegex);
     if (listMatch) {
       const numbers = listMatch[0].match(/\d+/g);
       if (numbers && numbers.length > 1) {
@@ -1110,13 +1114,13 @@ export class DynamicSheetFilter {
     // 3. Check for range: "row 5 to row 15", "rows 10-20", "from rows 25 to 40", "rows 10–15", "rows 2:11", "10 se 15 tak", "range: 10 to 15"
     const rangePatterns = [
       // "rows 5 to row 15", "rows 5 to 15", "row 5-15", "rows 5:15", "rows 5..15", "from row 5 to 15", "row 10 se row 15 tak"
-      /(?:rows?|lines?)\s*#?\s*(\d+)\s*(?:to|se|till|through|-|:|\.\.)\s*(?:rows?|lines?)?\s*#?\s*(\d+)(?:\s*tak)?/i,
+      /(?:rows?|lines?)\s*(?:no\.?|num\.?|number)?\s*#?\s*(\d+)\s*(?:to|se|till|through|-|:|\.\.)\s*(?:rows?|lines?)?\s*(?:no\.?|num\.?|number)?\s*#?\s*(\d+)(?:\s*tak)?/i,
       // "from 5 to 15 rows", "5 to 15 rows", "10-20 rows", "10 se 15 tak rows"
       /(\d+)\s*(?:to|se|till|through|-|:|\.\.)\s*(\d+)\s*(?:tak\s*)?(?:rows?|lines?)/i,
       // "between row 5 and row 15", "range 10 to 15", "range 10-15", "range: 10 to 15"
-      /\b(?:between|range)\s*(?:rows?|lines?)?\s*#?\s*(\d+)\s*(?:and|to|se|till|through|&|-|:)\s*(?:rows?|lines?)?\s*#?\s*(\d+)(?:\s*tak)?/i,
+      /\b(?:between|range)\s*(?:rows?|lines?)?\s*(?:no\.?|num\.?|number)?\s*#?\s*(\d+)\s*(?:and|to|se|till|through|&|-|:)\s*(?:rows?|lines?)?\s*(?:no\.?|num\.?|number)?\s*#?\s*(\d+)(?:\s*tak)?/i,
       // "from row 5 to 15", "start from row 5 to 15"
-      /\b(?:from|start\s*from)\s*(?:rows?|lines?)?\s*#?\s*(\d+)\s*(?:to|se|till|through|-|:)\s*(?:rows?|lines?)?\s*#?\s*(\d+)(?:\s*tak)?/i,
+      /\b(?:from|start\s*from)\s*(?:rows?|lines?)?\s*(?:no\.?|num\.?|number)?\s*#?\s*(\d+)\s*(?:to|se|till|through|-|:)\s*(?:rows?|lines?)?\s*(?:no\.?|num\.?|number)?\s*#?\s*(\d+)(?:\s*tak)?/i,
       // "10 se 15 tak upload karo", "10 to 15 tak"
       /\b(\d+)\s*(?:se|to)\s*(\d+)\s*tak\b/i,
       // "upload 10 to 15", "create 10 to 15", "launch rows 10-15"
@@ -1124,7 +1128,7 @@ export class DynamicSheetFilter {
     ];
 
     for (const pat of rangePatterns) {
-      const m = normalizedText.match(pat);
+      const m = textForFiltering.match(pat);
       if (m) {
         let s = parseInt(m[1], 10);
         let e = parseInt(m[2], 10);
@@ -1162,7 +1166,7 @@ export class DynamicSheetFilter {
       /(?:rows?|lines?)\s*#?\s*(\d+)\s*(?:onwards|se\s*start|se\s*aage|start)/i,
     ];
     for (const pat of onwardsPatterns) {
-      const m = normalizedText.match(pat);
+      const m = textForFiltering.match(pat);
       if (m) {
         const s = parseInt(m[1], 10);
         if (!isNaN(s) && s > 0) {
@@ -1188,14 +1192,16 @@ export class DynamicSheetFilter {
       }
     }
 
-    // 5. Check for single row: "upload row 7 only", "row 7 only", "only row 7", "upload row 7", "row 7"
+    // 5. Check for single row: "upload row 7 only", "row 7 only", "only row 7", "upload row 7", "row 7", "specific row 2", "row 2 ka ad upload karna hai"
     const singlePatterns = [
-      /\b(?:only\s+row|process\s+row|use\s+row|upload\s+(?:only\s+)?row|create\s+ads?\s+(?:only\s+)?(?:for\s+)?row|retry\s+(?:failed\s+ads?\s+)?(?:only\s+)?(?:for\s+)?row|row\s*#|row\s+number)\s*(\d+)\b/i,
-      /\b(?:rows?|lines?)\s*#?\s*(\d+)\s*(?:only|only\s+use|wali)?\b/i,
+      /\b(?:only\s+row|process\s+row|use\s+row|upload\s+(?:only\s+)?row|create\s+ads?\s+(?:only\s+)?(?:for\s+)?row|retry\s+(?:failed\s+ads?\s+)?(?:only\s+)?(?:for\s+)?row|row\s*#|row\s+number|row\s+no\.?)\s*[:=#-]?\s*(\d+)\b/i,
+      /\b(?:specific|particular|sirf|kewal|only)\s+(?:rows?|lines?)\s*(?:no\.?|num\.?|number)?\s*[:=#-]?\s*#?\s*(\d+)\b/i,
+      /\b(?:rows?|lines?)\s*(?:no\.?|num\.?|number)?\s*[:=#-]?\s*#?\s*(\d+)\s*(?:ka|ki|ke|ko|se|wali|wala|wale|par|pe|only|only\s+use|upload|ad|ads)?\b/i,
+      /\b(\d+)(?:st|nd|rd|th)\s+(?:row|line)\b/i,
     ];
 
     for (const pat of singlePatterns) {
-      const m = normalizedText.match(pat);
+      const m = textForFiltering.match(pat);
       if (m) {
         const r = parseInt(m[1], 10);
         if (!isNaN(r) && r > 0) {

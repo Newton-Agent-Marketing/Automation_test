@@ -401,5 +401,47 @@ describe("Selected Worksheet Tab Creative Isolation Test", () => {
     });
     assert.strictEqual(resFourth.targetWorksheetName, "New Creatives Batch 2", "Must resolve Tab 4 when user says 'fourth worksheet wala'");
   });
+
+  it("should never throw 'target is not defined' in SourceSheetReader.readSource", async () => {
+    // Calling readSource with google sheets url without AI context userId should execute safely without ReferenceError
+    const res = await SourceSheetReader.readSource({
+      sheetUrlOrId: "https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit",
+      worksheetName: "NWTN | Ganpatipule",
+    });
+    assert.ok(res, "SourceSheetReader should return a valid result object");
+    assert.strictEqual(res.sourceType, "google_sheets");
+  });
+
+  it("should parse specific row requests in various formats (Hindi/Hinglish & English)", async () => {
+    const { DynamicSheetFilter } = await import("../src/services/data/dynamicSheetFilter.js");
+
+    // Single row with Hindi/Hinglish phrasing
+    const r1 = DynamicSheetFilter.parseRowRange("row 2 ka ad upload karna hai", 50);
+    assert.strictEqual(r1.isExplicitRange, true);
+    assert.strictEqual(r1.type, "SINGLE_ROW");
+    assert.strictEqual(r1.start, 2);
+
+    const r2 = DynamicSheetFilter.parseRowRange("specific row 3", 50);
+    assert.strictEqual(r2.isExplicitRange, true);
+    assert.strictEqual(r2.type, "SINGLE_ROW");
+    assert.strictEqual(r2.start, 3);
+
+    const r3 = DynamicSheetFilter.parseRowRange("sirf row 4 upload karo", 50);
+    assert.strictEqual(r3.isExplicitRange, true);
+    assert.strictEqual(r3.type, "SINGLE_ROW");
+    assert.strictEqual(r3.start, 4);
+
+    const r4 = DynamicSheetFilter.parseRowRange("row no. 5 ka ad banao", 50);
+    assert.strictEqual(r4.isExplicitRange, true);
+    assert.strictEqual(r4.type, "SINGLE_ROW");
+    assert.strictEqual(r4.start, 5);
+
+    // Prompt without row filter should not falsely match numbers in campaign name
+    const promptWithCampaignName =
+      'create a new meta ads campaign name : "NWTN | Utsav | Ganpati 31 | New Creatives Test " and adset name : "NWTN | Ganpati 31 | New Creatives Test " and ad name : " Nomenclature " and use sheet data to create ads.';
+    const r5 = DynamicSheetFilter.parseRowRange(promptWithCampaignName, 50);
+    assert.strictEqual(r5.isExplicitRange, false, "Should not falsely match 'Ganpati 31' as row 31");
+    assert.strictEqual(r5.type, "ALL");
+  });
 });
 

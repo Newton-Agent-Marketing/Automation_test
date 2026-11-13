@@ -63,6 +63,7 @@ export class SourceSheetReader {
       // Auto-resolve worksheet tab from AI Context if not explicitly passed
       let targetGid = null;
       let preIngestedTabData = null;
+      let target = null;
 
       if (userId) {
         try {
@@ -72,15 +73,16 @@ export class SourceSheetReader {
           );
           for (const wh of allWhNodes) {
             const sheets = Array.isArray(wh.data?.sheets) ? wh.data.sheets : [];
-            let target = null;
+            let currentTarget = null;
             if (spreadsheetId) {
-              target = sheets.find((s) => s.sheetUrl && sheetsService.extractSpreadsheetId(s.sheetUrl) === spreadsheetId) ||
+              currentTarget = sheets.find((s) => s.sheetUrl && sheetsService.extractSpreadsheetId(s.sheetUrl) === spreadsheetId) ||
                 (wh.data?.sheetUrl && sheetsService.extractSpreadsheetId(wh.data.sheetUrl) === spreadsheetId ? wh.data : null);
             }
-            if (!target) {
-              target = sheets.find((s) => s.isSelected || (wh.data?.activeSheetId && s.id === wh.data.activeSheetId)) || sheets[0] || wh.data;
+            if (!currentTarget) {
+              currentTarget = sheets.find((s) => s.isSelected || (wh.data?.activeSheetId && s.id === wh.data.activeSheetId)) || sheets[0] || wh.data;
             }
-            if (target) {
+            if (currentTarget) {
+              target = currentTarget;
               const selIds = (Array.isArray(target.selectedTabIds) && target.selectedTabIds.length > 0)
                 ? target.selectedTabIds
                 : (Array.isArray(selectedTabIds) && selectedTabIds.length > 0 ? selectedTabIds : []);
@@ -184,12 +186,19 @@ export class SourceSheetReader {
       const hasNoRows = !readResult || !Array.isArray(readResult.rows) || readResult.rows.length === 0;
 
       // Multi-Tab Selection Support ("jitna worksheet ma data ohe la"):
-      const hasMultipleSelectedTabs = target && Array.isArray(target.selectedTabsData) && target.selectedTabsData.length > 1 && Array.isArray(target.selectedTabIds) && target.selectedTabIds.length > 1;
+      const activeSelectedTabs = Array.isArray(target?.selectedTabsData) && target.selectedTabsData.length > 0
+        ? target.selectedTabsData
+        : (Array.isArray(selectedTabs) && selectedTabs.length > 0 ? selectedTabs : []);
+      const activeTabIds = Array.isArray(target?.selectedTabIds) && target.selectedTabIds.length > 0
+        ? target.selectedTabIds
+        : (Array.isArray(selectedTabIds) && selectedTabIds.length > 0 ? selectedTabIds : []);
+
+      const hasMultipleSelectedTabs = activeSelectedTabs.length > 1 && activeTabIds.length > 1;
 
       if ((isWrongTab || isDefaultedToSheet1 || hasNoRows) && hasMultipleSelectedTabs) {
         const combinedRows = [];
         const combinedHeadersSet = new Set();
-        target.selectedTabsData.forEach((tab) => {
+        activeSelectedTabs.forEach((tab) => {
           (tab.columns || []).forEach((c) => combinedHeadersSet.add(c));
           (tab.rows || []).forEach((r) => {
             combinedRows.push({
@@ -201,14 +210,14 @@ export class SourceSheetReader {
         });
 
         if (combinedRows.length > 0) {
-          const tabNames = target.selectedTabsData.map((t) => t.tabName).join(", ");
-          console.log(`[SourceSheetReader] Using multi-tab pre-ingested data for ${target.selectedTabsData.length} selected tabs [${tabNames}] (${combinedRows.length} total rows).`);
+          const tabNames = activeSelectedTabs.map((t) => t.tabName).join(", ");
+          console.log(`[SourceSheetReader] Using multi-tab pre-ingested data for ${activeSelectedTabs.length} selected tabs [${tabNames}] (${combinedRows.length} total rows).`);
           readResult = {
             source: "ai_context_pre_ingested_multi_tab",
             spreadsheetId,
             spreadsheetName: `Google_Sheet_${spreadsheetId?.slice(0, 8)}`,
-            sheetTitle: target.selectedTabsData.map((t) => t.tabName).join(" + "),
-            availableWorksheets: target.selectedTabsData.map((t) => t.tabName),
+            sheetTitle: activeSelectedTabs.map((t) => t.tabName).join(" + "),
+            availableWorksheets: activeSelectedTabs.map((t) => t.tabName),
             headers: Array.from(combinedHeadersSet),
             rows: combinedRows,
             headerRowNumber: 1,
