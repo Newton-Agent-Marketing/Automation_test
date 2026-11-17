@@ -142,33 +142,41 @@ export class MetaAdsOrchestrator {
     // Extract Ad Set configuration and asset settings at outer scope so available across all steps
     const adSetDetails = session.preview?.adSetDetails || [];
     const perfGoalItem = adSetDetails.find((d) => d.field === "Performance Goal" || d.field === "Optimization Goal");
-    let optGoal = session.contextNodeData?.optimization_goal || (session.campaignType === "APP_PROMOTION" ? "APP_INSTALLS" : "VALUE");
-    if (!session.contextNodeData?.optimization_goal && session.campaignType !== "APP_PROMOTION") {
-      if (perfGoalItem?.value) {
-        const v = String(perfGoalItem.value).toLowerCase();
-        if (v.includes("conversion") && !v.includes("value") && !v.includes("maximise value")) {
-          optGoal = "OFFSITE_CONVERSIONS";
-        } else if (v.includes("install")) {
-          optGoal = "APP_INSTALLS";
-        } else if (v.includes("click")) {
-          optGoal = "LINK_CLICKS";
-        } else if (v.includes("landing") || v.includes("view")) {
-          optGoal = "LANDING_PAGE_VIEWS";
-        } else if (v.includes("lead")) {
-          optGoal = "LEAD_GENERATION";
-        } else if (v.includes("conversation")) {
-          optGoal = "CONVERSATIONS";
-        } else if (v.includes("thruplay")) {
-          optGoal = "THRUPLAY";
-        } else if (v.includes("reach")) {
-          optGoal = "REACH";
-        } else if (v.includes("impression")) {
-          optGoal = "IMPRESSIONS";
-        } else {
-          optGoal = "VALUE"; // Default: Maximise value of conversions
-        }
+    let optGoal = session.contextNodeData?.optimization_goal || null;
+    if (!optGoal && session.campaignType === "APP_PROMOTION") {
+      optGoal = "APP_INSTALLS";
+    }
+    if (!optGoal) {
+      const rawSignal = String(
+        session.contextNodeData?.performance_goal_key ||
+        session.contextNodeData?.performance_goal_label ||
+        session.contextNodeData?.funnelEvent ||
+        perfGoalItem?.value ||
+        ""
+      ).toLowerCase();
+
+      if (rawSignal.includes("value") || rawSignal.includes("roas")) {
+        optGoal = "VALUE";
+      } else if (rawSignal.includes("install") || rawSignal.includes("app")) {
+        optGoal = "APP_INSTALLS";
+      } else if (rawSignal.includes("click") || rawSignal.includes("traffic")) {
+        optGoal = "LINK_CLICKS";
+      } else if (rawSignal.includes("landing") || rawSignal.includes("view")) {
+        optGoal = "LANDING_PAGE_VIEWS";
+      } else if (rawSignal.includes("lead")) {
+        optGoal = "LEAD_GENERATION";
+      } else if (rawSignal.includes("conversation") || rawSignal.includes("message")) {
+        optGoal = "CONVERSATIONS";
+      } else if (rawSignal.includes("thruplay") || rawSignal.includes("video")) {
+        optGoal = "THRUPLAY";
+      } else if (rawSignal.includes("reach")) {
+        optGoal = "REACH";
+      } else if (rawSignal.includes("impression")) {
+        optGoal = "IMPRESSIONS";
+      } else if (rawSignal.includes("conversion")) {
+        optGoal = "OFFSITE_CONVERSIONS";
       } else {
-        optGoal = "VALUE"; // Default: Maximise value of conversions
+        optGoal = "OFFSITE_CONVERSIONS";
       }
     }
     const billingEv = adSetDetails.find((d) => d.field === "Billing Event")?.value || "IMPRESSIONS";

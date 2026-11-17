@@ -329,8 +329,12 @@ export class CampaignValidator {
     const rawOptimizationGoal =
       contextNodeData?.optimization_goal ||
       contextNodeData?.performance_goal_key ||
+      contextNodeData?.performance_goal_label ||
+      contextNodeData?.funnelEvent ||
+      contextNodeData?.funnel_event ||
       userAnswers.optimizationGoal ||
       userAnswers.performanceGoal ||
+      userAnswers.funnelEvent ||
       this.getFieldValue(firstRowValues, "optimizationGoal") ||
       this.getFieldValue(firstRowValues, "optimization_goal") ||
       firstRowValues.performance_goal ||

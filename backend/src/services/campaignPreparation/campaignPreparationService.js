@@ -288,14 +288,78 @@ export class CampaignPreparationService {
           ? resolvedChannel.funnels[0]
           : null;
 
-        const perfGoalKey = primaryFunnel?.performance_goal_key || resolvedChannel.performance_goal_key || flowParams.performance_goal_key || null;
-        const perfGoalLabel = primaryFunnel?.performance_goal_label || resolvedChannel.performance_goal_label || flowParams.performance_goal_label || null;
-        const optGoal = primaryFunnel?.optimization_goal || resolvedChannel.optimization_goal || flowParams.optimization_goal || null;
-        const billEv = primaryFunnel?.billing_event || resolvedChannel.billing_event || flowParams.billing_event || "IMPRESSIONS";
-        const convLoc = primaryFunnel?.conversion_location || primaryFunnel?.destination_type || resolvedChannel.conversion_location || resolvedChannel.destination_type || flowParams.conversion_location || flowParams.destination_type || null;
-        const destType = primaryFunnel?.destination_type || primaryFunnel?.conversion_location || resolvedChannel.destination_type || resolvedChannel.conversion_location || flowParams.destination_type || flowParams.conversion_location || null;
-        const campObj = primaryFunnel?.campaign_objective || resolvedChannel.campaign_objective || flowParams.campaign_objective || null;
-        const customEv = primaryFunnel?.custom_event_type || resolvedChannel.custom_event_type || flowParams.custom_event_type || null;
+        let perfGoalKey = primaryFunnel?.performance_goal_key || resolvedChannel.performance_goal_key || flowParams.performance_goal_key || null;
+        let perfGoalLabel = primaryFunnel?.performance_goal_label || resolvedChannel.performance_goal_label || flowParams.performance_goal_label || null;
+        let optGoal = primaryFunnel?.optimization_goal || resolvedChannel.optimization_goal || flowParams.optimization_goal || null;
+        let billEv = primaryFunnel?.billing_event || resolvedChannel.billing_event || flowParams.billing_event || "IMPRESSIONS";
+        let convLoc = primaryFunnel?.conversion_location || primaryFunnel?.destination_type || resolvedChannel.conversion_location || resolvedChannel.destination_type || flowParams.conversion_location || flowParams.destination_type || null;
+        let destType = primaryFunnel?.destination_type || primaryFunnel?.conversion_location || resolvedChannel.destination_type || resolvedChannel.conversion_location || flowParams.destination_type || flowParams.conversion_location || null;
+        let campObj = primaryFunnel?.campaign_objective || resolvedChannel.campaign_objective || flowParams.campaign_objective || null;
+        let customEv = primaryFunnel?.custom_event_type || resolvedChannel.custom_event_type || flowParams.custom_event_type || null;
+
+        // Dynamic extraction from funnelEvent / label if goal fields are missing
+        const rawFunnelSignal = String(
+          resolvedChannel.funnelEvent ||
+          resolvedBrief.funnelEvent ||
+          flowParams.funnelEvent ||
+          perfGoalLabel ||
+          ""
+        ).toUpperCase();
+
+        if (!optGoal || !perfGoalKey) {
+          if (rawFunnelSignal.includes("VALUE") || rawFunnelSignal.includes("ROAS")) {
+            optGoal = "VALUE";
+            perfGoalKey = "WEBSITE_CONVERSION_VALUE";
+            campObj = campObj || "OUTCOME_SALES";
+            convLoc = convLoc || "WEBSITE";
+            destType = destType || "WEBSITE";
+            customEv = customEv || "PURCHASE";
+          } else if (rawFunnelSignal.includes("LANDING") || rawFunnelSignal.includes("VIEW")) {
+            optGoal = "LANDING_PAGE_VIEWS";
+            perfGoalKey = "LANDING_PAGE_VIEWS";
+            campObj = campObj || "OUTCOME_TRAFFIC";
+            convLoc = convLoc || "WEBSITE";
+            destType = destType || "WEBSITE";
+          } else if (rawFunnelSignal.includes("CLICK") || rawFunnelSignal.includes("TRAFFIC")) {
+            optGoal = "LINK_CLICKS";
+            perfGoalKey = "LINK_CLICKS";
+            campObj = campObj || "OUTCOME_TRAFFIC";
+            convLoc = convLoc || "WEBSITE";
+            destType = destType || "WEBSITE";
+          } else if (rawFunnelSignal.includes("INSTALL") || rawFunnelSignal.includes("APP")) {
+            optGoal = "APP_INSTALLS";
+            perfGoalKey = "APP_INSTALLS";
+            campObj = campObj || "OUTCOME_APP_PROMOTION";
+            convLoc = convLoc || "APP";
+            destType = destType || "APP";
+          } else if (rawFunnelSignal.includes("LEAD")) {
+            optGoal = "LEAD_GENERATION";
+            perfGoalKey = "INSTANT_FORM_LEADS";
+            campObj = campObj || "OUTCOME_LEADS";
+            convLoc = convLoc || "ON_AD";
+            destType = destType || "ON_AD";
+          } else if (rawFunnelSignal.includes("CONVERSATION") || rawFunnelSignal.includes("MESSAGE")) {
+            optGoal = "CONVERSATIONS";
+            perfGoalKey = "MESSAGING_CONVERSATIONS";
+            campObj = campObj || "OUTCOME_ENGAGEMENT";
+            convLoc = convLoc || "MESSAGING_APPS";
+            destType = destType || "MESSAGING_APPS";
+          } else if (rawFunnelSignal.includes("THRUPLAY") || rawFunnelSignal.includes("VIDEO")) {
+            optGoal = "THRUPLAY";
+            perfGoalKey = "THRUPLAY_VIDEO_VIEWS";
+            campObj = campObj || "OUTCOME_ENGAGEMENT";
+            convLoc = convLoc || "ON_VIDEO";
+            destType = destType || "ON_VIDEO";
+          } else if (rawFunnelSignal.includes("REACH")) {
+            optGoal = "REACH";
+            perfGoalKey = "REACH";
+            campObj = campObj || "OUTCOME_AWARENESS";
+          } else if (rawFunnelSignal.includes("IMPRESSION")) {
+            optGoal = "IMPRESSIONS";
+            perfGoalKey = "IMPRESSIONS";
+            campObj = campObj || "OUTCOME_AWARENESS";
+          }
+        }
         const pixelId = resolvedProduct.web_tracking_pixel_id || resolvedProduct.pixel_id || resolvedChannel.pixel_id || null;
         const appId = resolvedProduct.mobile_app_id || resolvedProduct.app_id || null;
         const appStoreUrl = resolvedProduct.app_store_url || resolvedProduct.object_store_url || null;
