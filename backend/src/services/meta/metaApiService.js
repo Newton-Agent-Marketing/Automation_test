@@ -1985,14 +1985,29 @@ export class MetaApiService {
           custom_event_type: customEventType || (promotedObject && typeof promotedObject === "object" ? promotedObject?.custom_event_type : null) || "PURCHASE",
         };
         const rawGoal = String(effectiveGoal || "").toUpperCase();
-        if (rawGoal.includes("CONVERSION") && !rawGoal.includes("VALUE")) {
+        if (rawGoal === "OFFSITE_CONVERSIONS" || rawGoal === "VALUE" || rawGoal === "LANDING_PAGE_VIEWS" || rawGoal === "LINK_CLICKS" || rawGoal === "LEAD_GENERATION" || rawGoal === "CONVERSATIONS" || rawGoal === "THRUPLAY" || rawGoal === "REACH" || rawGoal === "IMPRESSIONS") {
+          // Strictly adhere to the user's selected optimization goal (Zero dummy override rule)
+          effectiveGoal = rawGoal;
+        } else if (rawGoal.includes("CONVERSION") && !rawGoal.includes("VALUE")) {
           effectiveGoal = "OFFSITE_CONVERSIONS";
-        } else {
-          effectiveGoal = "VALUE"; // User requested: ALWAYS Maximise number of value for website meta ads!
+        } else if (rawGoal.includes("VALUE")) {
+          effectiveGoal = "VALUE";
         }
       } else if (effectiveGoal === "OFFSITE_CONVERSIONS" && !effectivePromotedObject) {
         effectiveGoal = "LINK_CLICKS";
       }
+    }
+
+    if (!effectivePromotedObject && promotedObject && typeof promotedObject === "object" && Object.keys(promotedObject).length > 0) {
+      effectivePromotedObject = promotedObject;
+    }
+
+    const rawDestType = destination_type || destinationType;
+    let finalDestType = rawDestType;
+    if (finalDestType === "UNDEFINED") {
+      finalDestType = undefined;
+    } else if (!finalDestType) {
+      finalDestType = (isAppCampObjective || mode === "APP" || (requestedAppId && !requestedPixelId && mode !== "WEBSITE")) ? "APP" : "WEBSITE";
     }
 
     const payload = {
@@ -2001,7 +2016,7 @@ export class MetaApiService {
       optimization_goal: effectiveGoal,
       billing_event: billingEvent || "IMPRESSIONS",
       status: status || "PAUSED",
-      destination_type: destination_type || destinationType || (isAppCampObjective || mode === "APP" || (requestedAppId && !requestedPixelId && mode !== "WEBSITE") ? "APP" : "WEBSITE"),
+      ...(finalDestType ? { destination_type: finalDestType } : {}),
       targeting: JSON.stringify(targetingObj),
       access_token: accessToken,
     };

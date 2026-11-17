@@ -245,33 +245,54 @@ export const AiContextNode = ({
 
           {/* Subtitle / Funnel Badges */}
           <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 3, flexWrap: "wrap" }}>
-            {node.type === "ad_channel" && node.data?.funnelEvent ? (
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  fontSize: "12px",
-                  fontWeight: 600,
-                  color: "#15803D",
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                }}
-                title={`Funnel Event: ${node.data?.funnelEvent}${node.data?.funnelDescription ? ` (${node.data.funnelDescription})` : ""}`}
-              >
+            {node.type === "ad_channel" && (node.data?.performance_goal_label || node.data?.funnelEvent) ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
                 <span
                   style={{
-                    width: 5,
-                    height: 5,
-                    borderRadius: "50%",
-                    backgroundColor: "#16A34A",
-                    display: "inline-block",
-                    flexShrink: 0,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    color: "#15803D",
+                    backgroundColor: "#F0FDF4",
+                    border: "1px solid #BBF7D0",
+                    padding: "1px 6px",
+                    borderRadius: 4,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    maxWidth: 180,
                   }}
-                />
-                {node.data?.funnelEvent}
-              </span>
+                  title={`Goal: ${node.data?.performance_goal_label || node.data?.funnelEvent} | Destination: ${node.data?.conversion_location || "WEBSITE"}`}
+                >
+                  <span
+                    style={{
+                      width: 5,
+                      height: 5,
+                      borderRadius: "50%",
+                      backgroundColor: "#16A34A",
+                      display: "inline-block",
+                      flexShrink: 0,
+                    }}
+                  />
+                  {node.data?.performance_goal_label || node.data?.funnelEvent} → {node.data?.conversion_location || "WEBSITE"}
+                </span>
+                {node.data?.campaign_objective && (
+                  <span
+                    style={{
+                      fontSize: "9.5px",
+                      fontWeight: 600,
+                      color: "#4338CA",
+                      backgroundColor: "#EEF2FF",
+                      padding: "1px 4px",
+                      borderRadius: 3,
+                    }}
+                  >
+                    {node.data.campaign_objective.replace("OUTCOME_", "")}
+                  </span>
+                )}
+              </div>
             ) : (
               <span
                 style={{

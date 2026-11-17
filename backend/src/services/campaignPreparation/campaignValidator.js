@@ -327,6 +327,8 @@ export class CampaignValidator {
 
     // Performance Goal / Optimization Goal & Billing Event
     const rawOptimizationGoal =
+      contextNodeData?.optimization_goal ||
+      contextNodeData?.performance_goal_key ||
       userAnswers.optimizationGoal ||
       userAnswers.performanceGoal ||
       this.getFieldValue(firstRowValues, "optimizationGoal") ||
@@ -346,19 +348,44 @@ export class CampaignValidator {
       } catch (_) {}
     }
 
+    const VALID_META_OPT_GOALS = [
+      "OFFSITE_CONVERSIONS",
+      "VALUE",
+      "LANDING_PAGE_VIEWS",
+      "LINK_CLICKS",
+      "APP_INSTALLS",
+      "LEAD_GENERATION",
+      "CONVERSATIONS",
+      "THRUPLAY",
+      "REACH",
+      "IMPRESSIONS",
+    ];
+
     let optimizationGoal = isAppPromotion ? "APP_INSTALLS" : (isBusinessVerified ? "VALUE" : "OFFSITE_CONVERSIONS");
     if (rawOptimizationGoal) {
       const g = String(rawOptimizationGoal).trim().toUpperCase();
-      if (g.includes("CONVERSION") && !g.includes("VALUE")) {
+      if (VALID_META_OPT_GOALS.includes(g)) {
+        optimizationGoal = g;
+      } else if (g === "WEBSITE_CONVERSIONS" || (g.includes("CONVERSION") && !g.includes("VALUE"))) {
         optimizationGoal = "OFFSITE_CONVERSIONS";
+      } else if (g === "WEBSITE_CONVERSION_VALUE" || g.includes("VALUE")) {
+        optimizationGoal = isBusinessVerified ? "VALUE" : "OFFSITE_CONVERSIONS";
+      } else if (g === "LANDING_PAGE_VIEWS" || g.includes("LANDING")) {
+        optimizationGoal = "LANDING_PAGE_VIEWS";
+      } else if (g === "LINK_CLICKS" || g.includes("CLICK")) {
+        optimizationGoal = "LINK_CLICKS";
       } else if (g === "APP_INSTALLS" || g.includes("APP_INSTALL")) {
         optimizationGoal = "APP_INSTALLS";
-      } else if (g.includes("CLICK")) {
-        optimizationGoal = "LINK_CLICKS";
-      } else if (g.includes("LANDING") || g.includes("VIEW")) {
-        optimizationGoal = "LANDING_PAGE_VIEWS";
-      } else if (g.includes("VALUE")) {
-        optimizationGoal = isBusinessVerified ? "VALUE" : "OFFSITE_CONVERSIONS";
+      } else if (g === "INSTANT_FORM_LEADS" || g.includes("LEAD")) {
+        optimizationGoal = "LEAD_GENERATION";
+      } else if (g === "MESSAGING_CONVERSATIONS" || g.includes("CONVERSATION")) {
+        optimizationGoal = "CONVERSATIONS";
+      } else if (g === "THRUPLAY_VIDEO_VIEWS" || g.includes("THRUPLAY")) {
+        optimizationGoal = "THRUPLAY";
+      } else if (g === "REACH") {
+        optimizationGoal = "REACH";
+      } else if (g === "IMPRESSIONS") {
+        optimizationGoal = "IMPRESSIONS";
       } else {
         optimizationGoal = isAppPromotion ? "APP_INSTALLS" : (isBusinessVerified ? "VALUE" : "OFFSITE_CONVERSIONS");
       }

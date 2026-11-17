@@ -6,6 +6,9 @@ import sheetsService from "../google/sheetsService.js";
 import SpreadsheetIngestionService from "../services/data/spreadsheetIngestionService.js";
 import MetaAdsMapper from "../services/meta/metaAdsMapper.js";
 import SpreadsheetSyncService from "../services/data/spreadsheetSyncService.js";
+import { buildAgentContextFromGraph } from "../services/agent/contextGraphCompiler.js";
+
+export { buildAgentContextFromGraph };
 
 // Valid parent to child connection hierarchy mapping
 export const ALLOWED_CONNECTION_RULES = {

@@ -13,6 +13,8 @@ import { googleDriveService } from "../google/googleDriveService.js";
 import CampaignRouter from "../data/campaignRouter.js";
 import SheetInspectorService from "./sheetInspectorService.js";
 import DynamicSheetExecutionService from "./dynamicSheetExecutionService.js";
+import { buildAgentContextFromGraph } from "./contextGraphCompiler.js";
+export { buildAgentContextFromGraph };
 
 // 1. LLM Tool Schema (OpenAI / Anthropic standard format)
 export const AGENT_TOOLS_DEFINITIONS = [
@@ -1281,6 +1283,8 @@ export async function getUserAiContext({ userId }) {
     });
   }
 
+  const compiledGraph = buildAgentContextFromGraph({ nodes, edges, userId });
+
   return {
     source: "DATABASE",
     hasContext: nodes.length > 0,
@@ -1288,6 +1292,12 @@ export async function getUserAiContext({ userId }) {
     totalNodes: nodes.length,
     totalFlows: finalFlows.length,
     flows: finalFlows,
+    activeAiContextLayer: compiledGraph.activeAiContextLayer,
+    activeFunnels: compiledGraph.activeFunnels,
+    metaAdSetExecutionSpec: compiledGraph.activeFunnels?.[0]?.adset_spec || null,
+    selectedAdChannel: compiledGraph.selectedAdChannel,
+    selectedProduct: compiledGraph.selectedProduct,
+    selectedWarehouse: compiledGraph.selectedWarehouse,
     businessUnitsHierarchy,
     businessUnits: nodes.filter((n) => n.type === "business_unit").map((n) => ({
       id: n.id,

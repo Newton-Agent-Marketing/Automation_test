@@ -47,6 +47,12 @@ import {
 import { NODE_TYPE_INFO } from "../aiContext.slice";
 import { channelApi } from "../../channel/service/channel.api";
 import { aiContextApi } from "../service/aiContext.api";
+import {
+  META_PERFORMANCE_GOAL_MAP,
+  META_CONVERSION_EVENTS,
+  CONVERSION_LOCATION_LABELS,
+  getPerformanceGoalByKey,
+} from "../constants/metaPerformanceGoals.config.js";
 
 const TYPE_ICONS = {
   user_input: User,
@@ -79,6 +85,10 @@ export const NodeDetailDrawer = ({
   const [accountSearch, setAccountSearch] = useState("");
   const [funnelEvent, setFunnelEvent] = useState("Purchase");
   const [funnelDescription, setFunnelDescription] = useState("");
+  const [performanceGoalKey, setPerformanceGoalKey] = useState("WEBSITE_CONVERSIONS");
+  const [conversionLocation, setConversionLocation] = useState("WEBSITE");
+  const [customEventType, setCustomEventType] = useState("PURCHASE");
+  const [funnels, setFunnels] = useState([]);
   const [connectedAccounts, setConnectedAccounts] = useState([]);
   const [loadingChannels, setLoadingChannels] = useState(false);
 
@@ -150,6 +160,11 @@ export const NodeDetailDrawer = ({
   const [productUrl, setProductUrl] = useState("");
   const [isAppSelected, setIsAppSelected] = useState(false);
   const [isWebSelected, setIsWebSelected] = useState(true);
+  const [webTrackingPixelId, setWebTrackingPixelId] = useState("");
+  const [mobileAppId, setMobileAppId] = useState("");
+  const [appStoreUrl, setAppStoreUrl] = useState("");
+  const [mobileDeepLinkUrl, setMobileDeepLinkUrl] = useState("");
+  const [webLandingPageUrl, setWebLandingPageUrl] = useState("");
   const [productsList, setProductsList] = useState([]);
   const [productSearch, setProductSearch] = useState("");
   const [showBulkPaste, setShowBulkPaste] = useState(false);
@@ -1034,6 +1049,25 @@ export const NodeDetailDrawer = ({
     setFunnelEvent(node.data?.funnelEvent || "Purchase");
     setFunnelDescription(node.data?.funnelDescription || "");
 
+    const initialFunnels = Array.isArray(node.data?.funnels) ? node.data.funnels : [];
+    setFunnels(initialFunnels);
+    const primaryFunnel = initialFunnels[0] || {};
+    const goalKey = primaryFunnel.performance_goal_key || node.data?.performance_goal_key || "WEBSITE_CONVERSIONS";
+    const goalDef = getPerformanceGoalByKey(goalKey);
+    setPerformanceGoalKey(goalKey);
+    setConversionLocation(
+      primaryFunnel.conversion_location ||
+      node.data?.conversion_location ||
+      node.data?.destination_type ||
+      goalDef.default_conversion_location
+    );
+    setCustomEventType(
+      primaryFunnel.custom_event_type ||
+      node.data?.custom_event_type ||
+      goalDef.default_custom_event_type ||
+      "PURCHASE"
+    );
+
     // Marketing Brief
     setBriefName(node.data?.name || node.label || "Marketing Brief");
     setBriefDescription(node.data?.description || node.data?.briefDescription || "");
@@ -1090,6 +1124,11 @@ export const NodeDetailDrawer = ({
     const platforms = node.data?.productPlatforms || ["Web"];
     setIsAppSelected(platforms.includes("App"));
     setIsWebSelected(platforms.includes("Web") || platforms.length === 0);
+    setWebTrackingPixelId(node.data?.web_tracking_pixel_id || node.data?.pixel_id || "");
+    setMobileAppId(node.data?.mobile_app_id || node.data?.app_id || "");
+    setAppStoreUrl(node.data?.app_store_url || node.data?.object_store_url || "");
+    setMobileDeepLinkUrl(node.data?.mobile_deep_link_url || "");
+    setWebLandingPageUrl(node.data?.web_landing_page_url || node.data?.productUrl || "");
     setProductsList(Array.isArray(node.data?.products) ? node.data.products : []);
     setProductSearch("");
     setShowBulkPaste(false);
@@ -1412,11 +1451,34 @@ export const NodeDetailDrawer = ({
         parentBuName = node.previousNodeLabel || "";
       }
 
+      const goalDef = getPerformanceGoalByKey(performanceGoalKey);
+      const safeConvLocation = conversionLocation || goalDef.default_conversion_location;
+      const safeCustomEventType = goalDef.requires_pixel_or_event
+        ? (customEventType || goalDef.default_custom_event_type || "PURCHASE")
+        : null;
+
       nodeLabel = accName
         ? `${channelName.trim() || "Ad Channel"}: ${accName}`
         : (channelName.trim() || "Ad Channel");
 
-      nodeSubtitle = `🎯 ${funnelEvent.trim() || "Purchase"}${adAccountId ? ` • ${adAccountId}` : ""}`;
+      nodeSubtitle = `🎯 ${goalDef.label} → ${safeConvLocation}`;
+
+      const savedFunnels = [
+        {
+          stage_type: "BOFU",
+          performance_goal_key: goalDef.key,
+          performance_goal_label: goalDef.label,
+          optimization_goal: goalDef.optimization_goal,
+          billing_event: goalDef.billing_event,
+          conversion_location: safeConvLocation,
+          destination_type: safeConvLocation,
+          campaign_objective: goalDef.campaign_objective,
+          custom_event_type: safeCustomEventType,
+          requires_pixel_or_event: goalDef.requires_pixel_or_event,
+          promoted_object_type: goalDef.promoted_object_type,
+          description: funnelDescription.trim(),
+        },
+      ];
 
       dataPayload = {
         ...dataPayload,
@@ -1428,6 +1490,17 @@ export const NodeDetailDrawer = ({
         accountName: accName || "",
         funnelEvent: funnelEvent.trim() || "Purchase",
         funnelDescription: funnelDescription.trim(),
+        performance_goal_key: goalDef.key,
+        performance_goal_label: goalDef.label,
+        optimization_goal: goalDef.optimization_goal,
+        billing_event: goalDef.billing_event,
+        conversion_location: safeConvLocation,
+        destination_type: safeConvLocation,
+        campaign_objective: goalDef.campaign_objective,
+        custom_event_type: safeCustomEventType,
+        requires_pixel_or_event: goalDef.requires_pixel_or_event,
+        promoted_object_type: goalDef.promoted_object_type,
+        funnels: savedFunnels,
       };
     } else if (node.type === "marketing_brief") {
       let updatedMetricsList = [...metricsList];
@@ -1528,6 +1601,14 @@ export const NodeDetailDrawer = ({
         productPlatforms: selectedPlatforms,
         products: productsList,
         catalogCount: totalCount,
+        web_tracking_pixel_id: webTrackingPixelId.trim(),
+        pixel_id: webTrackingPixelId.trim(),
+        mobile_app_id: mobileAppId.trim(),
+        app_id: mobileAppId.trim(),
+        app_store_url: appStoreUrl.trim(),
+        object_store_url: appStoreUrl.trim(),
+        mobile_deep_link_url: mobileDeepLinkUrl.trim(),
+        web_landing_page_url: webLandingPageUrl.trim() || productUrl.trim(),
       };
     } else if (node.type === "data_warehouse") {
       const sheetsToSave = sheetsList.slice(0, 10).map((s, idx) => {
@@ -2025,40 +2106,175 @@ export const NodeDetailDrawer = ({
               />
             </div>
 
-            <div style={{ backgroundColor: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 10, padding: "12px", display: "flex", flexDirection: "column", gap: 10 }}>
-              <span style={{ fontSize: "11px", fontWeight: 700, color: "#0F172A", textTransform: "uppercase", letterSpacing: "0.03em" }}>
-                Funnel Event Settings
-              </span>
-              <div>
-                <label style={{ display: "block", fontSize: "11.5px", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                  Funnel Event
-                </label>
-                <input
-                  type="text"
-                  value={funnelEvent}
-                  onChange={(e) => setFunnelEvent(e.target.value)}
-                  placeholder="e.g. Purchase, Lead, ViewContent, AddToCart"
-                  style={{
-                    width: "100%",
-                    padding: "8px 10px",
-                    borderRadius: 6,
-                    border: "1px solid #CBD5E1",
-                    fontSize: "12px",
-                    backgroundColor: "#FFFFFF",
-                    outline: "none",
-                  }}
-                />
+            <div style={{ backgroundColor: "#F8FAFC", border: "1.5px solid #E2E8F0", borderRadius: 12, padding: "14px", display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontSize: "11px", fontWeight: 700, color: "#0F172A", textTransform: "uppercase", letterSpacing: "0.04em", display: "flex", alignItems: "center", gap: 6 }}>
+                  <Layers size={13} color="#2563EB" />
+                  Meta Ad Set Performance Goal & Conversion Routing
+                </span>
+                <span style={{ fontSize: "10px", color: "#64748B", backgroundColor: "#EFF6FF", padding: "2px 6px", borderRadius: 4, fontWeight: 600 }}>
+                  ODAX v21.0
+                </span>
               </div>
 
+              {/* 1. Primary Performance Goal Selector */}
+              <div>
+                <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, color: "#1E293B", marginBottom: 5 }}>
+                  Ad Set Performance Goal (Optimization Goal) <span style={{ color: "#EF4444" }}>*</span>
+                </label>
+                <select
+                  value={performanceGoalKey}
+                  onChange={(e) => {
+                    const newKey = e.target.value;
+                    const goal = getPerformanceGoalByKey(newKey);
+                    setPerformanceGoalKey(newKey);
+                    setConversionLocation(goal.default_conversion_location);
+                    if (goal.requires_pixel_or_event) {
+                      setCustomEventType(goal.default_custom_event_type || "PURCHASE");
+                    } else {
+                      setCustomEventType(null);
+                    }
+                    setFunnelEvent(goal.label);
+                  }}
+                  style={{
+                    width: "100%",
+                    padding: "9px 12px",
+                    borderRadius: 8,
+                    border: "1.5px solid #2563EB",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    backgroundColor: "#FFFFFF",
+                    color: "#0F172A",
+                    outline: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  {Object.values(META_PERFORMANCE_GOAL_MAP).map((goal) => (
+                    <option key={goal.key} value={goal.key}>
+                      {goal.label}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ fontSize: "10.5px", color: "#64748B", marginTop: 4 }}>
+                  API Goal: <code>{getPerformanceGoalByKey(performanceGoalKey).optimization_goal}</code> • Billing: <code>{getPerformanceGoalByKey(performanceGoalKey).billing_event}</code>
+                </div>
+              </div>
+
+              {/* 2. Conversion Location Selector & Dynamic Badge */}
+              <div>
+                <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, color: "#1E293B", marginBottom: 5 }}>
+                  Conversion Location (destination_type)
+                </label>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {getPerformanceGoalByKey(performanceGoalKey).allowed_conversion_locations.map((loc) => {
+                    const isSelected = conversionLocation === loc;
+                    const label = CONVERSION_LOCATION_LABELS[loc] || loc;
+                    return (
+                      <button
+                        key={loc}
+                        type="button"
+                        onClick={() => setConversionLocation(loc)}
+                        style={{
+                          padding: "5px 10px",
+                          borderRadius: 6,
+                          border: isSelected ? "1.5px solid #2563EB" : "1px solid #CBD5E1",
+                          backgroundColor: isSelected ? "#EFF6FF" : "#FFFFFF",
+                          color: isSelected ? "#1D4ED8" : "#475569",
+                          fontSize: "11px",
+                          fontWeight: isSelected ? 700 : 500,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 4,
+                          transition: "all 0.15s ease",
+                        }}
+                      >
+                        <CheckCircle2 size={12} color={isSelected ? "#2563EB" : "#94A3B8"} />
+                        <span>{label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Smart Read-Only Badge */}
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: "7px 10px",
+                    borderRadius: 7,
+                    backgroundColor: "#EEF2FF",
+                    border: "1px solid #C7D2FE",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: "11px",
+                    color: "#3730A3",
+                    fontWeight: 600,
+                  }}
+                >
+                  <Sparkles size={13} color="#4F46E5" />
+                  <span>
+                    Auto-Mapped Objective: <strong>{getPerformanceGoalByKey(performanceGoalKey).campaign_objective}</strong> | API Goal: <strong>{getPerformanceGoalByKey(performanceGoalKey).optimization_goal}</strong>
+                  </span>
+                </div>
+              </div>
+
+              {/* 3. Conditional Conversion Event Selector */}
+              {getPerformanceGoalByKey(performanceGoalKey).requires_pixel_or_event ? (
+                <div>
+                  <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, color: "#1E293B", marginBottom: 4 }}>
+                    Conversion Event (custom_event_type) <span style={{ color: "#EF4444" }}>*</span>
+                  </label>
+                  <select
+                    value={customEventType || "PURCHASE"}
+                    onChange={(e) => setCustomEventType(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                      border: "1px solid #CBD5E1",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      backgroundColor: "#FFFFFF",
+                      color: "#0F172A",
+                      outline: "none",
+                    }}
+                  >
+                    {META_CONVERSION_EVENTS.map((ev) => (
+                      <option key={ev} value={ev}>
+                        {ev}
+                      </option>
+                    ))}
+                  </select>
+                  <div style={{ fontSize: "10.5px", color: "#64748B", marginTop: 4 }}>
+                    Fires when standard {customEventType || "event"} occurs on website or app.
+                  </div>
+                </div>
+              ) : (
+                <div
+                  style={{
+                    padding: "6px 9px",
+                    borderRadius: 6,
+                    backgroundColor: "#F1F5F9",
+                    border: "1px dashed #CBD5E1",
+                    fontSize: "11px",
+                    color: "#64748B",
+                  }}
+                >
+                  Pixel / App event not required for {getPerformanceGoalByKey(performanceGoalKey).label}.
+                </div>
+              )}
+
+              {/* 4. Funnel Description / Strategic Notes */}
               <div>
                 <label style={{ display: "block", fontSize: "11.5px", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                  Funnel Event Description
+                  Funnel Stage Notes / Description
                 </label>
                 <textarea
                   rows={2}
                   value={funnelDescription}
                   onChange={(e) => setFunnelDescription(e.target.value)}
-                  placeholder="e.g. High-intent conversion event firing on checkout thank-you page"
+                  placeholder="e.g. Bottom of funnel retargeting high-intent buyers"
                   style={{
                     width: "100%",
                     padding: "8px 10px",
@@ -2468,6 +2684,82 @@ export const NodeDetailDrawer = ({
                   <span>Web</span>
                 </label>
               </div>
+            </div>
+
+            {/* Tracking & App IDs (Meta Pixel & App Routing) */}
+            <div style={{ backgroundColor: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 10, padding: "12px", display: "flex", flexDirection: "column", gap: 10 }}>
+              <span style={{ fontSize: "11px", fontWeight: 700, color: "#0F172A", textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                Tracking & Conversion Assets (Meta Pixel & App Store Links)
+              </span>
+
+              {isWebSelected && (
+                <div>
+                  <label style={{ display: "block", fontSize: "11.5px", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
+                    Web Tracking Pixel / Dataset ID
+                  </label>
+                  <input
+                    type="text"
+                    value={webTrackingPixelId}
+                    onChange={(e) => setWebTrackingPixelId(e.target.value)}
+                    placeholder="e.g. 123456789012345"
+                    style={{
+                      width: "100%",
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                      border: "1px solid #CBD5E1",
+                      fontSize: "12px",
+                      backgroundColor: "#FFFFFF",
+                      outline: "none",
+                    }}
+                  />
+                </div>
+              )}
+
+              {isAppSelected && (
+                <>
+                  <div>
+                    <label style={{ display: "block", fontSize: "11.5px", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
+                      Mobile Application ID (Meta App ID)
+                    </label>
+                    <input
+                      type="text"
+                      value={mobileAppId}
+                      onChange={(e) => setMobileAppId(e.target.value)}
+                      placeholder="e.g. 987654321098765"
+                      style={{
+                        width: "100%",
+                        padding: "8px 10px",
+                        borderRadius: 6,
+                        border: "1px solid #CBD5E1",
+                        fontSize: "12px",
+                        backgroundColor: "#FFFFFF",
+                        outline: "none",
+                      }}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={{ display: "block", fontSize: "11.5px", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
+                      App Store / Play Store URL
+                    </label>
+                    <input
+                      type="url"
+                      value={appStoreUrl}
+                      onChange={(e) => setAppStoreUrl(e.target.value)}
+                      placeholder="https://play.google.com/store/apps/details?id=com.example"
+                      style={{
+                        width: "100%",
+                        padding: "8px 10px",
+                        borderRadius: 6,
+                        border: "1px solid #CBD5E1",
+                        fontSize: "12px",
+                        backgroundColor: "#FFFFFF",
+                        outline: "none",
+                      }}
+                    />
+                  </div>
+                </>
+              )}
             </div>
 
             {/* 100+ Multi-Product Catalog Management Section */}

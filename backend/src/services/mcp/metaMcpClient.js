@@ -1001,7 +1001,7 @@ export class MetaMcpClient {
             customEventType: customEventType || custom_event_type,
             trackingType: trackingType || tracking_type,
             destination_type: args.destination_type || args.destinationType || null,
-            promotedObject,
+            promotedObject: args.promoted_object || args.promotedObject || promotedObject || null,
             objective: args.objective || args.campaignObjective,
           });
           if (res?.id) {

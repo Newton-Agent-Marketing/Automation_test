@@ -26,6 +26,8 @@ export const useChat = () => {
   const chat = useSelector((state) => state.chat);
   const activeConvIdRef = useRef(chat.activeId);
   activeConvIdRef.current = chat.activeId;
+  const aiContextNodes = useSelector((state) => state.aiContext?.nodes || []);
+  const aiContextEdges = useSelector((state) => state.aiContext?.edges || []);
   const { metaAccountId, googleAccountId, accountId, aiContextMetaAccountId } = useSelector((state) => {
     // 1. Read directly from AI Context Channel Node (Strict Source of Truth)
     const aiNodes = state.aiContext?.nodes || [];
@@ -128,6 +130,10 @@ export const useChat = () => {
       metaAccountId,
       googleAccountId,
       aiContextMetaAccountId,
+      liveCanvasGraph: {
+        nodes: aiContextNodes,
+        edges: aiContextEdges,
+      },
       ...(options?.startRow !== undefined ? { startRow: options.startRow } : {}),
       ...(options?.endRow !== undefined ? { endRow: options.endRow } : {}),
       ...(options?.rowRange ? { rowRange: options.rowRange } : {}),

@@ -593,19 +593,34 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
 
   const createMetaAdSet = tool(
     "create_meta_ad_set",
-    "Create an Ad Set under a specified Meta Ads campaign with budget, targeting, and optimization goal.",
+    "Create an Ad Set under a specified Meta Ads campaign with budget, targeting, optimization goal, destination type, and promoted object.",
     {
       campaignId: z.string().describe("Meta Campaign ID to attach this Ad Set to"),
       name: z.string().describe("Name of the Ad Set"),
       dailyBudget: z.number().optional().describe("Optional daily budget for this ad set (omit if campaign budget is set)"),
       optimizationGoal: z
-        .enum(["OFFSITE_CONVERSIONS", "APP_INSTALLS", "LINK_CLICKS", "REACH", "LANDING_PAGE_VIEWS", "LEAD_GENERATION", "IMPRESSIONS", "VALUE"])
+        .enum([
+          "OFFSITE_CONVERSIONS",
+          "VALUE",
+          "LANDING_PAGE_VIEWS",
+          "LINK_CLICKS",
+          "APP_INSTALLS",
+          "LEAD_GENERATION",
+          "CONVERSATIONS",
+          "THRUPLAY",
+          "REACH",
+          "IMPRESSIONS",
+        ])
         .default("OFFSITE_CONVERSIONS")
         .describe("Ad Set optimization goal"),
       billingEvent: z.enum(["IMPRESSIONS", "LINK_CLICKS"]).default("IMPRESSIONS").describe("Billing event"),
       bidAmount: z.number().optional().describe("Optional bid amount"),
       bidStrategy: z.string().optional().describe("Optional bid strategy e.g. LOWEST_COST_WITHOUT_CAP, LOWEST_COST_WITH_BID_CAP, COST_CAP"),
       status: z.enum(["ACTIVE", "PAUSED"]).default("PAUSED").describe("Initial ad set status"),
+      destination_type: z.string().optional().describe("Meta conversion location / destination type (e.g. WEBSITE, APP, ON_AD, MESSAGING_APPS, ON_VIDEO)"),
+      destinationType: z.string().optional().describe("Alias for destination_type"),
+      promoted_object: z.any().optional().describe("Meta promoted_object payload (e.g. { pixel_id, custom_event_type }, { application_id, object_store_url }, { page_id })"),
+      promotedObject: z.any().optional().describe("Alias for promoted_object"),
       pixelId: z.string().optional().describe("Optional Meta Pixel ID for tracking website conversions"),
       appId: z.string().optional().describe("Optional Meta Application ID for App Events tracking"),
       applicationId: z.string().optional().describe("Optional Meta Application ID (alias for appId)"),

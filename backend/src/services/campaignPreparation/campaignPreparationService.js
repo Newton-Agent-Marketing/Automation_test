@@ -284,12 +284,40 @@ export class CampaignPreparationService {
         const selectedTabsData = selection?.selectedTabsData || resolvedSheet?.selectedTabsData || resolvedWarehouse?.selectedTabsData || [];
         const availableTabs = selection?.availableTabs || resolvedSheet?.availableTabs || resolvedWarehouse?.availableTabs || [];
 
+        const primaryFunnel = Array.isArray(resolvedChannel.funnels) && resolvedChannel.funnels.length > 0
+          ? resolvedChannel.funnels[0]
+          : null;
+
+        const perfGoalKey = primaryFunnel?.performance_goal_key || resolvedChannel.performance_goal_key || flowParams.performance_goal_key || null;
+        const perfGoalLabel = primaryFunnel?.performance_goal_label || resolvedChannel.performance_goal_label || flowParams.performance_goal_label || null;
+        const optGoal = primaryFunnel?.optimization_goal || resolvedChannel.optimization_goal || flowParams.optimization_goal || null;
+        const billEv = primaryFunnel?.billing_event || resolvedChannel.billing_event || flowParams.billing_event || "IMPRESSIONS";
+        const convLoc = primaryFunnel?.conversion_location || primaryFunnel?.destination_type || resolvedChannel.conversion_location || resolvedChannel.destination_type || flowParams.conversion_location || flowParams.destination_type || null;
+        const destType = primaryFunnel?.destination_type || primaryFunnel?.conversion_location || resolvedChannel.destination_type || resolvedChannel.conversion_location || flowParams.destination_type || flowParams.conversion_location || null;
+        const campObj = primaryFunnel?.campaign_objective || resolvedChannel.campaign_objective || flowParams.campaign_objective || null;
+        const customEv = primaryFunnel?.custom_event_type || resolvedChannel.custom_event_type || flowParams.custom_event_type || null;
+        const pixelId = resolvedProduct.web_tracking_pixel_id || resolvedProduct.pixel_id || resolvedChannel.pixel_id || null;
+        const appId = resolvedProduct.mobile_app_id || resolvedProduct.app_id || null;
+        const appStoreUrl = resolvedProduct.app_store_url || resolvedProduct.object_store_url || null;
+
         contextNodeData = {
           adAccountId: resolvedChannel.accountId || flowParams.accountId || null,
           accountName: resolvedChannel.accountName || flowParams.accountName || null,
           channel: resolvedChannel.channel || resolvedChannel.channelName || flowParams.channel || "Meta Ads",
           funnelEvent: resolvedChannel.funnelEvent || resolvedBrief.funnelEvent || flowParams.funnelEvent || "Purchase",
           funnelDescription: resolvedChannel.funnelDescription || "",
+          performance_goal_key: perfGoalKey,
+          performance_goal_label: perfGoalLabel,
+          optimization_goal: optGoal,
+          billing_event: billEv,
+          conversion_location: convLoc,
+          destination_type: destType,
+          campaign_objective: campObj,
+          custom_event_type: customEv,
+          pixelId,
+          appId,
+          objectStoreUrl: appStoreUrl,
+          funnels: resolvedChannel.funnels || [],
           productName: resolvedProduct.productName || resolvedProduct.name || flowParams.productName || null,
           productUrl: resolvedProduct.productUrl || resolvedProduct.url || flowParams.productUrl || null,
           productPrice: resolvedProduct.productPrice !== undefined ? resolvedProduct.productPrice : flowParams.productPrice,

@@ -142,8 +142,8 @@ export class MetaAdsOrchestrator {
     // Extract Ad Set configuration and asset settings at outer scope so available across all steps
     const adSetDetails = session.preview?.adSetDetails || [];
     const perfGoalItem = adSetDetails.find((d) => d.field === "Performance Goal" || d.field === "Optimization Goal");
-    let optGoal = session.campaignType === "APP_PROMOTION" ? "APP_INSTALLS" : "VALUE";
-    if (session.campaignType !== "APP_PROMOTION") {
+    let optGoal = session.contextNodeData?.optimization_goal || (session.campaignType === "APP_PROMOTION" ? "APP_INSTALLS" : "VALUE");
+    if (!session.contextNodeData?.optimization_goal && session.campaignType !== "APP_PROMOTION") {
       if (perfGoalItem?.value) {
         const v = String(perfGoalItem.value).toLowerCase();
         if (v.includes("conversion") && !v.includes("value") && !v.includes("maximise value")) {
@@ -154,6 +154,16 @@ export class MetaAdsOrchestrator {
           optGoal = "LINK_CLICKS";
         } else if (v.includes("landing") || v.includes("view")) {
           optGoal = "LANDING_PAGE_VIEWS";
+        } else if (v.includes("lead")) {
+          optGoal = "LEAD_GENERATION";
+        } else if (v.includes("conversation")) {
+          optGoal = "CONVERSATIONS";
+        } else if (v.includes("thruplay")) {
+          optGoal = "THRUPLAY";
+        } else if (v.includes("reach")) {
+          optGoal = "REACH";
+        } else if (v.includes("impression")) {
+          optGoal = "IMPRESSIONS";
         } else {
           optGoal = "VALUE"; // Default: Maximise value of conversions
         }
@@ -308,6 +318,11 @@ export class MetaAdsOrchestrator {
         console.log(`   💳 Billing Event    : ${billingEv}`);
         console.log("--------------------------------------------------------------------------------");
 
+        const adSetDestType =
+          session.contextNodeData?.destination_type ||
+          session.contextNodeData?.conversion_location ||
+          (isAppCamp ? "APP" : "WEBSITE");
+
         const adSetRes = await executeAgentTool("create_meta_ad_set", {
           campaignId: metaCampaignId,
           name: adSetName,
@@ -321,9 +336,10 @@ export class MetaAdsOrchestrator {
           appId,
           objectStoreUrl,
           pixelId,
-          destination_type: isAppCamp ? "APP" : "WEBSITE",
+          destination_type: adSetDestType,
+          destinationType: adSetDestType,
           trackingType: isAppCamp ? "APP" : ((pixelId && appId) ? "BOTH" : "WEBSITE"),
-          customEventType: finalOptGoal === "APP_INSTALLS" ? null : (session.customEventType || session.userAnswers?.customEventType || null),
+          customEventType: finalOptGoal === "APP_INSTALLS" ? null : (session.contextNodeData?.custom_event_type || session.customEventType || session.userAnswers?.customEventType || null),
         });
 
         metaAdSetId = adSetRes.data?.adSetId || adSetRes.adSetId || adSetRes.id;

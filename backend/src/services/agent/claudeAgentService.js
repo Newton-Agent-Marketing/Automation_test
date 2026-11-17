@@ -78,12 +78,13 @@ export const loadWorkspaceSkills = async () => {
   }
 };
 
-export const buildSystemPrompt = async ({ accountId, userId }) => {
+export const buildSystemPrompt = async ({ accountId, userId, liveCanvasGraph = null }) => {
   let googleContextText = "No Google Ads account connected";
   let metaContextText = "No Meta Ads account connected";
   let aiContextText = "No custom AI context workflow configured yet.";
   let aiAutomationText = "No AI Automation canvas workflow created yet.";
   let skillsText = "None configured.";
+  let activeAiContextLayerText = "None configured.";
 
   try {
     const [googleAcc, aiCtx, aiAutomation, loadedSkills] = await Promise.all([
@@ -92,6 +93,37 @@ export const buildSystemPrompt = async ({ accountId, userId }) => {
       userId ? AiAutomation.findOne({ userId }).lean().catch(() => null) : null,
       loadWorkspaceSkills(),
     ]);
+
+    // Live canvas graph compilation (Zero Dummy Data & Instant Selection Fidelity)
+    let activeAiContextLayer = aiCtx?.activeAiContextLayer || null;
+    try {
+      const { buildAgentContextFromGraph } = await import("./contextGraphCompiler.js");
+      if (liveCanvasGraph?.nodes?.length > 0) {
+        const liveCompiled = buildAgentContextFromGraph({
+          nodes: liveCanvasGraph.nodes,
+          edges: liveCanvasGraph.edges || [],
+          liveCanvasGraph,
+          userId,
+        });
+        if (liveCompiled.activeAiContextLayer) {
+          activeAiContextLayer = liveCompiled.activeAiContextLayer;
+        }
+      } else if (!activeAiContextLayer && aiCtx?.rawNodes?.length > 0) {
+        const compiled = buildAgentContextFromGraph({
+          nodes: aiCtx.rawNodes,
+          userId,
+        });
+        if (compiled.activeAiContextLayer) {
+          activeAiContextLayer = compiled.activeAiContextLayer;
+        }
+      }
+    } catch (compileErr) {
+      console.warn("[buildSystemPrompt contextGraphCompiler Warning]:", compileErr.message);
+    }
+
+    if (activeAiContextLayer) {
+      activeAiContextLayerText = JSON.stringify(activeAiContextLayer, null, 2);
+    }
 
     if (aiAutomation && Array.isArray(aiAutomation.nodes) && aiAutomation.nodes.length > 0) {
       const sortedNodes = [...aiAutomation.nodes].sort((a, b) => {
@@ -274,6 +306,11 @@ ${googleContextText}
 User's Structured Marketing AI Context & Flow Graph:
 ${aiContextText}
 
+================================================================================
+ACTIVE_AI_CONTEXT_LAYER (STRICT MANDATORY SOURCE OF TRUTH FOR PERFORMANCE GOAL & CONVERSION LOCATION):
+================================================================================
+${activeAiContextLayerText}
+
 User's Configured AI Automation Workflow (Sequential Node Graph):
 ${aiAutomationText}
 
@@ -401,8 +438,10 @@ Capabilities & Exact Execution Guidelines:
          * \`campaignId\`: Returned campaign ID from Level 1
          * \`name\`: Dynamic ad set name specified by user in chat instruction (source: CHAT_INSTRUCTION)
          * \`dailyBudget\`: 500-1000 INR
-         * \`optimizationGoal\`: \`"OFFSITE_CONVERSIONS"\`
-         * \`billingEvent\`: \`"IMPRESSIONS"\`
+         * \`optimizationGoal\`: Extract verbatim from ACTIVE_AI_CONTEXT_LAYER (\`optimization_goal\`), e.g. \`"OFFSITE_CONVERSIONS"\`, \`"VALUE"\`, \`"LANDING_PAGE_VIEWS"\`, \`"LINK_CLICKS"\`, \`"APP_INSTALLS"\`, \`"LEAD_GENERATION"\`, \`"CONVERSATIONS"\`, \`"THRUPLAY"\`, \`"REACH"\`, \`"IMPRESSIONS"\`. DO NOT ask the user for confirmation if already selected in the ad_channel node!
+         * \`billingEvent\`: Extract verbatim from ACTIVE_AI_CONTEXT_LAYER (\`billing_event\`, default: \`"IMPRESSIONS"\`)
+         * \`destination_type\`: Extract verbatim from ACTIVE_AI_CONTEXT_LAYER (\`destination_type\`, e.g. \`"WEBSITE"\`, \`"APP"\`, \`"ON_AD"\`, \`"MESSAGING_APPS"\`, \`"ON_VIDEO"\`)
+         * \`promoted_object\`: Extract verbatim from ACTIVE_AI_CONTEXT_LAYER (\`promoted_object\`), including pixel_id + custom_event_type, application_id + object_store_url, or page_id
          * \`targeting\`: \`{ locations: ["India"], ageMin: 18, ageMax: 65, interests: [] }\`
          * \`accountId\`: target Meta Account ID
        - **Level 3 — Media & Creative Asset Level (SKILL.md Specification)**:
@@ -500,6 +539,7 @@ export class ClaudeAgentService {
     userMessage,
     accountId,
     userId,
+    liveCanvasGraph = null,
   }) {
     const startTime = Date.now();
     const emit = (event) => {
@@ -522,7 +562,7 @@ export class ClaudeAgentService {
     let inTool = false;
     let rawUsage = null;
 
-    const systemPromptText = await buildSystemPrompt({ accountId, userId });
+    const systemPromptText = await buildSystemPrompt({ accountId, userId, liveCanvasGraph });
     let rawModel = process.env.CLAUDE_AGENT_MODEL || "claude-3-5-sonnet-20241022";
     const modelName = (rawModel.includes("4-5") || rawModel.includes("sonnet-4"))
       ? "claude-3-5-sonnet-20241022"
