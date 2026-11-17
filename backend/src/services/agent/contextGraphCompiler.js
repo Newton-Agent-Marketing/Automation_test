@@ -119,15 +119,38 @@ export function buildAgentContextFromGraph({
 
   // Fallback to legacy single-goal if no funnels array present
   if (rawFunnels.length === 0 && primaryChannel) {
-    const legacyGoalKey =
-      primaryChannel.data?.performance_goal_key ||
-      (primaryChannel.data?.funnelEvent?.toLowerCase() === "lead" || primaryChannel.data?.funnelEvent?.toLowerCase() === "leads"
-        ? "WEBSITE_LEADS"
-        : primaryChannel.data?.funnelEvent?.toLowerCase() === "traffic" || primaryChannel.data?.funnelEvent?.toLowerCase() === "link_clicks"
-        ? "LINK_CLICKS"
-        : primaryChannel.data?.funnelEvent?.toLowerCase() === "app" || primaryChannel.data?.funnelEvent?.toLowerCase() === "install"
-        ? "APP_INSTALLS"
-        : "WEBSITE_CONVERSIONS");
+    let legacyGoalKey = primaryChannel.data?.performance_goal_key;
+    if (!legacyGoalKey) {
+      const rawText = String(
+        primaryChannel.data?.optimization_goal ||
+        primaryChannel.data?.performance_goal_label ||
+        primaryChannel.data?.funnelEvent ||
+        ""
+      ).toUpperCase();
+      if (rawText.includes("VALUE") || rawText.includes("ROAS")) {
+        legacyGoalKey = "WEBSITE_CONVERSION_VALUE";
+      } else if (rawText.includes("LANDING") || rawText.includes("VIEW")) {
+        legacyGoalKey = "LANDING_PAGE_VIEWS";
+      } else if (rawText.includes("CLICK") || rawText.includes("TRAFFIC")) {
+        legacyGoalKey = "LINK_CLICKS";
+      } else if (rawText.includes("INSTALL") || rawText.includes("APP")) {
+        legacyGoalKey = "APP_INSTALLS";
+      } else if (rawText.includes("FORM") || (rawText.includes("LEAD") && !rawText.includes("WEBSITE"))) {
+        legacyGoalKey = "INSTANT_FORM_LEADS";
+      } else if (rawText.includes("MESSAGE") || rawText.includes("CONVERSATION")) {
+        legacyGoalKey = "MESSAGING_CONVERSATIONS";
+      } else if (rawText.includes("THRUPLAY") || rawText.includes("VIDEO")) {
+        legacyGoalKey = "THRUPLAY_VIDEO_VIEWS";
+      } else if (rawText.includes("REACH")) {
+        legacyGoalKey = "REACH";
+      } else if (rawText.includes("IMPRESSION")) {
+        legacyGoalKey = "IMPRESSIONS";
+      } else if (rawText.includes("LEAD")) {
+        legacyGoalKey = "WEBSITE_LEADS";
+      } else {
+        legacyGoalKey = "WEBSITE_CONVERSIONS";
+      }
+    }
 
     const fallbackGoal = getPerformanceGoalByKey(legacyGoalKey);
     rawFunnels = [
@@ -150,7 +173,33 @@ export function buildAgentContextFromGraph({
 
   // Compile activeFunnels[] with exact Meta Ads MCP specs
   const activeFunnels = rawFunnels.map((stage, idx) => {
-    const goalKey = stage.performance_goal_key || "WEBSITE_CONVERSIONS";
+    let goalKey = stage.performance_goal_key;
+    if (!goalKey) {
+      const rawText = String(stage.optimization_goal || stage.performance_goal_label || stage.stage_name || "").toUpperCase();
+      if (rawText.includes("VALUE") || rawText.includes("ROAS")) {
+        goalKey = "WEBSITE_CONVERSION_VALUE";
+      } else if (rawText.includes("LANDING") || rawText.includes("VIEW")) {
+        goalKey = "LANDING_PAGE_VIEWS";
+      } else if (rawText.includes("CLICK") || rawText.includes("TRAFFIC")) {
+        goalKey = "LINK_CLICKS";
+      } else if (rawText.includes("INSTALL") || rawText.includes("APP")) {
+        goalKey = "APP_INSTALLS";
+      } else if (rawText.includes("FORM") || (rawText.includes("LEAD") && !rawText.includes("WEBSITE"))) {
+        goalKey = "INSTANT_FORM_LEADS";
+      } else if (rawText.includes("MESSAGE") || rawText.includes("CONVERSATION")) {
+        goalKey = "MESSAGING_CONVERSATIONS";
+      } else if (rawText.includes("THRUPLAY") || rawText.includes("VIDEO")) {
+        goalKey = "THRUPLAY_VIDEO_VIEWS";
+      } else if (rawText.includes("REACH")) {
+        goalKey = "REACH";
+      } else if (rawText.includes("IMPRESSION")) {
+        goalKey = "IMPRESSIONS";
+      } else if (rawText.includes("LEAD")) {
+        goalKey = "WEBSITE_LEADS";
+      } else {
+        goalKey = "WEBSITE_CONVERSIONS";
+      }
+    }
     const goalDef = getPerformanceGoalByKey(goalKey);
 
     // 1. Resolve Campaign & Ad Set Parameters Directly from the Node

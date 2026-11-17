@@ -361,33 +361,33 @@ export class CampaignValidator {
       "IMPRESSIONS",
     ];
 
-    let optimizationGoal = isAppPromotion ? "APP_INSTALLS" : (isBusinessVerified ? "VALUE" : "OFFSITE_CONVERSIONS");
+    let optimizationGoal = isAppPromotion ? "APP_INSTALLS" : "OFFSITE_CONVERSIONS";
     if (rawOptimizationGoal) {
       const g = String(rawOptimizationGoal).trim().toUpperCase();
       if (VALID_META_OPT_GOALS.includes(g)) {
         optimizationGoal = g;
       } else if (g === "WEBSITE_CONVERSIONS" || (g.includes("CONVERSION") && !g.includes("VALUE"))) {
         optimizationGoal = "OFFSITE_CONVERSIONS";
-      } else if (g === "WEBSITE_CONVERSION_VALUE" || g.includes("VALUE")) {
-        optimizationGoal = isBusinessVerified ? "VALUE" : "OFFSITE_CONVERSIONS";
+      } else if (g === "WEBSITE_CONVERSION_VALUE" || g.includes("VALUE") || g.includes("ROAS")) {
+        optimizationGoal = "VALUE";
       } else if (g === "LANDING_PAGE_VIEWS" || g.includes("LANDING")) {
         optimizationGoal = "LANDING_PAGE_VIEWS";
-      } else if (g === "LINK_CLICKS" || g.includes("CLICK")) {
+      } else if (g === "LINK_CLICKS" || g.includes("CLICK") || g.includes("TRAFFIC")) {
         optimizationGoal = "LINK_CLICKS";
-      } else if (g === "APP_INSTALLS" || g.includes("APP_INSTALL")) {
+      } else if (g === "APP_INSTALLS" || g.includes("APP_INSTALL") || g.includes("INSTALL")) {
         optimizationGoal = "APP_INSTALLS";
       } else if (g === "INSTANT_FORM_LEADS" || g.includes("LEAD")) {
         optimizationGoal = "LEAD_GENERATION";
-      } else if (g === "MESSAGING_CONVERSATIONS" || g.includes("CONVERSATION")) {
+      } else if (g === "MESSAGING_CONVERSATIONS" || g.includes("CONVERSATION") || g.includes("MESSAGE")) {
         optimizationGoal = "CONVERSATIONS";
-      } else if (g === "THRUPLAY_VIDEO_VIEWS" || g.includes("THRUPLAY")) {
+      } else if (g === "THRUPLAY_VIDEO_VIEWS" || g.includes("THRUPLAY") || g.includes("VIDEO")) {
         optimizationGoal = "THRUPLAY";
       } else if (g === "REACH") {
         optimizationGoal = "REACH";
       } else if (g === "IMPRESSIONS") {
         optimizationGoal = "IMPRESSIONS";
       } else {
-        optimizationGoal = isAppPromotion ? "APP_INSTALLS" : (isBusinessVerified ? "VALUE" : "OFFSITE_CONVERSIONS");
+        optimizationGoal = isAppPromotion ? "APP_INSTALLS" : "OFFSITE_CONVERSIONS";
       }
     }
 

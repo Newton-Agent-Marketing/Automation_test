@@ -95,6 +95,58 @@ describe("Meta Performance Goal <-> Conversion Location Architecture", () => {
     });
   });
 
+  it("should compile WEBSITE_CONVERSION_VALUE (ROAS) with optimization_goal VALUE verbatim", () => {
+    const nodes = [
+      {
+        id: "channel_1",
+        type: "ad_channel",
+        data: {
+          channelName: "Meta Ads",
+          adAccountId: "act_1416124059911929",
+          performance_goal_key: "WEBSITE_CONVERSION_VALUE",
+          performance_goal_label: "Maximize value of conversions (ROAS)",
+          conversion_location: "WEBSITE",
+          funnels: [
+            {
+              stage_type: "BOFU",
+              performance_goal_key: "WEBSITE_CONVERSION_VALUE",
+              performance_goal_label: "Maximize value of conversions (ROAS)",
+              optimization_goal: "VALUE",
+              billing_event: "IMPRESSIONS",
+              conversion_location: "WEBSITE",
+              destination_type: "WEBSITE",
+              campaign_objective: "OUTCOME_SALES",
+              custom_event_type: "PURCHASE",
+              requires_pixel_or_event: true,
+              promoted_object_type: "PIXEL_EVENT",
+            },
+          ],
+        },
+      },
+      {
+        id: "product_1",
+        type: "product",
+        data: {
+          productName: "Heritage Collection",
+          web_tracking_pixel_id: "pix_444555666",
+        },
+      },
+    ];
+
+    const edges = [{ id: "e1", source: "channel_1", target: "product_1" }];
+
+    const compiled = buildAgentContextFromGraph({ nodes, edges });
+    assert.ok(compiled, "Compiled layer must exist");
+    const primaryFunnel = compiled.activeFunnels[0];
+    assert.strictEqual(primaryFunnel.adset_spec.optimization_goal, "VALUE");
+    assert.strictEqual(primaryFunnel.adset_spec.destination_type, "WEBSITE");
+    assert.strictEqual(primaryFunnel.campaign_objective, "OUTCOME_SALES");
+    assert.deepStrictEqual(primaryFunnel.adset_spec.promoted_object, {
+      pixel_id: "pix_444555666",
+      custom_event_type: "PURCHASE",
+    });
+  });
+
   it("should compile APP_INSTALLS ad_channel without requiring pixel event", () => {
     const nodes = [
       {

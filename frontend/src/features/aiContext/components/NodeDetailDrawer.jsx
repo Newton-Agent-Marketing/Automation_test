@@ -1052,7 +1052,31 @@ export const NodeDetailDrawer = ({
     const initialFunnels = Array.isArray(node.data?.funnels) ? node.data.funnels : [];
     setFunnels(initialFunnels);
     const primaryFunnel = initialFunnels[0] || {};
-    const goalKey = primaryFunnel.performance_goal_key || node.data?.performance_goal_key || "WEBSITE_CONVERSIONS";
+    let goalKey = primaryFunnel.performance_goal_key || node.data?.performance_goal_key;
+    if (!goalKey) {
+      const rawText = String(node.data?.optimization_goal || node.data?.funnelEvent || "").toUpperCase();
+      if (rawText.includes("VALUE") || rawText.includes("ROAS")) {
+        goalKey = "WEBSITE_CONVERSION_VALUE";
+      } else if (rawText.includes("LANDING") || rawText.includes("VIEW")) {
+        goalKey = "LANDING_PAGE_VIEWS";
+      } else if (rawText.includes("CLICK")) {
+        goalKey = "LINK_CLICKS";
+      } else if (rawText.includes("INSTALL")) {
+        goalKey = "APP_INSTALLS";
+      } else if (rawText.includes("FORM") || (rawText.includes("LEAD") && !rawText.includes("WEBSITE"))) {
+        goalKey = "INSTANT_FORM_LEADS";
+      } else if (rawText.includes("MESSAGE") || rawText.includes("CONVERSATION")) {
+        goalKey = "MESSAGING_CONVERSATIONS";
+      } else if (rawText.includes("THRUPLAY")) {
+        goalKey = "THRUPLAY_VIDEO_VIEWS";
+      } else if (rawText.includes("REACH")) {
+        goalKey = "REACH";
+      } else if (rawText.includes("IMPRESSION")) {
+        goalKey = "IMPRESSIONS";
+      } else {
+        goalKey = "WEBSITE_CONVERSIONS";
+      }
+    }
     const goalDef = getPerformanceGoalByKey(goalKey);
     setPerformanceGoalKey(goalKey);
     setConversionLocation(
@@ -1488,7 +1512,7 @@ export const NodeDetailDrawer = ({
         channel: channelName.trim(),
         adAccountId: adAccountId.trim(),
         accountName: accName || "",
-        funnelEvent: funnelEvent.trim() || "Purchase",
+        funnelEvent: goalDef.label || funnelEvent.trim() || "Purchase",
         funnelDescription: funnelDescription.trim(),
         performance_goal_key: goalDef.key,
         performance_goal_label: goalDef.label,
