@@ -299,13 +299,7 @@ export class MetaAdsOrchestrator {
       if (!metaAdSetId) {
         let finalOptGoal = optGoal;
         if (finalOptGoal === "VALUE") {
-          const isVerified = await MetaApiService.isAccountBusinessVerified(targetAccountId, effectiveToken);
-          if (!isVerified) {
-            emit(3, `Account Business Check: Meta Account "${targetAccountId}" is not business verified. Value Optimization requires business verification. Setting Performance Goal to "Maximise number of conversions" for delivery...`);
-            finalOptGoal = "OFFSITE_CONVERSIONS";
-          } else {
-            emit(3, `Account Business Check: Meta Account "${targetAccountId}" is a verified business! Setting Performance Goal to "Maximise value of conversions".`);
-          }
+          emit(3, `Setting Performance Goal to "Maximise value of conversions" (VALUE)...`);
         }
 
         emit(3, `Creating Ad Set "${adSetName}" under Campaign ${metaCampaignId}...`);
