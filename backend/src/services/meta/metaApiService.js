@@ -215,20 +215,6 @@ export class MetaApiService {
       }
     }
 
-    if (spec && Array.isArray(spec) && mediaType === "image") {
-      // Engaged-View Attribution (EVA) is restricted to video ads by Meta. For image ads, adapt safely to 7d click + 1d view
-      const hasEngagement = spec.some((item) => String(item.event_type || "").toUpperCase() === "ENGAGED_VIDEO_VIEW");
-      if (hasEngagement) {
-        spec = spec.filter((item) => String(item.event_type || "").toUpperCase() !== "ENGAGED_VIDEO_VIEW");
-        if (spec.length === 0) {
-          spec = [
-            { event_type: "CLICK_THROUGH", window_days: 7 },
-            { event_type: "VIEW_THROUGH", window_days: 1 },
-          ];
-        }
-      }
-    }
-
     return spec;
   }
 

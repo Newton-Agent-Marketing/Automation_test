@@ -471,7 +471,7 @@ export class MetaBauCampaignService {
             rawAttr = "7_DAY_CLICK_1_DAY_VIEW";
           }
 
-          const effectiveSpec = MetaApiService.normalizeAttributionSpec(rawAttr, media_type);
+          const effectiveSpec = MetaApiService.normalizeAttributionSpec(rawAttr);
           if (effectiveSpec && effectiveSpec.length > 0) {
             adsetPayload.attribution_spec = JSON.stringify(effectiveSpec);
           }
