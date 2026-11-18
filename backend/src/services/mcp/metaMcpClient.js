@@ -795,6 +795,19 @@ export class MetaMcpClient {
         }
       }
 
+      case "create_meta_bau_campaign": {
+        const { default: MetaBauCampaignService } = await import("../meta/metaBauCampaignService.js");
+        return await MetaBauCampaignService.createBauCampaign(
+          {
+            ...args,
+            ad_account_id: args.ad_account_id || args.adAccountId || args.accountId || effectiveAccountId,
+            access_token: effectiveToken,
+            userId,
+          },
+          { userId }
+        );
+      }
+
       case "create_meta_campaign": {
         const {
           name,

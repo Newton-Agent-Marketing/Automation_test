@@ -231,6 +231,84 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
     }
   );
 
+  const createMetaBauCampaign = tool(
+    "create_meta_bau_campaign",
+    "Unified 3-level BAU (Business As Usual) Meta Ads Campaign Creator. Executes strictly sequentially: Media Upload -> Campaign -> Ad Set -> Ad Creative -> Ad with exact Meta Graph API v27.0 endpoints and fields. Supports A/B testing (separate_ads creating V1 and V2 ads, or multi_text degrees of freedom). Status is always PAUSED.",
+    {
+      ad_account_id: z.string().describe("Target Meta Ad Account ID (e.g. 'act_123456789' or '123456789')"),
+      page_id: z.string().describe("Facebook Page ID for ad creative identity"),
+      instagram_user_id: z.string().optional().describe("Optional Instagram account ID"),
+      campaign_name: z.string().describe("Campaign name"),
+      objective: z
+        .enum([
+          "OUTCOME_SALES",
+          "OUTCOME_LEADS",
+          "OUTCOME_TRAFFIC",
+          "OUTCOME_ENGAGEMENT",
+          "OUTCOME_AWARENESS",
+          "OUTCOME_APP_PROMOTION",
+        ])
+        .default("OUTCOME_SALES")
+        .describe("Campaign marketing objective"),
+      special_ad_categories: z.array(z.string()).optional().default([]).describe("Special ad categories (default [])"),
+      buying_type: z.string().optional().default("AUCTION").describe("Buying type (default 'AUCTION')"),
+      campaign_daily_budget: z.number().optional().describe("Optional CBO Daily Budget in smallest currency units (e.g. paise/cents)"),
+      adset_name: z.string().describe("Ad Set name"),
+      optimization_goal: z.string().describe("Ad Set optimization goal (e.g. OFFSITE_CONVERSIONS, LEAD_GENERATION, LINK_CLICKS, VALUE)"),
+      billing_event: z.string().optional().default("IMPRESSIONS").describe("Billing event (default 'IMPRESSIONS')"),
+      daily_budget: z.number().optional().describe("Ad Set Daily Budget in smallest currency units (e.g. paise/cents, required if not CBO)"),
+      bid_strategy: z.string().optional().default("LOWEST_COST_WITHOUT_CAP").describe("Bid strategy (default 'LOWEST_COST_WITHOUT_CAP')"),
+      destination_type: z.string().optional().default("WEBSITE").describe("Destination type (e.g. WEBSITE, APP)"),
+      promoted_object: z.record(z.any()).optional().describe("Promoted object (e.g. { pixel_id, custom_event_type } or { page_id })"),
+      attribution_spec: z.array(z.record(z.any())).optional().describe("Attribution spec array with CLICK_THROUGH / VIEW_THROUGH / ENGAGED_VIDEO_VIEW windows"),
+      targeting: z
+        .object({
+          geo_locations: z
+            .object({
+              countries: z.array(z.string()).optional(),
+              regions: z.array(z.record(z.any())).optional(),
+              cities: z.array(z.record(z.any())).optional(),
+              custom_locations: z.array(z.record(z.any())).optional(),
+            })
+            .passthrough()
+            .describe("Geographic targeting with non-empty locations"),
+          age_min: z.number().optional().default(18),
+          age_max: z.number().optional().default(65),
+          genders: z.array(z.number()).optional(),
+          interests: z.array(z.record(z.any())).optional(),
+        })
+        .passthrough()
+        .describe("Audience targeting specifications"),
+      ad_name: z.string().describe("Ad name"),
+      media_type: z.enum(["image", "video"]).default("image").describe("Creative media type: 'image' or 'video'"),
+      media_url: z.string().optional().describe("Image/video remote URL, local file path, or Google Drive link"),
+      media_file: z.string().optional().describe("Optional local media file path"),
+      image_hash: z.string().optional().describe("Pre-uploaded image hash"),
+      video_id: z.string().optional().describe("Pre-uploaded video ID"),
+      thumbnail_hash: z.string().optional().describe("Optional thumbnail image hash for video ads"),
+      landing_page_url: z.string().describe("Destination website landing page URL"),
+      call_to_action: z.string().optional().default("BOOK_NOW").describe("Call to action button (e.g. BOOK_NOW, SHOP_NOW, LEARN_MORE)"),
+      primary_text: z.string().describe("Primary promotional ad body copy"),
+      headline: z.string().describe("Main creative headline"),
+      alt_headline: z.string().optional().describe("Optional alternate headline for A/B testing"),
+      description: z.string().optional().describe("Optional creative link description"),
+      ab_mode: z.enum(["separate_ads", "multi_text"]).optional().default("separate_ads").describe("A/B testing mode: 'separate_ads' (V1 and V2 ads) or 'multi_text' (Degrees of Freedom)"),
+    },
+    async (args) => {
+      try {
+        const effectiveMetaAccountId = resolveTargetMetaAccountId(args.ad_account_id);
+        const result = await executeAgentTool("create_meta_bau_campaign", {
+          ...args,
+          ad_account_id: effectiveMetaAccountId,
+          userId,
+        });
+        return toToolResult(result);
+      } catch (error) {
+        return toToolError(error);
+      }
+    }
+  );
+
   const createMetaCampaign = tool(
     "create_meta_campaign",
     "Create a new advertising campaign on Meta Ads (Facebook/Instagram). Use when user asks to create or launch a campaign on Meta.",
@@ -1248,6 +1326,7 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
       queryDatabaseMetrics,
       fetchLiveMetaAds,
       fetchLiveGoogleAds,
+      createMetaBauCampaign,
       createMetaCampaign,
       createMetaAdSet,
       updateMetaAdSet,
@@ -1302,6 +1381,7 @@ export const ADS_ALLOWED_TOOLS = [
   "mcp__ads__query_database_metrics",
   "mcp__ads__fetch_live_meta_ads_mcp",
   "mcp__ads__fetch_live_google_ads_mcp",
+  "mcp__ads__create_meta_bau_campaign",
   "mcp__ads__create_meta_campaign",
   "mcp__ads__create_meta_ad_set",
   "mcp__ads__update_meta_ad_set",

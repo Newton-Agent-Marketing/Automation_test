@@ -372,10 +372,12 @@ Capabilities & Exact Execution Guidelines:
          - Display Preview Tables (Table 1: Campaign Details, Table 2: Ad Set Details, Table 3: Ad Details).
          - Prompt user: "Approve Campaign & Create Ads" or "Edit Details".
          - NEVER call create_meta_campaign, create_meta_ad_set, or create_meta_ad before user approval!
-         Step 1: create_meta_campaign (name, objective, dailyBudget, status: "PAUSED", accountId) ➔ get campaignId
-         Step 2: create_meta_ad_set (campaignId, name, dailyBudget, optimizationGoal, status: "PAUSED", accountId) ➔ get adSetId
-         Step 3: create_meta_video_ad (if video/driveUrl) or create_meta_ad (if image) (adSetId, name, headline, primaryText, linkUrl, callToAction, accountId) ➔ get adId (CRITICAL: Never stop before creating the ads!)
-         Step 4: verify_meta_campaign (campaignId, adSetId, adId, accountId)
+         - Unified BAU Tool Option: You can call "create_meta_bau_campaign" to execute the entire 3-level hierarchy (Campaign -> Ad Set -> Ad Creative -> Ad) sequentially in a single call with exact Meta Graph API v27.0 endpoints and default status: "PAUSED". Supports A/B testing ("separate_ads" for V1/V2 ads or "multi_text" degrees of freedom).
+         - Multi-Step Tool Option:
+           Step 1: create_meta_campaign (name, objective, dailyBudget, status: "PAUSED", accountId) ➔ get campaignId
+           Step 2: create_meta_ad_set (campaignId, name, dailyBudget, optimizationGoal, status: "PAUSED", accountId) ➔ get adSetId
+           Step 3: create_meta_video_ad (if video/driveUrl) or create_meta_ad (if image) (adSetId, name, headline, primaryText, linkUrl, callToAction, accountId) ➔ get adId (CRITICAL: Never stop before creating the ads!)
+           Step 4: verify_meta_campaign (campaignId, adSetId, adId, accountId)
      - NEVER create any Meta entity before explicit user approval! Never invent IDs. Always pass real Meta API response IDs.
 
 5. Structured Error Handling for Known Google Ads API Limitations (CRITICAL):

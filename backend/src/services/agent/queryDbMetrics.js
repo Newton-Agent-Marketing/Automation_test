@@ -249,6 +249,50 @@ export const AGENT_TOOLS_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "create_meta_bau_campaign",
+      description: "Creates a complete 3-level BAU (Business As Usual) Meta Ads hierarchy sequentially: Campaign -> Ad Set -> Ad Creative -> Ad with Meta Graph API v27.0. Supports A/B testing (separate_ads or multi_text degrees of freedom).",
+      parameters: {
+        type: "object",
+        properties: {
+          ad_account_id: { type: "string", description: "Meta Ad Account ID (e.g. act_123456789 or 123456789)" },
+          page_id: { type: "string", description: "Facebook Page ID for creative" },
+          instagram_user_id: { type: "string", description: "Optional Instagram Account ID" },
+          campaign_name: { type: "string", description: "Name of the campaign" },
+          objective: { type: "string", enum: ["OUTCOME_SALES", "OUTCOME_LEADS", "OUTCOME_TRAFFIC", "OUTCOME_ENGAGEMENT", "OUTCOME_AWARENESS", "OUTCOME_APP_PROMOTION"], description: "Marketing objective" },
+          special_ad_categories: { type: "array", items: { type: "string" }, description: "Special ad categories (default [])" },
+          buying_type: { type: "string", description: "Buying type (default 'AUCTION')" },
+          campaign_daily_budget: { type: "number", description: "CBO Daily Budget in smallest currency units (paise/cents)" },
+          adset_name: { type: "string", description: "Name of the ad set" },
+          optimization_goal: { type: "string", description: "Optimization goal e.g. OFFSITE_CONVERSIONS, LEAD_GENERATION, LINK_CLICKS" },
+          billing_event: { type: "string", description: "Billing event (default 'IMPRESSIONS')" },
+          daily_budget: { type: "number", description: "Ad Set Daily Budget in smallest currency units (paise/cents)" },
+          bid_strategy: { type: "string", description: "Bid strategy (default 'LOWEST_COST_WITHOUT_CAP')" },
+          destination_type: { type: "string", description: "Destination type e.g. WEBSITE" },
+          promoted_object: { type: "object", description: "Promoted object e.g. { pixel_id, custom_event_type }" },
+          attribution_spec: { type: "array", description: "Attribution window spec array" },
+          targeting: { type: "object", description: "Targeting object with geo_locations, age_min, age_max" },
+          ad_name: { type: "string", description: "Ad name" },
+          media_type: { type: "string", enum: ["image", "video"], description: "Media type: image or video" },
+          media_url: { type: "string", description: "Image/video URL or file path" },
+          media_file: { type: "string", description: "Image/video local file path" },
+          image_hash: { type: "string", description: "Pre-uploaded image hash" },
+          video_id: { type: "string", description: "Pre-uploaded video id" },
+          thumbnail_hash: { type: "string", description: "Pre-uploaded thumbnail hash" },
+          landing_page_url: { type: "string", description: "Destination website URL" },
+          call_to_action: { type: "string", description: "Call to action button (e.g. BOOK_NOW, SHOP_NOW)" },
+          primary_text: { type: "string", description: "Primary ad copy" },
+          headline: { type: "string", description: "Headline copy" },
+          alt_headline: { type: "string", description: "Optional alternative headline for A/B testing" },
+          description: { type: "string", description: "Optional description copy" },
+          ab_mode: { type: "string", enum: ["separate_ads", "multi_text"], description: "A/B testing mode: separate_ads or multi_text" },
+        },
+        required: ["ad_account_id", "page_id", "campaign_name", "adset_name", "ad_name", "headline", "primary_text", "landing_page_url", "targeting"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "create_meta_campaign",
       description: "Creates a new advertising campaign on Meta Ads (Facebook & Instagram) with budget, objective, and status.",
       parameters: {
@@ -2438,6 +2482,10 @@ export async function executeAgentTool(toolName, args) {
       userId: args.userId,
       accountId: args.accountId,
     });
+  }
+
+  if (toolName === "create_meta_bau_campaign") {
+    return await MetaMcpClient.executeLiveTool("create_meta_bau_campaign", args);
   }
 
   if (toolName === "create_meta_campaign") {
