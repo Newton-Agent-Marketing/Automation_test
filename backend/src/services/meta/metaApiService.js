@@ -160,9 +160,30 @@ export class MetaApiService {
   // Helper: Normalize Attribution Setting into Meta Marketing API attribution_spec format
   static normalizeAttributionSpec(input) {
     if (!input) return null;
-    if (Array.isArray(input) && input.length > 0) return input;
+    if (Array.isArray(input) && input.length > 0) {
+      return input.map((item) => {
+        const ev = String(item.event_type || "").toUpperCase();
+        if (ev === "ENGAGED_VIEW" || ev === "ENGAGEMENT" || ev === "ENGAGED_VIDEO_VIEW") {
+          return { event_type: "ENGAGED_VIDEO_VIEW", window_days: item.window_days || 1 };
+        }
+        return item;
+      });
+    }
     if (typeof input === "string") {
       const clean = input.trim().toLowerCase().replace(/[\s-]+/g, "_");
+      if (
+        clean.includes("engage") ||
+        clean.includes("video") ||
+        clean === "7_day_click_1_day_view_1_day_engagement" ||
+        clean === "7_day_click_1_day_view_1_day_engaged_view" ||
+        (clean.includes("7") && clean.includes("click") && (clean.includes("engage") || clean.includes("engagement")))
+      ) {
+        return [
+          { event_type: "CLICK_THROUGH", window_days: 7 },
+          { event_type: "VIEW_THROUGH", window_days: 1 },
+          { event_type: "ENGAGED_VIDEO_VIEW", window_days: 1 },
+        ];
+      }
       if (clean === "7_day_click" || clean === "7d_click" || clean === "7_click" || clean === "7click") {
         return [{ event_type: "CLICK_THROUGH", window_days: 7 }];
       }

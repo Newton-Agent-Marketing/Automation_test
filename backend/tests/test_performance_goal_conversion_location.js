@@ -236,11 +236,21 @@ describe("Meta Performance Goal <-> Conversion Location Architecture", () => {
     });
   });
 
-  it("should have all 4 Attribution Settings configured with correct Meta attribution_spec", () => {
-    assert.strictEqual(META_ATTRIBUTION_SETTINGS.length, 4);
+  it("should have all 5 Attribution Settings configured with correct Meta attribution_spec", () => {
+    assert.strictEqual(META_ATTRIBUTION_SETTINGS.length, 5);
     assert.deepStrictEqual(getAttributionSpecByKey("7_DAY_CLICK_1_DAY_VIEW"), [
       { event_type: "CLICK_THROUGH", window_days: 7 },
       { event_type: "VIEW_THROUGH", window_days: 1 },
+    ]);
+    assert.deepStrictEqual(getAttributionSpecByKey("7_DAY_CLICK_1_DAY_VIEW_1_DAY_ENGAGEMENT"), [
+      { event_type: "CLICK_THROUGH", window_days: 7 },
+      { event_type: "VIEW_THROUGH", window_days: 1 },
+      { event_type: "ENGAGED_VIDEO_VIEW", window_days: 1 },
+    ]);
+    assert.deepStrictEqual(getAttributionSpecByKey("7-day click, 1-day view or 1-day engagement"), [
+      { event_type: "CLICK_THROUGH", window_days: 7 },
+      { event_type: "VIEW_THROUGH", window_days: 1 },
+      { event_type: "ENGAGED_VIDEO_VIEW", window_days: 1 },
     ]);
     assert.deepStrictEqual(getAttributionSpecByKey("7_DAY_CLICK"), [
       { event_type: "CLICK_THROUGH", window_days: 7 },
@@ -287,6 +297,25 @@ describe("Meta Performance Goal <-> Conversion Location Architecture", () => {
     assert.strictEqual(compiled1d.activeFunnels[0].attribution_setting, "1_DAY_CLICK");
     assert.deepStrictEqual(compiled1d.activeFunnels[0].adset_spec.attribution_spec, [
       { event_type: "CLICK_THROUGH", window_days: 1 },
+    ]);
+
+    const nodesEngage = [
+      {
+        id: "channel_engage",
+        type: "ad_channel",
+        data: {
+          channelName: "Meta Ads",
+          adAccountId: "act_123456",
+          attribution_setting: "7_DAY_CLICK_1_DAY_VIEW_1_DAY_ENGAGEMENT",
+        },
+      },
+    ];
+    const compiledEngage = buildAgentContextFromGraph({ nodes: nodesEngage, edges: [] });
+    assert.strictEqual(compiledEngage.activeFunnels[0].attribution_setting, "7_DAY_CLICK_1_DAY_VIEW_1_DAY_ENGAGEMENT");
+    assert.deepStrictEqual(compiledEngage.activeFunnels[0].adset_spec.attribution_spec, [
+      { event_type: "CLICK_THROUGH", window_days: 7 },
+      { event_type: "VIEW_THROUGH", window_days: 1 },
+      { event_type: "ENGAGED_VIDEO_VIEW", window_days: 1 },
     ]);
   });
 });

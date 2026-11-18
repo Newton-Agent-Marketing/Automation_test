@@ -199,6 +199,16 @@ export const META_ATTRIBUTION_SETTINGS = [
     ],
   },
   {
+    key: "7_DAY_CLICK_1_DAY_VIEW_1_DAY_ENGAGEMENT",
+    label: "7-day click, 1-day view or 1-day engagement",
+    description: "Attribution within 7 days of clicking, 1 day of viewing, or 1 day of engagement (Meta Engaged-View)",
+    spec: [
+      { event_type: "CLICK_THROUGH", window_days: 7 },
+      { event_type: "VIEW_THROUGH", window_days: 1 },
+      { event_type: "ENGAGED_VIDEO_VIEW", window_days: 1 },
+    ],
+  },
+  {
     key: "7_DAY_CLICK",
     label: "7-day click",
     description: "Attribution within 7 days of clicking only",
@@ -223,8 +233,17 @@ export const META_ATTRIBUTION_SETTINGS = [
 
 export function getAttributionSpecByKey(key) {
   if (!key) return META_ATTRIBUTION_SETTINGS[0].spec;
-  const cleanKey = String(key).trim().toUpperCase();
-  const found = META_ATTRIBUTION_SETTINGS.find((a) => a.key === cleanKey);
+  const cleanKey = String(key).trim().toUpperCase().replace(/[\s-]+/g, "_");
+  if (
+    cleanKey.includes("ENGAGE") ||
+    cleanKey.includes("ENGAGED_VIEW") ||
+    cleanKey === "7_DAY_CLICK_1_DAY_VIEW_1_DAY_ENGAGEMENT" ||
+    cleanKey === "7_DAY_CLICK_1_DAY_VIEW_1_DAY_ENGAGED_VIEW"
+  ) {
+    const foundEngage = META_ATTRIBUTION_SETTINGS.find((a) => a.key === "7_DAY_CLICK_1_DAY_VIEW_1_DAY_ENGAGEMENT");
+    if (foundEngage) return foundEngage.spec;
+  }
+  const found = META_ATTRIBUTION_SETTINGS.find((a) => a.key === cleanKey || a.key.replace(/_/g, "") === cleanKey.replace(/_/g, ""));
   return found ? found.spec : META_ATTRIBUTION_SETTINGS[0].spec;
 }
 

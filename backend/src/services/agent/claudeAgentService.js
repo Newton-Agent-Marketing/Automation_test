@@ -442,6 +442,7 @@ Capabilities & Exact Execution Guidelines:
          * \`billingEvent\`: Extract verbatim from ACTIVE_AI_CONTEXT_LAYER (\`billing_event\`, default: \`"IMPRESSIONS"\`)
          * \`destination_type\`: Extract verbatim from ACTIVE_AI_CONTEXT_LAYER (\`destination_type\`, e.g. \`"WEBSITE"\`, \`"APP"\`, \`"ON_AD"\`, \`"MESSAGING_APPS"\`, \`"ON_VIDEO"\`)
          * \`promoted_object\`: Extract verbatim from ACTIVE_AI_CONTEXT_LAYER (\`promoted_object\`), including pixel_id + custom_event_type, application_id + object_store_url, or page_id
+         * \`attributionSetting\`: Extract verbatim from ACTIVE_AI_CONTEXT_LAYER (\`attribution_setting\` / \`attribution_spec\`), e.g. \`"7_DAY_CLICK_1_DAY_VIEW"\`, \`"7_DAY_CLICK_1_DAY_VIEW_1_DAY_ENGAGEMENT"\` ("7-day click, 1-day view or 1-day engagement"), \`"7_DAY_CLICK"\`, \`"1_DAY_CLICK"\`, or \`"1_DAY_CLICK_1_DAY_VIEW"\`. Pass this into \`create_meta_ad_set\` so Meta Ads sets the exact attribution window selected in the AI Context Layer.
          * \`targeting\`: \`{ locations: ["India"], ageMin: 18, ageMax: 65, interests: [] }\`
          * \`accountId\`: target Meta Account ID
        - **Level 3 — Media & Creative Asset Level (SKILL.md Specification)**:
