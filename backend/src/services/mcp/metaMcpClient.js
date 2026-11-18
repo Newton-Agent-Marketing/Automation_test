@@ -1003,6 +1003,8 @@ export class MetaMcpClient {
             destination_type: args.destination_type || args.destinationType || null,
             promotedObject: args.promoted_object || args.promotedObject || promotedObject || null,
             objective: args.objective || args.campaignObjective,
+            attributionSetting: args.attributionSetting || args.attribution_setting || args.attributionWindow || args.attribution_window || null,
+            attributionSpec: args.attributionSpec || args.attribution_spec || null,
           });
           if (res?.id) {
             remoteAdSetId = res.id;

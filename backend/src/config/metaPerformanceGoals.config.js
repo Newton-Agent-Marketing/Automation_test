@@ -188,6 +188,46 @@ export const CONVERSION_LOCATION_LABELS = {
   UNDEFINED: "None (Awareness/Reach)",
 };
 
+export const META_ATTRIBUTION_SETTINGS = [
+  {
+    key: "7_DAY_CLICK_1_DAY_VIEW",
+    label: "7-day click or 1-day view (Default & Recommended)",
+    description: "Attribution within 7 days of clicking or 1 day of viewing",
+    spec: [
+      { event_type: "CLICK_THROUGH", window_days: 7 },
+      { event_type: "VIEW_THROUGH", window_days: 1 },
+    ],
+  },
+  {
+    key: "7_DAY_CLICK",
+    label: "7-day click",
+    description: "Attribution within 7 days of clicking only",
+    spec: [{ event_type: "CLICK_THROUGH", window_days: 7 }],
+  },
+  {
+    key: "1_DAY_CLICK",
+    label: "1-day click",
+    description: "Attribution within 1 day of clicking only",
+    spec: [{ event_type: "CLICK_THROUGH", window_days: 1 }],
+  },
+  {
+    key: "1_DAY_CLICK_1_DAY_VIEW",
+    label: "1-day click or 1-day view",
+    description: "Attribution within 1 day of clicking or 1 day of viewing",
+    spec: [
+      { event_type: "CLICK_THROUGH", window_days: 1 },
+      { event_type: "VIEW_THROUGH", window_days: 1 },
+    ],
+  },
+];
+
+export function getAttributionSpecByKey(key) {
+  if (!key) return META_ATTRIBUTION_SETTINGS[0].spec;
+  const cleanKey = String(key).trim().toUpperCase();
+  const found = META_ATTRIBUTION_SETTINGS.find((a) => a.key === cleanKey);
+  return found ? found.spec : META_ATTRIBUTION_SETTINGS[0].spec;
+}
+
 export function getPerformanceGoalByKey(key) {
   if (!key) return META_PERFORMANCE_GOAL_MAP.WEBSITE_CONVERSIONS;
   return META_PERFORMANCE_GOAL_MAP[key] || META_PERFORMANCE_GOAL_MAP.WEBSITE_CONVERSIONS;

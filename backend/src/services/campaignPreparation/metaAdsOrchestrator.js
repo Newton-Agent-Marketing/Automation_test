@@ -342,6 +342,7 @@ export class MetaAdsOrchestrator {
           destinationType: adSetDestType,
           trackingType: isAppCamp ? "APP" : ((pixelId && appId) ? "BOTH" : "WEBSITE"),
           customEventType: finalOptGoal === "APP_INSTALLS" ? null : (session.contextNodeData?.custom_event_type || session.customEventType || session.userAnswers?.customEventType || null),
+          attributionSetting: session.contextNodeData?.attribution_setting || session.contextNodeData?.attribution_window || session.userAnswers?.attributionSetting || "7_DAY_CLICK_1_DAY_VIEW",
         });
 
         metaAdSetId = adSetRes.data?.adSetId || adSetRes.adSetId || adSetRes.id;

@@ -378,6 +378,7 @@ export class CampaignPreparationService {
           destination_type: destType,
           campaign_objective: campObj,
           custom_event_type: customEv,
+          attribution_setting: primaryFunnel?.attribution_setting || resolvedChannel.attribution_setting || flowParams.attribution_setting || "7_DAY_CLICK_1_DAY_VIEW",
           pixelId,
           appId,
           objectStoreUrl: appStoreUrl,

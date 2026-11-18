@@ -2,7 +2,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import {
   META_PERFORMANCE_GOAL_MAP,
+  META_ATTRIBUTION_SETTINGS,
   getPerformanceGoalByKey,
+  getAttributionSpecByKey,
   findGoalByOptimizationAndLocation,
 } from "../src/config/metaPerformanceGoals.config.js";
 import { buildAgentContextFromGraph } from "../src/services/agent/contextGraphCompiler.js";
@@ -232,5 +234,59 @@ describe("Meta Performance Goal <-> Conversion Location Architecture", () => {
     assert.deepStrictEqual(primaryFunnel.adset_spec.promoted_object, {
       page_id: "10987654321",
     });
+  });
+
+  it("should have all 4 Attribution Settings configured with correct Meta attribution_spec", () => {
+    assert.strictEqual(META_ATTRIBUTION_SETTINGS.length, 4);
+    assert.deepStrictEqual(getAttributionSpecByKey("7_DAY_CLICK_1_DAY_VIEW"), [
+      { event_type: "CLICK_THROUGH", window_days: 7 },
+      { event_type: "VIEW_THROUGH", window_days: 1 },
+    ]);
+    assert.deepStrictEqual(getAttributionSpecByKey("7_DAY_CLICK"), [
+      { event_type: "CLICK_THROUGH", window_days: 7 },
+    ]);
+    assert.deepStrictEqual(getAttributionSpecByKey("1_DAY_CLICK"), [
+      { event_type: "CLICK_THROUGH", window_days: 1 },
+    ]);
+    assert.deepStrictEqual(getAttributionSpecByKey("1_DAY_CLICK_1_DAY_VIEW"), [
+      { event_type: "CLICK_THROUGH", window_days: 1 },
+      { event_type: "VIEW_THROUGH", window_days: 1 },
+    ]);
+  });
+
+  it("should preserve attribution_setting and compile attribution_spec in adset_spec", () => {
+    const nodes7d = [
+      {
+        id: "channel_7d",
+        type: "ad_channel",
+        data: {
+          channelName: "Meta Ads",
+          adAccountId: "act_123456",
+          attribution_setting: "7_DAY_CLICK",
+        },
+      },
+    ];
+    const compiled7d = buildAgentContextFromGraph({ nodes: nodes7d, edges: [] });
+    assert.strictEqual(compiled7d.activeFunnels[0].attribution_setting, "7_DAY_CLICK");
+    assert.deepStrictEqual(compiled7d.activeFunnels[0].adset_spec.attribution_spec, [
+      { event_type: "CLICK_THROUGH", window_days: 7 },
+    ]);
+
+    const nodes1d = [
+      {
+        id: "channel_1d",
+        type: "ad_channel",
+        data: {
+          channelName: "Meta Ads",
+          adAccountId: "act_123456",
+          attribution_setting: "1_DAY_CLICK",
+        },
+      },
+    ];
+    const compiled1d = buildAgentContextFromGraph({ nodes: nodes1d, edges: [] });
+    assert.strictEqual(compiled1d.activeFunnels[0].attribution_setting, "1_DAY_CLICK");
+    assert.deepStrictEqual(compiled1d.activeFunnels[0].adset_spec.attribution_spec, [
+      { event_type: "CLICK_THROUGH", window_days: 1 },
+    ]);
   });
 });

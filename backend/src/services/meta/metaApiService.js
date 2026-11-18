@@ -156,6 +156,47 @@ export class MetaApiService {
       }
     }
   }
+
+  // Helper: Normalize Attribution Setting into Meta Marketing API attribution_spec format
+  static normalizeAttributionSpec(input) {
+    if (!input) return null;
+    if (Array.isArray(input) && input.length > 0) return input;
+    if (typeof input === "string") {
+      const clean = input.trim().toLowerCase().replace(/[\s-]+/g, "_");
+      if (clean === "7_day_click" || clean === "7d_click" || clean === "7_click" || clean === "7click") {
+        return [{ event_type: "CLICK_THROUGH", window_days: 7 }];
+      }
+      if (clean === "1_day_click" || clean === "1d_click" || clean === "1_click" || clean === "1click") {
+        return [{ event_type: "CLICK_THROUGH", window_days: 1 }];
+      }
+      if (clean === "1_day_click_1_day_view" || clean === "1d_click_1d_view" || clean === "1_click_1_view") {
+        return [
+          { event_type: "CLICK_THROUGH", window_days: 1 },
+          { event_type: "VIEW_THROUGH", window_days: 1 },
+        ];
+      }
+      if (
+        (clean.includes("7") && clean.includes("click") && (clean.includes("view") || clean.includes("1"))) ||
+        clean === "both" ||
+        clean === "7_day_click_1_day_view" ||
+        clean === "7d_click_1d_view" ||
+        clean === "7_click_1_view"
+      ) {
+        return [
+          { event_type: "CLICK_THROUGH", window_days: 7 },
+          { event_type: "VIEW_THROUGH", window_days: 1 },
+        ];
+      }
+      if (clean.includes("7") && clean.includes("click")) {
+        return [{ event_type: "CLICK_THROUGH", window_days: 7 }];
+      }
+      if (clean.includes("1") && clean.includes("click")) {
+        return [{ event_type: "CLICK_THROUGH", window_days: 1 }];
+      }
+    }
+    return null;
+  }
+
   // Helper: Auto-resolve active Meta OAuth Access Token from DB / env
   static async resolveOAuthToken(accountId, userId, passedToken) {
     if (
@@ -1743,6 +1784,10 @@ export class MetaApiService {
       campaignObjective,
       destination_type,
       destinationType,
+      attributionSetting,
+      attribution_setting,
+      attributionSpec,
+      attribution_spec,
     } = {}
   ) {
     // --- 1. LIVE META CAMPAIGN VALIDATION CHECK ---
@@ -2021,6 +2066,12 @@ export class MetaApiService {
       access_token: accessToken,
     };
 
+    const rawAttribution = attributionSpec || attribution_spec || attributionSetting || attribution_setting || "7_DAY_CLICK_1_DAY_VIEW";
+    const effectiveAttributionSpec = this.normalizeAttributionSpec(rawAttribution);
+    if (effectiveAttributionSpec && effectiveAttributionSpec.length > 0) {
+      payload.attribution_spec = JSON.stringify(effectiveAttributionSpec);
+    }
+
     const effectiveStartTime = startTime || start_time;
     if (effectiveStartTime) {
       payload.start_time = effectiveStartTime;
@@ -2218,6 +2269,19 @@ export class MetaApiService {
             const retryRes = await axios.post(url, null, { params: retryPayload });
             return retryRes.data;
           } catch (valRetryErr) {
+            // continue to error reporting
+          }
+        }
+
+        // Auto-retry 4: If Meta rejects attribution_spec, retry without attribution_spec
+        if (metaErr && (errMsg.includes("attribution_spec") || errMsg.includes("attribution spec")) && payload.attribution_spec) {
+          console.warn("[Meta AdSet Attribution Fallback]: attribution_spec rejected by Meta. Retrying without custom attribution_spec...");
+          try {
+            const retryAttrPayload = { ...payload };
+            delete retryAttrPayload.attribution_spec;
+            const retryRes = await axios.post(url, null, { params: retryAttrPayload });
+            return retryRes.data;
+          } catch (_) {
             // continue to error reporting
           }
         }

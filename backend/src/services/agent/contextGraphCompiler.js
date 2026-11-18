@@ -12,6 +12,7 @@
 import {
   META_PERFORMANCE_GOAL_MAP,
   getPerformanceGoalByKey,
+  getAttributionSpecByKey,
 } from "../../config/metaPerformanceGoals.config.js";
 
 /**
@@ -167,6 +168,7 @@ export function buildAgentContextFromGraph({
         campaign_objective: primaryChannel.data?.campaign_objective || fallbackGoal.campaign_objective,
         custom_event_type: primaryChannel.data?.custom_event_type || primaryChannel.data?.pixel_event || fallbackGoal.default_custom_event_type || (fallbackGoal.requires_pixel_or_event ? "PURCHASE" : null),
         pixel_event: primaryChannel.data?.pixel_event || primaryChannel.data?.custom_event_type || fallbackGoal.default_custom_event_type || (fallbackGoal.requires_pixel_or_event ? "PURCHASE" : null),
+        attribution_setting: primaryChannel.data?.attribution_setting || primaryChannel.data?.funnels?.[0]?.attribution_setting || "7_DAY_CLICK_1_DAY_VIEW",
       },
     ];
   }
@@ -256,16 +258,23 @@ export function buildAgentContextFromGraph({
       ? (mobileDeepLinkUrl || appStoreUrl || webLandingPageUrl || "")
       : (webLandingPageUrl || "");
 
+    const attribution_setting = stage.attribution_setting || primaryChannel?.data?.attribution_setting || "7_DAY_CLICK_1_DAY_VIEW";
+    const attribution_spec = getAttributionSpecByKey(attribution_setting);
+
     return {
       stage_name: stage.stage_name || `Stage #${idx + 1} (${stage.stage_type || "BOFU"})`,
       stage_type: stage.stage_type || "BOFU",
       performance_goal_key: goalKey,
       performance_goal_label: stage.performance_goal_label || goalDef.label,
       campaign_objective,
+      attribution_setting,
+      attribution_spec,
       adset_spec: {
         optimization_goal,
         billing_event,
         destination_type,
+        attribution_setting,
+        attribution_spec,
         ...(promoted_object ? { promoted_object } : {}),
       },
       landing_destination_url,

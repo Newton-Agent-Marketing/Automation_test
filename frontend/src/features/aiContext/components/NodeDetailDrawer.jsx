@@ -50,6 +50,7 @@ import { aiContextApi } from "../service/aiContext.api";
 import {
   META_PERFORMANCE_GOAL_MAP,
   META_CONVERSION_EVENTS,
+  META_ATTRIBUTION_SETTINGS,
   CONVERSION_LOCATION_LABELS,
   getPerformanceGoalByKey,
 } from "../constants/metaPerformanceGoals.config.js";
@@ -88,6 +89,7 @@ export const NodeDetailDrawer = ({
   const [performanceGoalKey, setPerformanceGoalKey] = useState("WEBSITE_CONVERSIONS");
   const [conversionLocation, setConversionLocation] = useState("WEBSITE");
   const [customEventType, setCustomEventType] = useState("PURCHASE");
+  const [attributionSetting, setAttributionSetting] = useState("7_DAY_CLICK_1_DAY_VIEW");
   const [funnels, setFunnels] = useState([]);
   const [connectedAccounts, setConnectedAccounts] = useState([]);
   const [loadingChannels, setLoadingChannels] = useState(false);
@@ -1091,6 +1093,11 @@ export const NodeDetailDrawer = ({
       goalDef.default_custom_event_type ||
       "PURCHASE"
     );
+    setAttributionSetting(
+      primaryFunnel.attribution_setting ||
+      node.data?.attribution_setting ||
+      "7_DAY_CLICK_1_DAY_VIEW"
+    );
 
     // Marketing Brief
     setBriefName(node.data?.name || node.label || "Marketing Brief");
@@ -1498,6 +1505,7 @@ export const NodeDetailDrawer = ({
           destination_type: safeConvLocation,
           campaign_objective: goalDef.campaign_objective,
           custom_event_type: safeCustomEventType,
+          attribution_setting: attributionSetting || "7_DAY_CLICK_1_DAY_VIEW",
           requires_pixel_or_event: goalDef.requires_pixel_or_event,
           promoted_object_type: goalDef.promoted_object_type,
           description: funnelDescription.trim(),
@@ -1522,6 +1530,7 @@ export const NodeDetailDrawer = ({
         destination_type: safeConvLocation,
         campaign_objective: goalDef.campaign_objective,
         custom_event_type: safeCustomEventType,
+        attribution_setting: attributionSetting || "7_DAY_CLICK_1_DAY_VIEW",
         requires_pixel_or_event: goalDef.requires_pixel_or_event,
         promoted_object_type: goalDef.promoted_object_type,
         funnels: savedFunnels,
@@ -2289,7 +2298,39 @@ export const NodeDetailDrawer = ({
                 </div>
               )}
 
-              {/* 4. Funnel Description / Strategic Notes */}
+              {/* 4. Attribution Setting Selector */}
+              <div>
+                <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, color: "#1E293B", marginBottom: 4 }}>
+                  Attribution Setting (attribution_spec)
+                </label>
+                <select
+                  value={attributionSetting || "7_DAY_CLICK_1_DAY_VIEW"}
+                  onChange={(e) => setAttributionSetting(e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "8px 10px",
+                    borderRadius: 6,
+                    border: "1px solid #CBD5E1",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    backgroundColor: "#FFFFFF",
+                    color: "#0F172A",
+                    outline: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  {META_ATTRIBUTION_SETTINGS.map((attr) => (
+                    <option key={attr.key} value={attr.key}>
+                      {attr.label}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ fontSize: "10.5px", color: "#64748B", marginTop: 4 }}>
+                  {META_ATTRIBUTION_SETTINGS.find((a) => a.key === attributionSetting)?.description || "Select attribution window for conversion credit"}
+                </div>
+              </div>
+
+              {/* 5. Funnel Description / Strategic Notes */}
               <div>
                 <label style={{ display: "block", fontSize: "11.5px", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
                   Funnel Stage Notes / Description

@@ -969,6 +969,7 @@ export async function getUserAiContext({ userId }) {
         destination_type: currentNode.data?.destination_type || (currentNode.data?.funnels?.[0]?.destination_type) || "",
         campaign_objective: currentNode.data?.campaign_objective || (currentNode.data?.funnels?.[0]?.campaign_objective) || "",
         custom_event_type: currentNode.data?.custom_event_type || (currentNode.data?.funnels?.[0]?.custom_event_type) || "",
+        attribution_setting: currentNode.data?.attribution_setting || (currentNode.data?.funnels?.[0]?.attribution_setting) || "7_DAY_CLICK_1_DAY_VIEW",
         funnels: Array.isArray(currentNode.data?.funnels) ? currentNode.data.funnels : [],
         timeframeType: currentNode.data?.timeframeType || "month",
         targetMonth: currentNode.data?.targetMonth || "",
@@ -1058,6 +1059,7 @@ export async function getUserAiContext({ userId }) {
           destination_type: channelDetails?.destination_type || (channelDetails?.funnels?.[0]?.destination_type) || "",
           campaign_objective: channelDetails?.campaign_objective || (channelDetails?.funnels?.[0]?.campaign_objective) || "",
           custom_event_type: channelDetails?.custom_event_type || (channelDetails?.funnels?.[0]?.custom_event_type) || "",
+          attribution_setting: channelDetails?.attribution_setting || (channelDetails?.funnels?.[0]?.attribution_setting) || "7_DAY_CLICK_1_DAY_VIEW",
           funnels: Array.isArray(channelDetails?.funnels) ? channelDetails.funnels : [],
           targetPeriod: briefDetails?.formattedPeriod || briefDetails?.targetMonth || "",
           timeframeType: briefDetails?.timeframeType || "month",
@@ -1194,6 +1196,7 @@ export async function getUserAiContext({ userId }) {
         destination_type: n.data?.destination_type || (n.data?.funnels?.[0]?.destination_type) || "",
         campaign_objective: n.data?.campaign_objective || (n.data?.funnels?.[0]?.campaign_objective) || "",
         custom_event_type: n.data?.custom_event_type || (n.data?.funnels?.[0]?.custom_event_type) || "",
+        attribution_setting: n.data?.attribution_setting || (n.data?.funnels?.[0]?.attribution_setting) || "7_DAY_CLICK_1_DAY_VIEW",
         funnels: Array.isArray(n.data?.funnels) ? n.data.funnels : [],
       })),
       briefs: buBriefs.map((n) => ({
@@ -1270,6 +1273,7 @@ export async function getUserAiContext({ userId }) {
         destination_type: n.data?.destination_type || (n.data?.funnels?.[0]?.destination_type) || "",
         campaign_objective: n.data?.campaign_objective || (n.data?.funnels?.[0]?.campaign_objective) || "",
         custom_event_type: n.data?.custom_event_type || (n.data?.funnels?.[0]?.custom_event_type) || "",
+        attribution_setting: n.data?.attribution_setting || (n.data?.funnels?.[0]?.attribution_setting) || "7_DAY_CLICK_1_DAY_VIEW",
         funnels: Array.isArray(n.data?.funnels) ? n.data.funnels : [],
       })),
       briefs: allBriefs.map((n) => ({
@@ -1368,6 +1372,7 @@ export async function getUserAiContext({ userId }) {
         destination_type: n.data?.destination_type || (n.data?.funnels?.[0]?.destination_type) || "",
         campaign_objective: n.data?.campaign_objective || (n.data?.funnels?.[0]?.campaign_objective) || "",
         custom_event_type: n.data?.custom_event_type || (n.data?.funnels?.[0]?.custom_event_type) || "",
+        attribution_setting: n.data?.attribution_setting || (n.data?.funnels?.[0]?.attribution_setting) || "7_DAY_CLICK_1_DAY_VIEW",
         funnels: Array.isArray(n.data?.funnels) ? n.data.funnels : [],
       };
     }),

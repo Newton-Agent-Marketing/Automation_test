@@ -629,6 +629,9 @@ export const createAdsMcpServer = ({ userId, accountId }) => {
       endTime: z.string().optional().describe("Optional scheduled end time in ISO-8601 format"),
       customEventType: z.string().optional().describe("Optional Custom Event Type for conversion tracking (e.g. PURCHASE, MOBILE_APP_INSTALL)"),
       trackingType: z.enum(["WEBSITE", "APP", "BOTH"]).optional().describe("Tracking mode: WEBSITE, APP, or BOTH"),
+      attributionSetting: z.string().optional().describe("Meta Attribution Setting (e.g. 7_DAY_CLICK_1_DAY_VIEW, 7_DAY_CLICK, 1_DAY_CLICK, 1_DAY_CLICK_1_DAY_VIEW)"),
+      attribution_setting: z.string().optional().describe("Alias for attributionSetting"),
+      attribution_spec: z.any().optional().describe("Direct Meta attribution_spec array payload"),
       targeting: z
         .object({
           locations: z.array(z.string()).optional().describe("Target countries/regions (e.g. ['India'])"),
