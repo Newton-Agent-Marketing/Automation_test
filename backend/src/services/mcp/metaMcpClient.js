@@ -994,6 +994,20 @@ export class MetaMcpClient {
         let remoteAdSetId = `adset_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
         let creationSource = "AI_AGENT_MCP";
 
+        let resolvedAttribution = args.attributionSetting || args.attribution_setting || args.attributionWindow || args.attribution_window || null;
+        let resolvedAttributionSpec = args.attributionSpec || args.attribution_spec || null;
+        if (!resolvedAttribution && !resolvedAttributionSpec && effectiveUserId) {
+          try {
+            const AiContext = (await import("../../models/aiContextModel.js")).default;
+            const aiContextDoc = await AiContext.findOne({ userId: effectiveUserId }).lean().catch(() => null);
+            const channelNodes = (aiContextDoc?.nodes || []).filter((n) => n.type === "ad_channel");
+            const foundNode = channelNodes.find((n) => n.data?.attribution_setting || n.data?.funnels?.[0]?.attribution_setting);
+            if (foundNode) {
+              resolvedAttribution = foundNode.data?.attribution_setting || foundNode.data?.funnels?.[0]?.attribution_setting;
+            }
+          } catch (_) {}
+        }
+
         try {
           const res = await MetaApiService.createAdSet(effectiveAccountId, effectiveToken, {
             campaignId,
@@ -1016,8 +1030,8 @@ export class MetaMcpClient {
             destination_type: args.destination_type || args.destinationType || null,
             promotedObject: args.promoted_object || args.promotedObject || promotedObject || null,
             objective: args.objective || args.campaignObjective,
-            attributionSetting: args.attributionSetting || args.attribution_setting || args.attributionWindow || args.attribution_window || null,
-            attributionSpec: args.attributionSpec || args.attribution_spec || null,
+            attributionSetting: resolvedAttribution || "7_DAY_CLICK_1_DAY_VIEW",
+            attributionSpec: resolvedAttributionSpec || null,
           });
           if (res?.id) {
             remoteAdSetId = res.id;

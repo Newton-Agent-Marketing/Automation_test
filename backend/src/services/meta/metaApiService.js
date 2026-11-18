@@ -158,18 +158,18 @@ export class MetaApiService {
   }
 
   // Helper: Normalize Attribution Setting into Meta Marketing API attribution_spec format
-  static normalizeAttributionSpec(input) {
+  static normalizeAttributionSpec(input, mediaType = null) {
     if (!input) return null;
+    let spec = null;
     if (Array.isArray(input) && input.length > 0) {
-      return input.map((item) => {
+      spec = input.map((item) => {
         const ev = String(item.event_type || "").toUpperCase();
         if (ev === "ENGAGED_VIEW" || ev === "ENGAGEMENT" || ev === "ENGAGED_VIDEO_VIEW") {
           return { event_type: "ENGAGED_VIDEO_VIEW", window_days: item.window_days || 1 };
         }
         return item;
       });
-    }
-    if (typeof input === "string") {
+    } else if (typeof input === "string") {
       const clean = input.trim().toLowerCase().replace(/[\s-]+/g, "_");
       if (
         clean.includes("engage") ||
@@ -178,44 +178,58 @@ export class MetaApiService {
         clean === "7_day_click_1_day_view_1_day_engaged_view" ||
         (clean.includes("7") && clean.includes("click") && (clean.includes("engage") || clean.includes("engagement")))
       ) {
-        return [
+        spec = [
           { event_type: "CLICK_THROUGH", window_days: 7 },
           { event_type: "VIEW_THROUGH", window_days: 1 },
           { event_type: "ENGAGED_VIDEO_VIEW", window_days: 1 },
         ];
-      }
-      if (clean === "7_day_click" || clean === "7d_click" || clean === "7_click" || clean === "7click") {
-        return [{ event_type: "CLICK_THROUGH", window_days: 7 }];
-      }
-      if (clean === "1_day_click" || clean === "1d_click" || clean === "1_click" || clean === "1click") {
-        return [{ event_type: "CLICK_THROUGH", window_days: 1 }];
-      }
-      if (clean === "1_day_click_1_day_view" || clean === "1d_click_1d_view" || clean === "1_click_1_view") {
-        return [
+      } else if (clean === "7_day_click" || clean === "7d_click" || clean === "7_click" || clean === "7click") {
+        spec = [{ event_type: "CLICK_THROUGH", window_days: 7 }];
+      } else if (clean === "1_day_click" || clean === "1d_click" || clean === "1_click" || clean === "1click") {
+        spec = [{ event_type: "CLICK_THROUGH", window_days: 1 }];
+      } else if (clean === "1_day_click_1_day_view" || clean === "1d_click_1d_view" || clean === "1_click_1_view") {
+        spec = [
           { event_type: "CLICK_THROUGH", window_days: 1 },
           { event_type: "VIEW_THROUGH", window_days: 1 },
         ];
-      }
-      if (
+      } else if (
         (clean.includes("7") && clean.includes("click") && (clean.includes("view") || clean.includes("1"))) ||
         clean === "both" ||
         clean === "7_day_click_1_day_view" ||
         clean === "7d_click_1d_view" ||
         clean === "7_click_1_view"
       ) {
-        return [
+        spec = [
+          { event_type: "CLICK_THROUGH", window_days: 7 },
+          { event_type: "VIEW_THROUGH", window_days: 1 },
+        ];
+      } else if (clean.includes("7") && clean.includes("click")) {
+        spec = [{ event_type: "CLICK_THROUGH", window_days: 7 }];
+      } else if (clean.includes("1") && clean.includes("click")) {
+        spec = [{ event_type: "CLICK_THROUGH", window_days: 1 }];
+      } else {
+        spec = [
           { event_type: "CLICK_THROUGH", window_days: 7 },
           { event_type: "VIEW_THROUGH", window_days: 1 },
         ];
       }
-      if (clean.includes("7") && clean.includes("click")) {
-        return [{ event_type: "CLICK_THROUGH", window_days: 7 }];
-      }
-      if (clean.includes("1") && clean.includes("click")) {
-        return [{ event_type: "CLICK_THROUGH", window_days: 1 }];
+    }
+
+    if (spec && Array.isArray(spec) && mediaType === "image") {
+      // Engaged-View Attribution (EVA) is restricted to video ads by Meta. For image ads, adapt safely to 7d click + 1d view
+      const hasEngagement = spec.some((item) => String(item.event_type || "").toUpperCase() === "ENGAGED_VIDEO_VIEW");
+      if (hasEngagement) {
+        spec = spec.filter((item) => String(item.event_type || "").toUpperCase() !== "ENGAGED_VIDEO_VIEW");
+        if (spec.length === 0) {
+          spec = [
+            { event_type: "CLICK_THROUGH", window_days: 7 },
+            { event_type: "VIEW_THROUGH", window_days: 1 },
+          ];
+        }
       }
     }
-    return null;
+
+    return spec;
   }
 
   // Helper: Auto-resolve active Meta OAuth Access Token from DB / env
@@ -2294,16 +2308,27 @@ export class MetaApiService {
           }
         }
 
-        // Auto-retry 4: If Meta rejects attribution_spec, retry without attribution_spec
+        // Auto-retry 4: If Meta rejects attribution_spec, retry with safe 7d click + 1d view before dropping
         if (metaErr && (errMsg.includes("attribution_spec") || errMsg.includes("attribution spec")) && payload.attribution_spec) {
-          console.warn("[Meta AdSet Attribution Fallback]: attribution_spec rejected by Meta. Retrying without custom attribution_spec...");
+          console.warn("[Meta AdSet Attribution Fallback]: attribution_spec rejected by Meta. Retrying with safe 7d click + 1d view...");
           try {
             const retryAttrPayload = { ...payload };
-            delete retryAttrPayload.attribution_spec;
+            retryAttrPayload.attribution_spec = JSON.stringify([
+              { event_type: "CLICK_THROUGH", window_days: 7 },
+              { event_type: "VIEW_THROUGH", window_days: 1 },
+            ]);
             const retryRes = await axios.post(url, null, { params: retryAttrPayload });
             return retryRes.data;
-          } catch (_) {
-            // continue to error reporting
+          } catch (retryErr1) {
+            console.warn("[Meta AdSet Attribution Fallback 2]: Safe 7d+1dv rejected. Retrying without custom attribution_spec...");
+            try {
+              const retryAttrPayload2 = { ...payload };
+              delete retryAttrPayload2.attribution_spec;
+              const retryRes2 = await axios.post(url, null, { params: retryAttrPayload2 });
+              return retryRes2.data;
+            } catch (_) {
+              // continue to error reporting
+            }
           }
         }
 

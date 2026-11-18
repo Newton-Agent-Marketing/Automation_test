@@ -344,6 +344,9 @@ export class MetaBauCampaignService {
         destination_type = "WEBSITE",
         promoted_object,
         attribution_spec,
+        attribution_setting,
+        attributionSetting,
+        attributionSpec,
         targeting,
         ad_name,
         media_type = "image",
@@ -450,8 +453,26 @@ export class MetaBauCampaignService {
             adsetPayload.promoted_object = JSON.stringify(promoted_object);
           }
 
-          if (attribution_spec) {
-            const effectiveSpec = MetaApiService.normalizeAttributionSpec(attribution_spec) || attribution_spec;
+          // Resolve effective attribution spec (support params, aliases, and AiContext fallback)
+          let rawAttr = attribution_spec || attributionSpec || attribution_setting || attributionSetting || null;
+          const effectiveUserId = params.userId || context?.userId;
+          if (!rawAttr && effectiveUserId) {
+            try {
+              const AiContext = (await import("../../models/aiContextModel.js")).default;
+              const aiContextDoc = await AiContext.findOne({ userId: effectiveUserId }).lean().catch(() => null);
+              const channelNodes = (aiContextDoc?.nodes || []).filter((n) => n.type === "ad_channel");
+              const foundNode = channelNodes.find((n) => n.data?.attribution_setting || n.data?.funnels?.[0]?.attribution_setting);
+              if (foundNode) {
+                rawAttr = foundNode.data?.attribution_setting || foundNode.data?.funnels?.[0]?.attribution_setting;
+              }
+            } catch (_) {}
+          }
+          if (!rawAttr) {
+            rawAttr = "7_DAY_CLICK_1_DAY_VIEW";
+          }
+
+          const effectiveSpec = MetaApiService.normalizeAttributionSpec(rawAttr, media_type);
+          if (effectiveSpec && effectiveSpec.length > 0) {
             adsetPayload.attribution_spec = JSON.stringify(effectiveSpec);
           }
 
@@ -459,7 +480,35 @@ export class MetaBauCampaignService {
             adsetPayload.targeting = JSON.stringify(targeting);
           }
 
-          const adsetRes = await axios.post(adsetUrl, null, { params: adsetPayload });
+          let adsetRes;
+          try {
+            adsetRes = await axios.post(adsetUrl, null, { params: adsetPayload });
+          } catch (firstAdsetErr) {
+            const errMsg = firstAdsetErr?.response?.data?.error?.message || firstAdsetErr.message || "";
+            if ((errMsg.includes("attribution_spec") || errMsg.includes("attribution spec")) && adsetPayload.attribution_spec) {
+              console.warn("[Meta BAU AdSet Attribution Fallback]: Retrying with safe 7d click + 1d view...");
+              const retryPayload = { ...adsetPayload };
+              retryPayload.attribution_spec = JSON.stringify([
+                { event_type: "CLICK_THROUGH", window_days: 7 },
+                { event_type: "VIEW_THROUGH", window_days: 1 },
+              ]);
+              try {
+                adsetRes = await axios.post(adsetUrl, null, { params: retryPayload });
+              } catch (secondAdsetErr) {
+                const errMsg2 = secondAdsetErr?.response?.data?.error?.message || secondAdsetErr.message || "";
+                if (errMsg2.includes("attribution_spec") || errMsg2.includes("attribution spec")) {
+                  console.warn("[Meta BAU AdSet Attribution Fallback 2]: Retrying without attribution_spec...");
+                  const retryPayload2 = { ...adsetPayload };
+                  delete retryPayload2.attribution_spec;
+                  adsetRes = await axios.post(adsetUrl, null, { params: retryPayload2 });
+                } else {
+                  throw secondAdsetErr;
+                }
+              }
+            } else {
+              throw firstAdsetErr;
+            }
+          }
           createdState.adset_id = adsetRes.data?.id;
           if (!createdState.adset_id) {
             throw new Error("Meta Graph API returned success but missing adset id.");
