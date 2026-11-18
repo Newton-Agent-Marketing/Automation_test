@@ -292,6 +292,23 @@ export const AiContextNode = ({
                     {node.data.campaign_objective.replace("OUTCOME_", "")}
                   </span>
                 )}
+                {(node.data?.attribution_setting || node.data?.funnels?.[0]?.attribution_setting) && (
+                  <span
+                    style={{
+                      fontSize: "9.5px",
+                      fontWeight: 600,
+                      color: "#0369A1",
+                      backgroundColor: "#F0F9FF",
+                      border: "1px solid #BAE6FD",
+                      padding: "1px 4px",
+                      borderRadius: 3,
+                      fontFamily: "monospace",
+                    }}
+                    title={`Attribution Window: ${node.data?.attribution_setting || node.data?.funnels?.[0]?.attribution_setting}`}
+                  >
+                    ⏱️ {(node.data?.attribution_setting || node.data?.funnels?.[0]?.attribution_setting).replace("7_DAY_CLICK_1_DAY_VIEW_1_DAY_ENGAGEMENT", "7d+1dv+1de").replace("7_DAY_CLICK_1_DAY_VIEW", "7d+1dv").replace("7_DAY_CLICK", "7d-click").replace("1_DAY_CLICK", "1d-click")}
+                  </span>
+                )}
               </div>
             ) : (
               <span

@@ -53,6 +53,7 @@ import {
   META_ATTRIBUTION_SETTINGS,
   CONVERSION_LOCATION_LABELS,
   getPerformanceGoalByKey,
+  getAttributionSpecByKey,
 } from "../constants/metaPerformanceGoals.config.js";
 
 const TYPE_ICONS = {
@@ -1093,11 +1094,11 @@ export const NodeDetailDrawer = ({
       goalDef.default_custom_event_type ||
       "PURCHASE"
     );
-    setAttributionSetting(
-      primaryFunnel.attribution_setting ||
-      node.data?.attribution_setting ||
-      "7_DAY_CLICK_1_DAY_VIEW"
+    const rawAttr = primaryFunnel.attribution_setting || node.data?.attribution_setting || "7_DAY_CLICK_1_DAY_VIEW";
+    const foundAttr = META_ATTRIBUTION_SETTINGS.find(
+      (a) => a.key === rawAttr || a.label === rawAttr || (String(rawAttr).toUpperCase().includes("ENGAGE") && a.key.includes("ENGAGE"))
     );
+    setAttributionSetting(foundAttr ? foundAttr.key : rawAttr);
 
     // Marketing Brief
     setBriefName(node.data?.name || node.label || "Marketing Brief");
@@ -1492,7 +1493,8 @@ export const NodeDetailDrawer = ({
         ? `${channelName.trim() || "Ad Channel"}: ${accName}`
         : (channelName.trim() || "Ad Channel");
 
-      nodeSubtitle = `🎯 ${goalDef.label} → ${safeConvLocation}`;
+      const effectiveAttrKey = attributionSetting || "7_DAY_CLICK_1_DAY_VIEW";
+      nodeSubtitle = `🎯 ${goalDef.label} → ${safeConvLocation} • ⏱️ ${effectiveAttrKey}`;
 
       const savedFunnels = [
         {
@@ -2300,17 +2302,33 @@ export const NodeDetailDrawer = ({
 
               {/* 4. Attribution Setting Selector */}
               <div>
-                <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, color: "#1E293B", marginBottom: 4 }}>
-                  Attribution Setting (attribution_spec)
-                </label>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+                  <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, color: "#1E293B", margin: 0 }}>
+                    Attribution Setting (attribution_spec)
+                  </label>
+                  <span
+                    style={{
+                      fontSize: "10px",
+                      fontWeight: 700,
+                      color: "#0369A1",
+                      backgroundColor: "#E0F2FE",
+                      border: "1px solid #BAE6FD",
+                      padding: "1px 6px",
+                      borderRadius: 4,
+                      fontFamily: "monospace",
+                    }}
+                  >
+                    {attributionSetting || "7_DAY_CLICK_1_DAY_VIEW"}
+                  </span>
+                </div>
                 <select
                   value={attributionSetting || "7_DAY_CLICK_1_DAY_VIEW"}
                   onChange={(e) => setAttributionSetting(e.target.value)}
                   style={{
                     width: "100%",
-                    padding: "8px 10px",
-                    borderRadius: 6,
-                    border: "1px solid #CBD5E1",
+                    padding: "9px 12px",
+                    borderRadius: 7,
+                    border: "1.5px solid #2563EB",
                     fontSize: "12px",
                     fontWeight: 600,
                     backgroundColor: "#FFFFFF",
@@ -2321,12 +2339,36 @@ export const NodeDetailDrawer = ({
                 >
                   {META_ATTRIBUTION_SETTINGS.map((attr) => (
                     <option key={attr.key} value={attr.key}>
-                      {attr.label}
+                      {attr.label} [{attr.key}]
                     </option>
                   ))}
                 </select>
-                <div style={{ fontSize: "10.5px", color: "#64748B", marginTop: 4 }}>
-                  {META_ATTRIBUTION_SETTINGS.find((a) => a.key === attributionSetting)?.description || "Select attribution window for conversion credit"}
+                <div
+                  style={{
+                    marginTop: 6,
+                    padding: "7px 10px",
+                    borderRadius: 7,
+                    backgroundColor: "#F0F9FF",
+                    border: "1px solid #BAE6FD",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 3,
+                    fontSize: "10.5px",
+                    color: "#0369A1",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                    <Sparkles size={12} color="#0284C7" />
+                    <span>
+                      Selected Key: <strong>{attributionSetting}</strong>
+                    </span>
+                  </div>
+                  <div style={{ color: "#475569" }}>
+                    {META_ATTRIBUTION_SETTINGS.find((a) => a.key === attributionSetting)?.description || "Select attribution window for conversion credit"}
+                  </div>
+                  <div style={{ marginTop: 2, fontFamily: "monospace", fontSize: "10px", color: "#0369A1" }}>
+                    Meta Spec: {JSON.stringify(getAttributionSpecByKey(attributionSetting))}
+                  </div>
                 </div>
               </div>
 
