@@ -1,18 +1,13 @@
 import axios from "axios";
 
 export const API_URL = (() => {
-  const isLocal =
-    typeof window !== "undefined" &&
-    (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
-  if (isLocal) {
-    return "http://localhost:3000";
-  }
-  const rawEnv = import.meta.env.VITE_API_URL;
-  if (rawEnv && typeof rawEnv === "string" && rawEnv.trim()) {
-    return rawEnv.trim().replace(/\/+$/, "");
-  }
-  if (typeof window !== "undefined" && window.location.origin) {
-    return window.location.origin.trim().replace(/\/+$/, "");
+  if (typeof window !== "undefined") {
+    const hostname = window.location.hostname;
+    if (hostname === "localhost" || hostname === "127.0.0.1") {
+      return "http://localhost:3000";
+    }
+    // In production browser, strictly use window.location.origin to eliminate any chance of space or malformed env vars
+    return (window.location.origin || "").trim().replace(/\/+$/, "");
   }
   return "http://localhost:3000";
 })();
